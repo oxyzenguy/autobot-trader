@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run with Poetry Env",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/autobot_trader/main.py",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      },
+      "console": "integratedTerminal"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Backtest Report - {{ strategy }}</title>
+</head>
+<body>
+  <h1>📊 전략: {{ strategy }}</h1>
+  <p>누적 수익률: <strong>{{ cumulative_return }}%</strong></p>
+  <p>최대 낙폭(MDD): <strong>{{ mdd }}%</strong></p>
+  <table border="1">
+    <tr>
+      <th>Buy</th><th>Sell</th><th>Return (%)</th>
+    </tr>
+    {% for trade in trades %}
+    <tr>
+      <td>{{ trade.buy }}</td>
+      <td>{{ trade.sell }}</td>
+      <td>{{ trade.profit }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</body>
+</html>

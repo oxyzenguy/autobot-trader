@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ strategy | upper }} 전략 리포트</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #999; padding: 8px; text-align: center; }
+    th { background-color: #f0f0f0; }
+  </style>
+</head>
+<body>
+  <h1>{{ strategy | upper }} 전략 리포트</h1>
+  <p><strong>누적 수익률:</strong> {{ total_return }}%</p>
+  <p><strong>최대 낙폭(MDD):</strong> {{ max_dd }}%</p>
+  <img src="{{ image_path }}" width="800px" alt="Performance Chart">
+  
+  <h2>📈 거래 내역</h2>
+  <table>
+    <tr><th>매수일</th><th>매수가</th><th>매도일</th><th>매도가</th><th>수익률(%)</th></tr>
+    {% for row in trades %}
+    <tr>
+      <td>{{ row.buy_time }}</td>
+      <td>{{ row.buy_price }}</td>
+      <td>{{ row.sell_time }}</td>
+      <td>{{ row.sell_price }}</td>
+      <td>{{ row.return_pct }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</body>
+</html>

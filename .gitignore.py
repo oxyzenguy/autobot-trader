@@ -20,3 +20,5 @@ logs/
 
 # Jupyter/IPython
 .ipynb_checkpoints/
+
+.env
