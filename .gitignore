@@ -1,0 +1,39 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*cpython-310.pyc
+
+# Poetry / Python virtual environments
+*.lock
+.venv/
+.env
+.poetry/
+*.egg-info/
+
+# VS Code
+.vscode/
+
+# Logs and dumps
+*.log
+logs/
+*.sqlite3
+*.db
+
+# Jupyter/IPython
+.ipynb_checkpoints/
+
+# Node
+node_modules/
+
+# Data and results
+data/
+results/
+*.csv
+*.xlsx
+*.png
+*.html
+margin_optimization_*.csv
+stoploss_comparison_report_*.xlsx
+backtest_*.xlsx
+backtest_*.png

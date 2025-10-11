@@ -1,0 +1,38 @@
+{
+  "dca_5profit": {
+    "last_sell_date": "2025-05-27",
+    "positions": [
+      {
+        "buy_price": 3748125.0,
+        "buy_date": "2025-05-14"
+      },
+      {
+        "buy_price": 3672163.0,
+        "buy_date": "2025-05-15"
+      },
+      {
+        "buy_price": 3691153.5,
+        "buy_date": "2025-05-23"
+      },
+      {
+        "buy_price": 3592203.0,
+        "buy_date": "2025-05-17"
+      }
+    ]
+  },
+  "magicsplit_balanced": {
+    "last_buy_date": "2025-05-27",
+    "positions": [
+      {
+        "buy_price": 3750000.0,
+        "buy_date": "2025-05-14",
+        "step": 1
+      },
+      {
+        "buy_price": 3562500.0,
+        "buy_date": "2025-05-24",
+        "step": 2
+      }
+    ]
+  }
+}
