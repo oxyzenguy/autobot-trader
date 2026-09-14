@@ -6,14 +6,18 @@ from config import (
     get_upbit_client,
     INVESTMENTS,
     MIN_ORDER_KRW,
-    SELL_PROFIT_MARGIN,
-    STOP_LOSS_PERCENT
+    STOP_LOSS_PERCENT,
+    IS_PAPER_TRADING,
+    get_profit_margin
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 
-# --- 트레이딩 타깃 설정 (커맨드라인 인자로 지정 가능: python main.py KRW-XRP) ---
+# --- 트레이딩 타깃 설정 (커맨드라인 인자로 지정 가능: python main.py KRW-ETH) ---
 MARKET = sys.argv[1] if len(sys.argv) > 1 else "KRW-SOL"
 TICKER = MARKET.split("-")[1]
+
+# 종목 맞춤 익절 마진 (SOL 0.5%, ETH 0.8% 등)
+SELL_PROFIT_MARGIN = get_profit_margin(MARKET)
 
 # 1 Unit 매수 금액 (원화 기준)
 UNIT_KRW = INVESTMENTS.get(MARKET, {}).get("unit", MIN_ORDER_KRW)
@@ -271,5 +275,10 @@ def run_trading_strategy():
 
 
 if __name__ == "__main__":
-    run_trading_strategy()
+    if IS_PAPER_TRADING:
+        from utils.paper_trading import run_paper_trading_loop
+        run_paper_trading_loop(MARKET)
+    else:
+        run_trading_strategy()
+
 

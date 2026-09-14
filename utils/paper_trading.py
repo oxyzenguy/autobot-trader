@@ -1,0 +1,375 @@
+import os
+import json
+import time
+import math
+import pyupbit
+from datetime import datetime
+from config import (
+    INVESTMENTS,
+    MIN_ORDER_KRW,
+    STOP_LOSS_PERCENT,
+    FEE_RATE,
+    get_profit_margin
+)
+from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
+
+
+class PaperAccount:
+    """가상매매(모의투자) 계좌 상태를 로컬 JSON 파일로 영속 관리하는 클래스"""
+
+    def __init__(self, market: str):
+        self.market = market
+        self.ticker = market.split("-")[1]
+        self.state_file = f"paper_state_{market.replace('-', '_')}.json"
+        
+        info = INVESTMENTS.get(market, {"total": 500_000, "unit": 5_000})
+        self.initial_capital = float(info["total"])
+        self.unit_krw = float(info["unit"])
+        self.profit_margin = get_profit_margin(market)
+        
+        self.state = self._load_or_init_state()
+
+    def _load_or_init_state(self):
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"[WARN] 가상매매 상태 파일 로드 실패({e}), 초기화합니다.")
+
+        initial_state = {
+            "market": self.market,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "initial_capital": self.initial_capital,
+            "krw_balance": self.initial_capital,
+            "coin_balance": 0.0,
+            "avg_buy_price": 0.0,
+            "total_cost": 0.0,
+            "open_orders": [],
+            "completed_cycles": 0,
+            "wins": 0,
+            "losses": 0,
+            "realized_pnl": 0.0,
+            "trade_history": []
+        }
+        self._save_state(initial_state)
+        return initial_state
+
+    def _save_state(self, state=None):
+        if state is not None:
+            self.state = state
+        with open(self.state_file, "w", encoding="utf-8") as f:
+            json.dump(self.state, f, indent=2, ensure_ascii=False)
+
+    @property
+    def krw_balance(self):
+        return self.state["krw_balance"]
+
+    @property
+    def coin_balance(self):
+        return self.state["coin_balance"]
+
+    @property
+    def avg_buy_price(self):
+        return self.state["avg_buy_price"]
+
+    @property
+    def open_orders(self):
+        return self.state["open_orders"]
+
+    def buy_market(self, krw_amount: float, current_price: float):
+        """가상 시장가 매수"""
+        cost = krw_amount * (1 + FEE_RATE)
+        if self.state["krw_balance"] < cost:
+            return None
+
+        volume = krw_amount / current_price
+        self.state["krw_balance"] -= cost
+        
+        new_total_cost = self.state["total_cost"] + cost
+        new_total_vol = self.state["coin_balance"] + volume
+        self.state["coin_balance"] = new_total_vol
+        self.state["total_cost"] = new_total_cost
+        self.state["avg_buy_price"] = new_total_cost / new_total_vol
+        
+        self.state["trade_history"].append({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "type": "MARKET_BUY",
+            "price": current_price,
+            "volume": volume,
+            "cost": cost
+        })
+        self._save_state()
+        return {"price": current_price, "volume": volume, "cost": cost}
+
+    def sell_market(self, volume: float, current_price: float, reason: str = "STOP_LOSS"):
+        """가상 시장가 매도 (손절 또는 긴급 매도)"""
+        if self.state["coin_balance"] < volume or volume <= 0:
+            return None
+
+        revenue = (volume * current_price) * (1 - FEE_RATE)
+        pnl = revenue - self.state["total_cost"]
+        
+        self.state["krw_balance"] += revenue
+        self.state["coin_balance"] -= volume
+        self.state["total_cost"] = 0.0
+        self.state["avg_buy_price"] = 0.0
+        self.state["completed_cycles"] += 1
+        self.state["losses"] += 1
+        self.state["realized_pnl"] += pnl
+        
+        self.state["trade_history"].append({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "type": f"MARKET_SELL_{reason}",
+            "price": current_price,
+            "volume": volume,
+            "revenue": revenue,
+            "pnl": pnl
+        })
+        self._save_state()
+        return {"price": current_price, "revenue": revenue, "pnl": pnl}
+
+    def add_limit_order(self, side: str, price: float, volume: float, units: int = 1):
+        """가상 지정가 주문 등록"""
+        uuid = f"paper-{side}-{int(time.time()*1000)}"
+        order = {
+            "uuid": uuid,
+            "side": side,  # "bid" (매수) or "ask" (매도)
+            "price": float(price),
+            "volume": float(volume),
+            "units": units,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        self.state["open_orders"].append(order)
+        self._save_state()
+        return order
+
+    def cancel_order(self, uuid: str):
+        self.state["open_orders"] = [o for o in self.state["open_orders"] if o["uuid"] != uuid]
+        self._save_state()
+
+    def cancel_all_orders(self, side: str = None):
+        if side:
+            self.state["open_orders"] = [o for o in self.state["open_orders"] if o["side"] != side]
+        else:
+            self.state["open_orders"] = []
+        self._save_state()
+
+    def process_fills(self, current_price: float):
+        """현재가 기준으로 가상 지정가 주문들의 체결 여부를 판별합니다."""
+        filled_sells = []
+        filled_buys = []
+        
+        for order in list(self.state["open_orders"]):
+            if order["side"] == "ask" and current_price >= order["price"]:
+                # 익절 매도 체결!
+                revenue = (order["volume"] * order["price"]) * (1 - FEE_RATE)
+                pnl = revenue - self.state["total_cost"]
+                
+                self.state["krw_balance"] += revenue
+                self.state["coin_balance"] = 0.0
+                self.state["total_cost"] = 0.0
+                self.state["avg_buy_price"] = 0.0
+                self.state["completed_cycles"] += 1
+                self.state["wins"] += 1
+                self.state["realized_pnl"] += pnl
+                
+                self.state["trade_history"].append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "type": "TAKE_PROFIT_SELL",
+                    "price": order["price"],
+                    "volume": order["volume"],
+                    "revenue": revenue,
+                    "pnl": pnl
+                })
+                filled_sells.append(order)
+                
+            elif order["side"] == "bid" and current_price <= order["price"]:
+                # 물타기 매수 체결!
+                cost = (order["price"] * order["volume"]) * (1 + FEE_RATE)
+                if self.state["krw_balance"] >= cost:
+                    self.state["krw_balance"] -= cost
+                    new_total_cost = self.state["total_cost"] + cost
+                    new_total_vol = self.state["coin_balance"] + order["volume"]
+                    self.state["coin_balance"] = new_total_vol
+                    self.state["total_cost"] = new_total_cost
+                    self.state["avg_buy_price"] = new_total_cost / new_total_vol
+                    
+                    self.state["trade_history"].append({
+                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "type": f"LIMIT_BUY_{order.get('units', 1)}X",
+                        "price": order["price"],
+                        "volume": order["volume"],
+                        "cost": cost
+                    })
+                    filled_buys.append(order)
+
+        # 체결된 주문 제거
+        filled_uuids = {o["uuid"] for o in filled_sells + filled_buys}
+        if filled_uuids:
+            self.state["open_orders"] = [o for o in self.state["open_orders"] if o["uuid"] not in filled_uuids]
+            self._save_state()
+
+        return filled_sells, filled_buys
+
+
+def run_paper_trading_loop(market: str = "KRW-SOL"):
+    """가상매매(모의투자) 24시간 실시간 실행 루프"""
+    acc = PaperAccount(market)
+    ticker = acc.ticker
+    unit_krw = acc.unit_krw
+    profit_margin = acc.profit_margin
+
+    print("=" * 65)
+    print(f"[PAPER TRADING] Mode Started: {market}")
+    print(f"  - 초기 가상 자본: {acc.initial_capital:,.0f}원")
+    print(f"  - 현재 가상 잔고: 원화 {acc.krw_balance:,.0f}원 | {ticker} {acc.coin_balance:.4f}")
+    print(f"  - 1 Unit 금액: {unit_krw:,.0f}원")
+    print(f"  - 익절 마진: +{(profit_margin - 1) * 100:.2f}% (종목 맞춤 적용)")
+    print(f"  - 손절선: {STOP_LOSS_PERCENT * 100:.2f}%")
+    print(f"  - 상태 파일: {acc.state_file}")
+    print("=" * 65)
+
+    try:
+        from utils.bot import send_message
+        send_message(
+            f"[가상매매 시작] {market}\n"
+            f"가상 자본: {acc.krw_balance:,.0f}원 | 1 Unit: {unit_krw:,.0f}원\n"
+            f"익절: +{(profit_margin - 1)*100:.2f}% | 손절: {STOP_LOSS_PERCENT*100:.2f}%"
+        )
+    except Exception:
+        pass
+
+    while True:
+        try:
+            current_price = pyupbit.get_current_price(market)
+            if current_price is None:
+                print(f"[{time.strftime('%H:%M:%S')}] [WARN] 시세 조회 지연. 5초 후 재시도.")
+                time.sleep(5)
+                continue
+
+            # 1. 체결 여부 확인
+            filled_sells, filled_buys = acc.process_fills(current_price)
+
+            for s in filled_sells:
+                msg = f"[가상 익절 체결] {market} {s['price']:,.0f}원에 전량 매도 완료! (+{(profit_margin - 1)*100:.2f}%)"
+                print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
+                try:
+                    from utils.bot import send_message
+                    send_message(msg)
+                except Exception:
+                    pass
+
+            for b in filled_buys:
+                msg = f"[가상 물타기 체결] {market} {b['price']:,.0f}원에 {b.get('units', 1)}배수 체결!"
+                print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
+                try:
+                    from utils.bot import send_message
+                    send_message(msg)
+                except Exception:
+                    pass
+
+            # 2. 손절(Stop-Loss) 체크
+            if acc.coin_balance > 0 and acc.avg_buy_price > 0:
+                pnl_rate = (current_price - acc.avg_buy_price) / acc.avg_buy_price
+                if pnl_rate <= STOP_LOSS_PERCENT:
+                    msg = (
+                        f"[가상 STOP-LOSS 발동] {market}\n"
+                        f"현재가: {current_price:,.0f}원 | 평단가: {acc.avg_buy_price:,.0f}원\n"
+                        f"손실률: {pnl_rate*100:.2f}% (기준: {STOP_LOSS_PERCENT*100:.2f}%)\n"
+                        f"보유 수량 전량 시장가 가상 매도 진행."
+                    )
+                    print(f"\n{msg}")
+                    try:
+                        from utils.bot import send_message
+                        send_message(msg)
+                    except Exception:
+                        pass
+                    
+                    acc.cancel_all_orders()
+                    acc.sell_market(acc.coin_balance, current_price, reason="STOP_LOSS")
+                    time.sleep(10)
+                    continue
+
+            # 3. 미체결 주문 상태 점검
+            sell_orders = [o for o in acc.open_orders if o["side"] == "ask"]
+            buy_orders = [o for o in acc.open_orders if o["side"] == "bid"]
+            num_sell, num_buy = len(sell_orders), len(buy_orders)
+
+            cur_equity = acc.krw_balance + (acc.coin_balance * current_price)
+            profit_rate = ((cur_equity - acc.initial_capital) / acc.initial_capital) * 100
+            print(f"[{time.strftime('%H:%M:%S')}] [PAPER] {ticker}: {current_price:,.0f}원 | 자산: {cur_equity:,.0f}원 ({profit_rate:+.2f}%) | 매도 {num_sell}건, 매수 {num_buy}건 (보유: {acc.coin_balance:.4f})")
+
+            # 4. 상태 머신
+            # Case 1 & 2: 정상 대기 (매도 1건, 매수 3건)
+            if num_sell == 1 and num_buy == 3:
+                time.sleep(5)
+                continue
+
+            # Case 3: 매도 완료 또는 신규 시작 (매도 0건)
+            elif num_sell == 0:
+                print(f"\n[{time.strftime('%H:%M:%S')}] [ACTION] Case 3: 가상 포지션 신규/재진입 시작.")
+                acc.cancel_all_orders("bid")
+
+                # 코인이 없으면 1 Unit 시장가 매수
+                if acc.coin_balance <= 0 or (acc.coin_balance * current_price) < MIN_ORDER_KRW:
+                    if acc.krw_balance < unit_krw:
+                        print(f"[WARN] 가상 잔고 부족 ({acc.krw_balance:,.0f}원 < {unit_krw:,}원). 대기 중...")
+                        time.sleep(10)
+                        continue
+                    res = acc.buy_market(unit_krw, current_price)
+                    print(f"  - 1 Unit 가상 시장가 매수 완료: {unit_krw:,.0f}원")
+
+                avg_price = acc.avg_buy_price
+                quantity = acc.coin_balance
+                print(f"  - 현재 가상 포지션: 평단가 {avg_price:,.0f}원, 보유수량 {quantity:.4f}")
+
+                # 익절 매도 주문 등록
+                sell_p = adjust_price_to_tick(avg_price * profit_margin, method="ceil")
+                acc.add_limit_order("ask", sell_p, quantity)
+                print(f"  - 가상 익절 매도 등록: {sell_p:,.0f}원 (+{(profit_margin - 1)*100:.2f}%)")
+
+                # 물타기 3단계 등록 (2x, 3x, 6x)
+                plans = calculate_new_buy_prices(avg_buy_price=avg_price, existing_orders=None)
+                for p_dict in plans:
+                    p = p_dict["price"]
+                    u = p_dict["units"]
+                    order_krw = unit_krw * u
+                    v = round(order_krw / p, 8)
+                    acc.add_limit_order("bid", p, v, units=u)
+                    print(f"    - 가상 매수 등록: {p:,.0f}원 | {u} Units ({order_krw:,.0f}원) | 수량: {v}")
+
+            # Case 4: 물타기 체결 (매도 1건, 매수 2건 이하)
+            elif num_sell == 1 and num_buy <= 2:
+                print(f"\n[{time.strftime('%H:%M:%S')}] [ACTION] Case 4: 가상 물타기 체결 감지. 포지션 재조정.")
+                acc.cancel_all_orders("ask")
+
+                avg_price = acc.avg_buy_price
+                quantity = acc.coin_balance
+                print(f"  - 새 가상 포지션: 새 평단가 {avg_price:,.0f}원, 총 보유수량 {quantity:.4f}")
+
+                # 새 평단가 기준 익절 매도 등록
+                sell_p = adjust_price_to_tick(avg_price * profit_margin, method="ceil")
+                acc.add_limit_order("ask", sell_p, quantity)
+                print(f"  - 새 가상 익절 매도 등록: {sell_p:,.0f}원")
+
+                # 부족한 물타기 추가 주문
+                buy_info = [{"price": o["price"], "units": o.get("units", 1)} for o in buy_orders]
+                add_plans = calculate_new_buy_prices(avg_buy_price=avg_price, existing_orders=buy_info)
+                for ap in add_plans:
+                    p = ap["price"]
+                    u = ap["units"]
+                    order_krw = unit_krw * u
+                    v = round(order_krw / p, 8)
+                    acc.add_limit_order("bid", p, v, units=u)
+                    print(f"    - 추가 가상 매수 등록: {p:,.0f}원 | {u} Units ({order_krw:,.0f}원)")
+
+            else:
+                print(f"[{time.strftime('%H:%M:%S')}] [WARN] 예외적 가상 주문 상태. 10초 대기.")
+                time.sleep(10)
+
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] [ERROR] 가상매매 루프 에러: {e}")
+            time.sleep(10)
+
+        time.sleep(5)
