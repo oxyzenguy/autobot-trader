@@ -12,10 +12,11 @@ from config import (
     get_profit_margin
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
+from utils.db_logger import log_equity_snapshot, log_paper_trade
 
 
 class PaperAccount:
-    """가상매매(모의투자) 계좌 상태를 로컬 JSON 파일로 영속 관리하는 클래스"""
+    """가상매매(모의투자) 계좌 상태를 로컬 JSON 파일 및 SQLite DB로 영속 관리하는 클래스"""
 
     def __init__(self, market: str):
         self.market = market
@@ -28,19 +29,31 @@ class PaperAccount:
         self.profit_margin = get_profit_margin(market)
         
         self.state = self._load_or_init_state()
+        self.sync_history_to_db()
 
     def _load_or_init_state(self):
+        loaded = None
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    loaded = json.load(f)
             except Exception as e:
                 print(f"[WARN] 가상매매 상태 파일 로드 실패({e}), 초기화합니다.")
 
+        if loaded is not None:
+            # initial_price가 누락된 경우 현재가 등으로 보정
+            if "initial_price" not in loaded or not loaded["initial_price"]:
+                cur = pyupbit.get_current_price(self.market) or loaded.get("avg_buy_price", 0.0)
+                loaded["initial_price"] = cur
+                self._save_state(loaded)
+            return loaded
+
+        cur_p = pyupbit.get_current_price(self.market) or 0.0
         initial_state = {
             "market": self.market,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "initial_capital": self.initial_capital,
+            "initial_price": cur_p,
             "krw_balance": self.initial_capital,
             "coin_balance": 0.0,
             "avg_buy_price": 0.0,
@@ -54,6 +67,59 @@ class PaperAccount:
         }
         self._save_state(initial_state)
         return initial_state
+
+    def sync_history_to_db(self):
+        """JSON 상태 파일의 trade_history 내역을 SQLite DB(paper_trades)와 동기화하고 초기 스냅샷 보장"""
+        try:
+            import sqlite3
+            from utils.db_logger import DB_PATH, init_db
+            init_db()
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM paper_trades WHERE market = ?", (self.market,))
+            count = c.fetchone()[0]
+            conn.close()
+
+            if count == 0 and self.state.get("trade_history"):
+                for t in self.state["trade_history"]:
+                    t_type = t.get("type", "UNKNOWN")
+                    side = "bid" if "BUY" in t_type else "ask"
+                    cost_rev = t.get("cost", t.get("revenue", 0.0))
+                    pnl = t.get("pnl", 0.0)
+                    log_paper_trade(
+                        market=self.market,
+                        action=t_type,
+                        side=side,
+                        price=t.get("price", 0.0),
+                        volume=t.get("volume", 0.0),
+                        cost_or_revenue=cost_rev,
+                        pnl=pnl,
+                        cycle=self.state.get("completed_cycles", 0),
+                        timestamp=t.get("time")
+                    )
+
+            # 스냅샷이 하나도 없으면 초기 스냅샷 1건 등록
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM equity_snapshots WHERE market = ?", (self.market,))
+            snap_count = c.fetchone()[0]
+            conn.close()
+
+            if snap_count == 0:
+                cur_p = pyupbit.get_current_price(self.market) or self.state.get("avg_buy_price", 0.0)
+                tot_eq = self.state["krw_balance"] + (self.state["coin_balance"] * cur_p)
+                unreal_pnl = (self.state["coin_balance"] * cur_p) - self.state.get("total_cost", 0.0)
+                log_equity_snapshot(
+                    market=self.market,
+                    krw_balance=self.state["krw_balance"],
+                    coin_balance=self.state["coin_balance"],
+                    coin_price=cur_p,
+                    total_equity=tot_eq,
+                    benchmark_price=cur_p,
+                    unrealized_pnl=unreal_pnl
+                )
+        except Exception as e:
+            print(f"[WARN] DB 동기화 실패: {e}")
 
     def _save_state(self, state=None):
         if state is not None:
@@ -92,14 +158,26 @@ class PaperAccount:
         self.state["total_cost"] = new_total_cost
         self.state["avg_buy_price"] = new_total_cost / new_total_vol
         
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.state["trade_history"].append({
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "time": now_str,
             "type": "MARKET_BUY",
             "price": current_price,
             "volume": volume,
             "cost": cost
         })
         self._save_state()
+        log_paper_trade(
+            market=self.market,
+            action="MARKET_BUY",
+            side="bid",
+            price=current_price,
+            volume=volume,
+            cost_or_revenue=cost,
+            pnl=0.0,
+            cycle=self.state["completed_cycles"],
+            timestamp=now_str
+        )
         return {"price": current_price, "volume": volume, "cost": cost}
 
     def sell_market(self, volume: float, current_price: float, reason: str = "STOP_LOSS"):
@@ -118,15 +196,28 @@ class PaperAccount:
         self.state["losses"] += 1
         self.state["realized_pnl"] += pnl
         
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        action_type = f"MARKET_SELL_{reason}"
         self.state["trade_history"].append({
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "type": f"MARKET_SELL_{reason}",
+            "time": now_str,
+            "type": action_type,
             "price": current_price,
             "volume": volume,
             "revenue": revenue,
             "pnl": pnl
         })
         self._save_state()
+        log_paper_trade(
+            market=self.market,
+            action=action_type,
+            side="ask",
+            price=current_price,
+            volume=volume,
+            cost_or_revenue=revenue,
+            pnl=pnl,
+            cycle=self.state["completed_cycles"],
+            timestamp=now_str
+        )
         return {"price": current_price, "revenue": revenue, "pnl": pnl}
 
     def add_limit_order(self, side: str, price: float, volume: float, units: int = 1):
@@ -159,6 +250,7 @@ class PaperAccount:
         """현재가 기준으로 가상 지정가 주문들의 체결 여부를 판별합니다."""
         filled_sells = []
         filled_buys = []
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         for order in list(self.state["open_orders"]):
             if order["side"] == "ask" and current_price >= order["price"]:
@@ -175,13 +267,24 @@ class PaperAccount:
                 self.state["realized_pnl"] += pnl
                 
                 self.state["trade_history"].append({
-                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "time": now_str,
                     "type": "TAKE_PROFIT_SELL",
                     "price": order["price"],
                     "volume": order["volume"],
                     "revenue": revenue,
                     "pnl": pnl
                 })
+                log_paper_trade(
+                    market=self.market,
+                    action="TAKE_PROFIT_SELL",
+                    side="ask",
+                    price=order["price"],
+                    volume=order["volume"],
+                    cost_or_revenue=revenue,
+                    pnl=pnl,
+                    cycle=self.state["completed_cycles"],
+                    timestamp=now_str
+                )
                 filled_sells.append(order)
                 
             elif order["side"] == "bid" and current_price <= order["price"]:
@@ -195,13 +298,25 @@ class PaperAccount:
                     self.state["total_cost"] = new_total_cost
                     self.state["avg_buy_price"] = new_total_cost / new_total_vol
                     
+                    action_type = f"LIMIT_BUY_{order.get('units', 1)}X"
                     self.state["trade_history"].append({
-                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "type": f"LIMIT_BUY_{order.get('units', 1)}X",
+                        "time": now_str,
+                        "type": action_type,
                         "price": order["price"],
                         "volume": order["volume"],
                         "cost": cost
                     })
+                    log_paper_trade(
+                        market=self.market,
+                        action=action_type,
+                        side="bid",
+                        price=order["price"],
+                        volume=order["volume"],
+                        cost_or_revenue=cost,
+                        pnl=0.0,
+                        cycle=self.state["completed_cycles"],
+                        timestamp=now_str
+                    )
                     filled_buys.append(order)
 
         # 체결된 주문 제거
@@ -240,6 +355,8 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
     except Exception:
         pass
 
+    last_snapshot_time = 0
+
     while True:
         try:
             current_price = pyupbit.get_current_price(market)
@@ -250,6 +367,9 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
 
             # 1. 체결 여부 확인
             filled_sells, filled_buys = acc.process_fills(current_price)
+
+            if filled_sells or filled_buys:
+                last_snapshot_time = 0  # 체결 발생 시 즉시 스냅샷 기록 유도
 
             for s in filled_sells:
                 msg = f"[가상 익절 체결] {market} {s['price']:,.0f}원에 전량 매도 완료! (+{(profit_margin - 1)*100:.2f}%)"
@@ -288,6 +408,7 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                     
                     acc.cancel_all_orders()
                     acc.sell_market(acc.coin_balance, current_price, reason="STOP_LOSS")
+                    last_snapshot_time = 0
                     time.sleep(10)
                     continue
 
@@ -298,6 +419,22 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
 
             cur_equity = acc.krw_balance + (acc.coin_balance * current_price)
             profit_rate = ((cur_equity - acc.initial_capital) / acc.initial_capital) * 100
+
+            # 3-1. 자산 스냅샷 기록 (60초 주기 또는 체결 직후)
+            now_ts = time.time()
+            if now_ts - last_snapshot_time >= 60:
+                unrealized_pnl = (acc.coin_balance * current_price) - acc.state.get("total_cost", 0.0)
+                log_equity_snapshot(
+                    market=market,
+                    krw_balance=acc.krw_balance,
+                    coin_balance=acc.coin_balance,
+                    coin_price=current_price,
+                    total_equity=cur_equity,
+                    benchmark_price=current_price,
+                    unrealized_pnl=unrealized_pnl
+                )
+                last_snapshot_time = now_ts
+
             print(f"[{time.strftime('%H:%M:%S')}] [PAPER] {ticker}: {current_price:,.0f}원 | 자산: {cur_equity:,.0f}원 ({profit_rate:+.2f}%) | 매도 {num_sell}건, 매수 {num_buy}건 (보유: {acc.coin_balance:.4f})")
 
             # 4. 상태 머신

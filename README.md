@@ -344,6 +344,26 @@ text
 잔고 부족 확인
 text
 
+## 🖥️ 실시간 모니터링 대시보드 (Streamlit)
+
+8대 핵심 퀀트 성과 지표(수익률, MDD, 승률, 손익비, 연속손실, 거래빈도, B&H 대비 Alpha, 시장 국면별 성과)를 실시간 웹 브라우저에서 모니터링할 수 있습니다.
+
+```bash
+# 대시보드 실행
+poetry run streamlit run dashboard.py
+
+# 또는 가상환경 직접 실행
+.venv\Scripts\streamlit.exe run dashboard.py
+```
+
+- **접속 주소**: `http://localhost:8501`
+- **주요 기능**:
+  - 마켓(SOL, ETH 등) 선택 및 실시간 자동 새로고침(5~60초 조절)
+  - 자산 성장 곡선 vs Buy & Hold 벤치마크 및 Underwater Drawdown 차트
+  - 상승(Bull) / 횡보(Sideways) / 하락(Bear) 국면별 승률 및 실현손익 분석
+  - 마틴게일 물타기 차수별(1X, 2X, 3X, 6X) 도달 빈도 및 손익비 비교
+  - 실시간 보유 잔고, 미실현 손익, 걸려있는 미체결 주문 및 체결 로그
+
 ## 📝 변경 이력
 
 ### v1.0.0 (2025-10-11)
