@@ -37,3 +37,4 @@ margin_optimization_*.csv
 stoploss_comparison_report_*.xlsx
 backtest_*.xlsx
 backtest_*.png
+bgf_crawler/
