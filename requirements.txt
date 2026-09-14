@@ -6,5 +6,5 @@ python-dotenv>=1.0.0
 matplotlib>=3.7.0
 openpyxl>=3.1.0
 PyJWT>=2.8.0
-streamlit>=1.63.0
-plotly>=7.0.0
+streamlit>=1.40.0
+plotly>=5.18.0
