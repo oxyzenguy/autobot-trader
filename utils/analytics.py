@@ -22,11 +22,12 @@ class PerformanceAnalyzer:
     8. 시장 상승/하락/횡보 국면별 성과 (Market Regime Analysis)
     """
 
-    def __init__(self, market: str, initial_capital: float = 500000.0):
+    def __init__(self, market: str, initial_capital: float = 1000000.0):
         self.market = market
         self.ticker = market.split("-")[1] if "-" in market else market
         self.initial_capital = initial_capital
-        self.state_file = f"paper_state_{market.replace('-', '_')}.json"
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.state_file = os.path.join(base_dir, f"paper_state_{market.replace('-', '_')}.json")
         self._load_metadata()
 
     def _load_metadata(self):

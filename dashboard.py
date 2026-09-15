@@ -151,9 +151,12 @@ def get_available_markets():
     return active_markets
 
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 def load_live_state(market: str):
     """현재 가상 계좌의 실시간 JSON 상태 로드"""
-    state_file = f"paper_state_{market.replace('-', '_')}.json"
+    state_file = os.path.join(BASE_DIR, f"paper_state_{market.replace('-', '_')}.json")
     if os.path.exists(state_file):
         try:
             with open(state_file, "r", encoding="utf-8") as f:
@@ -342,8 +345,11 @@ def render_dashboard(market: str):
 
     alpha_vs_dca = total_ret_pct - growth_pct
     alpha_dca_color = "#00c087" if alpha_vs_dca >= 0 else "#ff3b69"
+    alpha_desc = "마틴게일 전략 우세" if alpha_vs_dca >= 0 else "코인모으기 전략 우세"
+    real_pnl_color = "#00c087" if real_pnl_pct >= 0 else "#ff3b69"
+    tot_ret_color = "#00c087" if total_ret_pct >= 0 else "#ff3b69"
 
-    st.markdown(f"""
+    st.html(f"""
     <div class="dca-compare-box">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #333d4e; padding-bottom:8px;">
             <div style="font-size:1.05rem; font-weight:700; color:#ffb300;">
@@ -354,13 +360,12 @@ def render_dashboard(market: str):
             </div>
         </div>
         <div style="display:grid; grid-template-columns: 1.2fr 0.8fr 1.2fr; gap:14px; align-items:center;">
-            <!-- 좌측: 실제 코인모으기 -->
             <div style="background:#161b24; padding:12px 14px; border-radius:8px; border:1px solid #2d3648;">
                 <div style="color:#ffa726; font-size:0.83rem; font-weight:600; margin-bottom:4px;">
                     🟢 [실제 계좌] 매일 1만원 코인모으기
                 </div>
                 <div style="font-size:1.15rem; font-weight:700; color:#f0f3f6;">
-                    {real_eval:,.0f}원 <span style="font-size:0.85rem; color:{'#00c087' if real_pnl_pct>=0 else '#ff3b69'};">({real_pnl_pct:+.2f}%)</span>
+                    {real_eval:,.0f}원 <span style="font-size:0.85rem; color:{real_pnl_color};">({real_pnl_pct:+.2f}%)</span>
                 </div>
                 <div style="font-size:0.76rem; color:#848e9c; margin-top:4px;">
                     보유: {real_bal:.4f} {ticker} | 평단: {real_avg:,.0f}원 | 원금: {real_cost:,.0f}원
@@ -369,25 +374,21 @@ def render_dashboard(market: str):
                     기점 이후 가치변화: {growth_pct:+.2f}%
                 </div>
             </div>
-
-            <!-- 중앙: 성과 격차 (Alpha) -->
             <div style="text-align:center; padding:8px;">
                 <div style="font-size:0.78rem; color:#848e9c; margin-bottom:2px;">마틴게일 초과성과 (Alpha)</div>
                 <div style="font-size:1.45rem; font-weight:800; color:{alpha_dca_color};">
                     {alpha_vs_dca:+.2f}%p
                 </div>
                 <div style="font-size:0.74rem; color:#9aa0a6; margin-top:2px;">
-                    {'마틴게일 전략 우세' if alpha_vs_dca >= 0 else '코인모으기 전략 우세'}
+                    {alpha_desc}
                 </div>
             </div>
-
-            <!-- 우측: 100만원 마틴게일 가상매매 -->
             <div style="background:#161b24; padding:12px 14px; border-radius:8px; border:1px solid #2d3648;">
                 <div style="color:#00c087; font-size:0.83rem; font-weight:600; margin-bottom:4px;">
                     🔵 [가상 계좌] 100만원 마틴게일 자동매매
                 </div>
                 <div style="font-size:1.15rem; font-weight:700; color:#f0f3f6;">
-                    {total_cur_equity:,.0f}원 <span style="font-size:0.85rem; color:{'#00c087' if total_ret_pct>=0 else '#ff3b69'};">({total_ret_pct:+.2f}%)</span>
+                    {total_cur_equity:,.0f}원 <span style="font-size:0.85rem; color:{tot_ret_color};">({total_ret_pct:+.2f}%)</span>
                 </div>
                 <div style="font-size:0.76rem; color:#848e9c; margin-top:4px;">
                     현금: {krw_bal:,.0f}원 | 코인: {coin_bal:.4f} {ticker} ({eval_coin:,.0f}원)
@@ -398,7 +399,7 @@ def render_dashboard(market: str):
             </div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
     # -------------------------------------------------------------
     # 섹션 1: 8대 핵심 퀀트 KPI 카드
