@@ -7,6 +7,7 @@ __pycache__/
 # Poetry / Python virtual environments
 *.lock
 .venv/
+venv/
 .env
 .poetry/
 *.egg-info/

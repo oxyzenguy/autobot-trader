@@ -424,6 +424,13 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
             now_ts = time.time()
             if now_ts - last_snapshot_time >= 60:
                 unrealized_pnl = (acc.coin_balance * current_price) - acc.state.get("total_cost", 0.0)
+                try:
+                    from utils.real_balance import get_real_coin_status
+                    r_status = get_real_coin_status(market)
+                    r_eval = r_status.get("current_eval", None)
+                except Exception:
+                    r_eval = None
+
                 log_equity_snapshot(
                     market=market,
                     krw_balance=acc.krw_balance,
@@ -431,7 +438,8 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                     coin_price=current_price,
                     total_equity=cur_equity,
                     benchmark_price=current_price,
-                    unrealized_pnl=unrealized_pnl
+                    unrealized_pnl=unrealized_pnl,
+                    real_dca_eval=r_eval
                 )
                 last_snapshot_time = now_ts
 

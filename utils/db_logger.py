@@ -36,9 +36,14 @@ def init_db():
             coin_price REAL,
             total_equity REAL,
             benchmark_price REAL,
-            unrealized_pnl REAL
+            unrealized_pnl REAL,
+            real_dca_eval REAL
         )
     ''')
+    try:
+        c.execute('ALTER TABLE equity_snapshots ADD COLUMN real_dca_eval REAL')
+    except Exception:
+        pass
     # 3. 가상매매 상세 거래 내역 (승률, 손익비, 마틴게일 단계 분석용)
     c.execute('''
         CREATE TABLE IF NOT EXISTS paper_trades (
@@ -57,7 +62,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def log_equity_snapshot(market: str, krw_balance: float, coin_balance: float, coin_price: float, total_equity: float, benchmark_price: float = None, unrealized_pnl: float = 0.0):
+def log_equity_snapshot(market: str, krw_balance: float, coin_balance: float, coin_price: float, total_equity: float, benchmark_price: float = None, unrealized_pnl: float = 0.0, real_dca_eval: float = None):
     """시계열 자산 스냅샷을 DB에 기록합니다."""
     init_db()
     if benchmark_price is None:
@@ -65,11 +70,11 @@ def log_equity_snapshot(market: str, krw_balance: float, coin_balance: float, co
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO equity_snapshots (timestamp, market, krw_balance, coin_balance, coin_price, total_equity, benchmark_price, unrealized_pnl)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO equity_snapshots (timestamp, market, krw_balance, coin_balance, coin_price, total_equity, benchmark_price, unrealized_pnl, real_dca_eval)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        market, krw_balance, coin_balance, coin_price, total_equity, benchmark_price, unrealized_pnl
+        market, krw_balance, coin_balance, coin_price, total_equity, benchmark_price, unrealized_pnl, real_dca_eval
     ))
     conn.commit()
     conn.close()

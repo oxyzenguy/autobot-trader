@@ -47,7 +47,7 @@ class PerformanceAnalyzer:
         try:
             conn = sqlite3.connect(DB_PATH)
             query = """
-                SELECT timestamp, krw_balance, coin_balance, coin_price, total_equity, benchmark_price, unrealized_pnl
+                SELECT timestamp, krw_balance, coin_balance, coin_price, total_equity, benchmark_price, unrealized_pnl, real_dca_eval
                 FROM equity_snapshots
                 WHERE market = ?
                 ORDER BY timestamp ASC
@@ -66,7 +66,8 @@ class PerformanceAnalyzer:
                     "coin_price": cur_p,
                     "total_equity": self.initial_capital,
                     "benchmark_price": cur_p,
-                    "unrealized_pnl": 0.0
+                    "unrealized_pnl": 0.0,
+                    "real_dca_eval": None
                 }])
 
             df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -360,6 +361,14 @@ class PerformanceAnalyzer:
         df["strategy_return_pct"] = (df["total_equity"] - self.initial_capital) / self.initial_capital * 100.0
         df["alpha_pct"] = df["strategy_return_pct"] - df["bnh_return_pct"]
 
+        # 실제 코인모으기(실계좌) 평가가치 성장 곡선 (가상 100만원 환산치)
+        if "real_dca_eval" in df.columns and df["real_dca_eval"].notna().any():
+            valid_dca = df["real_dca_eval"].dropna()
+            if not valid_dca.empty and valid_dca.iloc[0] > 0:
+                base_dca = valid_dca.iloc[0]
+                df["real_dca_equity"] = self.initial_capital * (df["real_dca_eval"] / base_dca)
+                df["real_dca_return_pct"] = (df["real_dca_eval"] - base_dca) / base_dca * 100.0
+
         bnh_return = float(df["bnh_return_pct"].iloc[-1])
         strat_return = float(df["strategy_return_pct"].iloc[-1])
         alpha = strat_return - bnh_return
@@ -459,6 +468,12 @@ class PerformanceAnalyzer:
         bnh = self.calculate_buy_and_hold(df_equity)
         regimes = self.analyze_market_regime(df_trades)
 
+        try:
+            from utils.real_balance import get_real_coin_status
+            real_dca = get_real_coin_status(self.market)
+        except Exception:
+            real_dca = {}
+
         return {
             "market": self.market,
             "ticker": self.ticker,
@@ -469,6 +484,7 @@ class PerformanceAnalyzer:
             "trade_freq": trade_freq,
             "buy_and_hold": bnh,
             "regimes": regimes,
+            "real_dca": real_dca,
             "raw_equity": df_equity,
             "raw_trades": df_trades
         }
