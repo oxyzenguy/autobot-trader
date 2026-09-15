@@ -407,255 +407,259 @@ def render_dashboard(market: str):
     st.divider()
 
     # -------------------------------------------------------------
-    # 섹션 3: 4대 상세 분석 탭
+    # 섹션 3: 모바일 최적화 세로 원페이지 스크롤 레이아웃
     # -------------------------------------------------------------
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📈 자산 성장 곡선 & MDD",
-        "🌐 시장 국면별 성과 (Bull/Bear)",
-        "⚖️ 물타기 배수 & 리스크 분석",
-        "📋 실시간 미체결 주문 & 전체 거래 로그"
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+    # =============================================================
+    # 1. 📈 자산 성장 곡선 & MDD
+    # =============================================================
+    st.divider()
+    st.markdown("### 📈 1. 자산 성장 곡선 & MDD")
+    df_comp = bnh["df_comparison"]
+    df_mdd = returns_mdd["df_mdd"]
+
+    if not df_comp.empty and "timestamp" in df_comp.columns:
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.08,
+            subplot_titles=("자산 가치 추이 (KRW)", "고점 대비 낙폭 Drawdown Underwater (%)"),
+            row_heights=[0.7, 0.3]
+        )
+
+        # 1) 전략 자산 곡선
+        fig.add_trace(
+            go.Scatter(
+                x=df_comp["timestamp"],
+                y=df_comp["total_equity"],
+                name="AutoBot 전략 자산",
+                line=dict(color="#00c087", width=2.5),
+                hovertemplate="전략: %{y:,.0f}원<br>일시: %{x}<extra></extra>"
+            ),
+            row=1, col=1
+        )
+
+        # 2) Buy & Hold 곡선
+        fig.add_trace(
+            go.Scatter(
+                x=df_comp["timestamp"],
+                y=df_comp["bnh_equity"],
+                name=f"Buy & Hold ({ticker})",
+                line=dict(color="#2962ff", width=1.8, dash="dot"),
+                hovertemplate="B&H: %{y:,.0f}원<br>일시: %{x}<extra></extra>"
+            ),
+            row=1, col=1
+        )
+
+        # 3) 초기 자본 기준선
+        fig.add_hline(
+            y=initial_cap,
+            line=dict(color="#848e9c", width=1, dash="dash"),
+            row=1, col=1
+        )
+
+        # 4) Drawdown Underwater Chart
+        if not df_mdd.empty and "drawdown_pct" in df_mdd.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=df_mdd["timestamp"],
+                    y=df_mdd["drawdown_pct"],
+                    name="Drawdown (%)",
+                    line=dict(color="#ff3b69", width=1.5),
+                    fill="tozeroy",
+                    fillcolor="rgba(255, 59, 105, 0.2)",
+                    hovertemplate="낙폭: %{y:.2f}%<br>일시: %{x}<extra></extra>"
+                ),
+                row=2, col=1
+            )
+
+        fig.update_layout(
+            height=480,
+            margin=dict(l=15, r=15, t=35, b=20),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            template="plotly_dark",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("자산 시계열 스냅샷이 누적되는 중입니다. 잠시 후 차트가 표시됩니다.")
+
+    # =============================================================
+    # 2. 🌐 시장 국면별 성과 (Bull / Sideways / Bear)
+    # =============================================================
+    st.divider()
+    st.markdown("### 🌐 2. 시장 국면별 성과 (Bull/Bear)")
+    st.caption("이동평균선(SMA 20/60) 기울기를 바탕으로 시장 국면을 판별하고 각 구간에서의 매매 성과를 평가합니다.")
+
+    r_col1, r_col2 = st.columns([1, 1])
+    reg_data = regimes["summary"]
+    reg_df = pd.DataFrame([
+        {
+            "국면 (Regime)": "상승장 (Bull)",
+            "거래 횟수": reg_data["Bull"]["trades"],
+            "승률 (%)": f"{reg_data['Bull']['win_rate']:.1f}%",
+            "총 실현손익": f"{reg_data['Bull']['total_pnl']:+,.0f}원",
+            "평균 손익": f"{reg_data['Bull']['avg_pnl']:+,.0f}원"
+        },
+        {
+            "국면 (Regime)": "횡보장 (Sideways)",
+            "거래 횟수": reg_data["Sideways"]["trades"],
+            "승률 (%)": f"{reg_data['Sideways']['win_rate']:.1f}%",
+            "총 실현손익": f"{reg_data['Sideways']['total_pnl']:+,.0f}원",
+            "평균 손익": f"{reg_data['Sideways']['avg_pnl']:+,.0f}원"
+        },
+        {
+            "국면 (Regime)": "하락장 (Bear)",
+            "거래 횟수": reg_data["Bear"]["trades"],
+            "승률 (%)": f"{reg_data['Bear']['win_rate']:.1f}%",
+            "총 실현손익": f"{reg_data['Bear']['total_pnl']:+,.0f}원",
+            "평균 손익": f"{reg_data['Bear']['avg_pnl']:+,.0f}원"
+        }
     ])
 
-    # TAB 1: 자산 곡선 vs B&H 및 Underwater Drawdown
-    with tab1:
-        st.subheader("📊 자산 성장 곡선 vs Buy & Hold 벤치마크 & MDD")
-        
-        df_comp = bnh["df_comparison"]
-        df_mdd = returns_mdd["df_mdd"]
+    with r_col1:
+        st.markdown("##### 📊 국면별 성과 요약")
+        st.dataframe(reg_df, hide_index=True, use_container_width=True)
 
-        if not df_comp.empty and "timestamp" in df_comp.columns:
-            fig = make_subplots(
-                rows=2, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.08,
-                subplot_titles=("자산 가치 추이 (KRW)", "고점 대비 낙폭 Drawdown Underwater (%)"),
-                row_heights=[0.7, 0.3]
+    with r_col2:
+        st.markdown("##### 🎯 국면별 승률 비교")
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            x=["상승장 (Bull)", "횡보장 (Sideways)", "하락장 (Bear)"],
+            y=[reg_data["Bull"]["win_rate"], reg_data["Sideways"]["win_rate"], reg_data["Bear"]["win_rate"]],
+            name="승률 (%)",
+            marker_color=["#00c087", "#ffa726", "#ff3b69"]
+        ))
+        fig_bar.update_layout(
+            height=250,
+            margin=dict(l=15, r=15, t=25, b=20),
+            template="plotly_dark",
+            yaxis=dict(title="승률 (%)", range=[0, 100])
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    df_candles = regimes.get("df_candles")
+    if df_candles is not None and not df_candles.empty:
+        st.markdown("##### 🕯️ 최근 시장 시세 및 이동평균 국면")
+        fig_candle = go.Figure()
+        fig_candle.add_trace(go.Candlestick(
+            x=df_candles.index,
+            open=df_candles['open'],
+            high=df_candles['high'],
+            low=df_candles['low'],
+            close=df_candles['close'],
+            name="캔들"
+        ))
+        if "sma20" in df_candles.columns:
+            fig_candle.add_trace(go.Scatter(x=df_candles.index, y=df_candles['sma20'], line=dict(color="#f48fb1", width=1.5), name="SMA 20"))
+        if "sma60" in df_candles.columns:
+            fig_candle.add_trace(go.Scatter(x=df_candles.index, y=df_candles['sma60'], line=dict(color="#81d4fa", width=1.5), name="SMA 60"))
+        fig_candle.update_layout(
+            height=320,
+            margin=dict(l=15, r=15, t=15, b=20),
+            template="plotly_dark",
+            xaxis_rangeslider_visible=False
+        )
+        st.plotly_chart(fig_candle, use_container_width=True)
+
+    # =============================================================
+    # 3. ⚖️ 물타기 배수 & 리스크 분석
+    # =============================================================
+    st.divider()
+    st.markdown("### ⚖️ 3. 물타기 배수 & 리스크 분석")
+
+    rk1, rk2 = st.columns(2)
+    with rk1:
+        st.markdown("##### 🌊 마틴게일 물타기 차수별 도달 횟수")
+        st.caption("진입 차수가 깊어질수록 리스크가 증가합니다. 각 차수별 도달 빈도를 확인하세요.")
+        steps = cons_losses["martingale_steps"]
+        fig_steps = go.Figure(data=[
+            go.Bar(
+                x=list(steps.keys()),
+                y=list(steps.values()),
+                marker_color=["#2962ff", "#00bcd4", "#ffb300", "#ff3b69", "#78909c"]
             )
-
-            # 1) 전략 자산 곡선
-            fig.add_trace(
-                go.Scatter(
-                    x=df_comp["timestamp"],
-                    y=df_comp["total_equity"],
-                    name="AutoBot 전략 자산",
-                    line=dict(color="#00c087", width=2.5),
-                    hovertemplate="전략: %{y:,.0f}원<br>일시: %{x}<extra></extra>"
-                ),
-                row=1, col=1
-            )
-
-            # 2) Buy & Hold 곡선
-            fig.add_trace(
-                go.Scatter(
-                    x=df_comp["timestamp"],
-                    y=df_comp["bnh_equity"],
-                    name=f"Buy & Hold ({ticker})",
-                    line=dict(color="#2962ff", width=1.8, dash="dot"),
-                    hovertemplate="B&H: %{y:,.0f}원<br>일시: %{x}<extra></extra>"
-                ),
-                row=1, col=1
-            )
-
-            # 3) 초기 자본 기준선
-            fig.add_hline(
-                y=initial_cap,
-                line=dict(color="#848e9c", width=1, dash="dash"),
-                row=1, col=1
-            )
-
-            # 4) Drawdown Underwater Chart
-            if not df_mdd.empty and "drawdown_pct" in df_mdd.columns:
-                fig.add_trace(
-                    go.Scatter(
-                        x=df_mdd["timestamp"],
-                        y=df_mdd["drawdown_pct"],
-                        name="Drawdown (%)",
-                        line=dict(color="#ff3b69", width=1.5),
-                        fill="tozeroy",
-                        fillcolor="rgba(255, 59, 105, 0.2)",
-                        hovertemplate="낙폭: %{y:.2f}%<br>일시: %{x}<extra></extra>"
-                    ),
-                    row=2, col=1
-                )
-
-            fig.update_layout(
-                height=520,
-                margin=dict(l=20, r=20, t=40, b=20),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                template="plotly_dark",
-                hovermode="x unified"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("자산 시계열 스냅샷이 누적되는 중입니다. 잠시 후 차트가 표시됩니다.")
-
-    # TAB 2: 시장 국면별 성과
-    with tab2:
-        st.subheader("🌐 시장 상승 / 하락 / 횡보 국면별 성과 비교")
-        st.caption("이동평균선(SMA 20/60) 기울기를 바탕으로 시장 국면을 판별하고 각 구간에서의 매매 성과를 평가합니다.")
-
-        r_col1, r_col2 = st.columns([1, 1])
-        reg_data = regimes["summary"]
-        reg_df = pd.DataFrame([
-            {
-                "국면 (Regime)": "상승장 (Bull)",
-                "거래 횟수": reg_data["Bull"]["trades"],
-                "승률 (%)": f"{reg_data['Bull']['win_rate']:.1f}%",
-                "총 실현손익": f"{reg_data['Bull']['total_pnl']:+,.0f}원",
-                "평균 손익": f"{reg_data['Bull']['avg_pnl']:+,.0f}원"
-            },
-            {
-                "국면 (Regime)": "횡보장 (Sideways)",
-                "거래 횟수": reg_data["Sideways"]["trades"],
-                "승률 (%)": f"{reg_data['Sideways']['win_rate']:.1f}%",
-                "총 실현손익": f"{reg_data['Sideways']['total_pnl']:+,.0f}원",
-                "평균 손익": f"{reg_data['Sideways']['avg_pnl']:+,.0f}원"
-            },
-            {
-                "국면 (Regime)": "하락장 (Bear)",
-                "거래 횟수": reg_data["Bear"]["trades"],
-                "승률 (%)": f"{reg_data['Bear']['win_rate']:.1f}%",
-                "총 실현손익": f"{reg_data['Bear']['total_pnl']:+,.0f}원",
-                "평균 손익": f"{reg_data['Bear']['avg_pnl']:+,.0f}원"
-            }
         ])
+        fig_steps.update_layout(
+            height=260,
+            margin=dict(l=15, r=15, t=25, b=20),
+            template="plotly_dark",
+            xaxis_title="물타기 배수",
+            yaxis_title="체결 횟수"
+        )
+        st.plotly_chart(fig_steps, use_container_width=True)
 
-        with r_col1:
-            st.markdown("##### 📊 국면별 성과 요약 테이블")
-            st.dataframe(reg_df, hide_index=True, use_container_width=True)
-
-        with r_col2:
-            st.markdown("##### 🎯 국면별 승률 비교")
-            fig_bar = go.Figure()
-            fig_bar.add_trace(go.Bar(
-                x=["상승장 (Bull)", "횡보장 (Sideways)", "하락장 (Bear)"],
-                y=[reg_data["Bull"]["win_rate"], reg_data["Sideways"]["win_rate"], reg_data["Bear"]["win_rate"]],
-                name="승률 (%)",
-                marker_color=["#00c087", "#ffa726", "#ff3b69"]
-            ))
-            fig_bar.update_layout(
-                height=260,
-                margin=dict(l=20, r=20, t=30, b=20),
-                template="plotly_dark",
-                yaxis=dict(title="승률 (%)", range=[0, 100])
+    with rk2:
+        st.markdown("##### 💰 평균 수익 vs 평균 손실 비교")
+        st.caption("이긴 거래와 진 거래의 1회당 평균 금액 비교")
+        fig_pl = go.Figure(data=[
+            go.Bar(
+                x=["평균 익절", "평균 손절"],
+                y=[trade_perf["avg_win"], trade_perf["avg_loss"]],
+                marker_color=["#00c087", "#ff3b69"]
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+        ])
+        fig_pl.update_layout(
+            height=260,
+            margin=dict(l=15, r=15, t=25, b=20),
+            template="plotly_dark",
+            yaxis_title="금액 (KRW)"
+        )
+        st.plotly_chart(fig_pl, use_container_width=True)
 
-        df_candles = regimes.get("df_candles")
-        if df_candles is not None and not df_candles.empty:
-            st.markdown("##### 🕯️ 최근 시장 시세 및 이동평균 국면")
-            fig_candle = go.Figure()
-            fig_candle.add_trace(go.Candlestick(
-                x=df_candles.index,
-                open=df_candles['open'],
-                high=df_candles['high'],
-                low=df_candles['low'],
-                close=df_candles['close'],
-                name="캔들"
-            ))
-            if "sma20" in df_candles.columns:
-                fig_candle.add_trace(go.Scatter(x=df_candles.index, y=df_candles['sma20'], line=dict(color="#f48fb1", width=1.5), name="SMA 20"))
-            if "sma60" in df_candles.columns:
-                fig_candle.add_trace(go.Scatter(x=df_candles.index, y=df_candles['sma60'], line=dict(color="#81d4fa", width=1.5), name="SMA 60"))
-            fig_candle.update_layout(
-                height=350,
-                margin=dict(l=20, r=20, t=20, b=20),
-                template="plotly_dark",
-                xaxis_rangeslider_visible=False
-            )
-            st.plotly_chart(fig_candle, use_container_width=True)
+    # =============================================================
+    # 4. 📋 실시간 미체결 주문 & 전체 거래 로그
+    # =============================================================
+    st.divider()
+    st.markdown("### 📋 4. 실시간 미체결 주문 & 전체 거래 로그")
 
-    # TAB 3: 리스크 & 거래 통계
-    with tab3:
-        st.subheader("⚖️ 리스크 지표 및 물타기 단계 도달 분석")
-        rk1, rk2 = st.columns(2)
-        with rk1:
-            st.markdown("##### 🌊 마틴게일 물타기 차수별(1X, 2X, 3X, 6X) 도달 횟수")
-            st.caption("진입 차수가 깊어질수록 리스크가 증가합니다. 각 차수별 도달 빈도를 확인하세요.")
-            steps = cons_losses["martingale_steps"]
-            fig_steps = go.Figure(data=[
-                go.Bar(
-                    x=list(steps.keys()),
-                    y=list(steps.values()),
-                    marker_color=["#2962ff", "#00bcd4", "#ffb300", "#ff3b69", "#78909c"]
-                )
+    p_col1, p_col2 = st.columns([1, 1])
+
+    with p_col1:
+        st.markdown("##### 💼 현재 보유 포지션")
+        if live_state:
+            pos_df = pd.DataFrame([
+                {"항목": "보유 코인", "값": f"{live_state.get('coin_balance', 0):.6f} {ticker}"},
+                {"항목": "매수 평균단가", "값": f"{live_state.get('avg_buy_price', 0):,.0f} 원"},
+                {"항목": "총 매수 원가", "값": f"{live_state.get('total_cost', 0):,.0f} 원"},
+                {"항목": "현재 평가금액", "값": f"{live_state.get('coin_balance', 0) * current_price:,.0f} 원"},
+                {"항목": "미실현 손익", "값": f"{(live_state.get('coin_balance', 0) * current_price) - live_state.get('total_cost', 0):+,.0f} 원"}
             ])
-            fig_steps.update_layout(
-                height=280,
-                margin=dict(l=20, r=20, t=30, b=20),
-                template="plotly_dark",
-                xaxis_title="물타기 배수",
-                yaxis_title="체결 횟수"
-            )
-            st.plotly_chart(fig_steps, use_container_width=True)
-
-        with rk2:
-            st.markdown("##### 💰 평균 수익 vs 평균 손실 비교")
-            st.caption("이긴 거래와 진 거래의 1회당 평균 금액 비교")
-            fig_pl = go.Figure(data=[
-                go.Bar(
-                    x=["평균 익절", "평균 손절"],
-                    y=[trade_perf["avg_win"], trade_perf["avg_loss"]],
-                    marker_color=["#00c087", "#ff3b69"]
-                )
-            ])
-            fig_pl.update_layout(
-                height=280,
-                margin=dict(l=20, r=20, t=30, b=20),
-                template="plotly_dark",
-                yaxis_title="금액 (KRW)"
-            )
-            st.plotly_chart(fig_pl, use_container_width=True)
-
-    # TAB 4: 실시간 미체결 주문 및 전체 체결 내역
-    with tab4:
-        st.subheader("📋 실시간 포지션 상태 및 전체 체결 로그")
-        p_col1, p_col2 = st.columns([1, 1])
-
-        with p_col1:
-            st.markdown("##### 💼 현재 보유 포지션")
-            if live_state:
-                pos_df = pd.DataFrame([
-                    {"항목": "보유 코인", "값": f"{live_state.get('coin_balance', 0):.6f} {ticker}"},
-                    {"항목": "매수 평균단가", "값": f"{live_state.get('avg_buy_price', 0):,.0f} 원"},
-                    {"항목": "총 매수 원가", "값": f"{live_state.get('total_cost', 0):,.0f} 원"},
-                    {"항목": "현재 평가금액", "값": f"{live_state.get('coin_balance', 0) * current_price:,.0f} 원"},
-                    {"항목": "미실현 손익", "값": f"{(live_state.get('coin_balance', 0) * current_price) - live_state.get('total_cost', 0):+,.0f} 원"}
-                ])
-                st.dataframe(pos_df, hide_index=True, use_container_width=True)
-            else:
-                st.info("실시간 상태 정보를 불러올 수 없습니다.")
-
-        with p_col2:
-            st.markdown("##### ⏳ 현재 등록된 미체결 주문")
-            if live_state and live_state.get("open_orders"):
-                orders = []
-                for o in live_state["open_orders"]:
-                    orders.append({
-                        "구분": "매도(익절)" if o["side"] == "ask" else f"매수({o.get('units', 1)}X 물타기)",
-                        "주문가격": f"{o['price']:,.0f}원",
-                        "수량": f"{o['volume']:.6f}",
-                        "주문일시": o.get("created_at", "-")
-                    })
-                st.dataframe(pd.DataFrame(orders), hide_index=True, use_container_width=True)
-            else:
-                st.write("현재 등록된 미체결 주문이 없습니다.")
-
-        st.markdown("##### 📜 전체 체결 거래 이력")
-        if not raw_trades.empty:
-            full_trades = raw_trades.sort_values("timestamp", ascending=False).copy()
-            full_trades["체결일시"] = full_trades["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-            full_trades["체결단가"] = full_trades["price"].apply(lambda x: f"{x:,.0f}원")
-            full_trades["체결금액"] = full_trades["cost_or_revenue"].apply(lambda x: f"{x:,.0f}원")
-            full_trades["실현손익"] = full_trades["pnl"].apply(lambda x: f"+{x:,.1f}원" if x > 0 else (f"{x:,.1f}원" if x < 0 else "-"))
-            full_trades["체결수량"] = full_trades["volume"].apply(lambda x: f"{x:.6f}")
-            full_trades["구분"] = full_trades["action"].apply(lambda x: "익절 매도" if "SELL" in str(x) else "매수")
-            full_trades["방향"] = full_trades["side"].apply(lambda x: "매도 (ASK)" if x == "ask" else "매수 (BID)")
-            
-            show_cols = ["체결일시", "구분", "방향", "체결단가", "체결수량", "체결금액", "실현손익", "cycle"]
-            st.dataframe(full_trades[show_cols], hide_index=True, use_container_width=True)
+            st.dataframe(pos_df, hide_index=True, use_container_width=True)
         else:
-            st.info("아직 기록된 체결 거래 내역이 없습니다.")
+            st.info("실시간 상태 정보를 불러올 수 없습니다.")
+
+    with p_col2:
+        st.markdown("##### ⏳ 현재 등록된 미체결 주문")
+        if live_state and live_state.get("open_orders"):
+            orders = []
+            for o in live_state["open_orders"]:
+                orders.append({
+                    "구분": "매도(익절)" if o["side"] == "ask" else f"매수({o.get('units', 1)}X 물타기)",
+                    "주문가격": f"{o['price']:,.0f}원",
+                    "수량": f"{o['volume']:.6f}",
+                    "주문일시": o.get("created_at", "-")
+                })
+            st.dataframe(pd.DataFrame(orders), hide_index=True, use_container_width=True)
+        else:
+            st.write("현재 등록된 미체결 주문이 없습니다.")
+
+    st.markdown("##### 📜 전체 체결 거래 이력")
+    if not raw_trades.empty:
+        full_trades = raw_trades.sort_values("timestamp", ascending=False).copy()
+        full_trades["체결일시"] = full_trades["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        full_trades["체결단가"] = full_trades["price"].apply(lambda x: f"{x:,.0f}원")
+        full_trades["체결금액"] = full_trades["cost_or_revenue"].apply(lambda x: f"{x:,.0f}원")
+        full_trades["실현손익"] = full_trades["pnl"].apply(lambda x: f"+{x:,.1f}원" if x > 0 else (f"{x:,.1f}원" if x < 0 else "-"))
+        full_trades["체결수량"] = full_trades["volume"].apply(lambda x: f"{x:.6f}")
+        full_trades["구분"] = full_trades["action"].apply(lambda x: "익절 매도" if "SELL" in str(x) else "매수")
+        full_trades["방향"] = full_trades["side"].apply(lambda x: "매도 (ASK)" if x == "ask" else "매수 (BID)")
+        
+        show_cols = ["체결일시", "구분", "방향", "체결단가", "체결수량", "체결금액", "실현손익", "cycle"]
+        st.dataframe(full_trades[show_cols], hide_index=True, use_container_width=True)
+    else:
+        st.info("아직 기록된 체결 거래 내역이 없습니다.")
 
 
 # 메인 대시보드 렌더링 호출
