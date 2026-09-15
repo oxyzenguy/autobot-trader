@@ -356,6 +356,7 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
         pass
 
     last_snapshot_time = 0
+    last_heartbeat_time = 0
 
     while True:
         try:
@@ -372,8 +373,12 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                 last_snapshot_time = 0  # 체결 발생 시 즉시 스냅샷 기록 유도
 
             for s in filled_sells:
-                msg = f"[가상 익절 체결] {market} {s['price']:,.0f}원에 전량 매도 완료! (+{(profit_margin - 1)*100:.2f}%)"
-                print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
+                msg = f"🎯 [가상 익절 체결] {market} {s['price']:,.0f}원에 전량 매도 완료! (+{(profit_margin - 1)*100:.2f}%)"
+                print(f"\n==================================================")
+                print(f"[{time.strftime('%H:%M:%S')}] {msg}")
+                print(f"   ↳ 실현 손익: {acc.state.get('realized_pnl', 0):+,.0f}원 | 완료 사이클: {acc.state.get('completed_cycles', 0)}회")
+                print(f"   ↳ 총 자산: {cur_equity:,.0f}원 ({profit_rate:+.2f}%) | 원화 잔고: {acc.krw_balance:,.0f}원")
+                print(f"==================================================\n")
                 try:
                     from utils.bot import send_message
                     send_message(msg)
@@ -381,8 +386,12 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                     pass
 
             for b in filled_buys:
-                msg = f"[가상 물타기 체결] {market} {b['price']:,.0f}원에 {b.get('units', 1)}배수 체결!"
-                print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
+                msg = f"💧 [가상 물타기 체결] {market} {b['price']:,.0f}원에 {b.get('units', 1)}배수 체결!"
+                print(f"\n==================================================")
+                print(f"[{time.strftime('%H:%M:%S')}] {msg}")
+                print(f"   ↳ 새 평단가: {acc.avg_buy_price:,.0f}원 | 총 보유수량: {acc.coin_balance:.6f} {ticker}")
+                print(f"   ↳ 잔여 원화: {acc.krw_balance:,.0f}원 | 총 자산: {cur_equity:,.0f}원")
+                print(f"==================================================\n")
                 try:
                     from utils.bot import send_message
                     send_message(msg)
@@ -441,9 +450,11 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                     unrealized_pnl=unrealized_pnl,
                     real_dca_eval=r_eval
                 )
-                last_snapshot_time = now_ts
-
-            print(f"[{time.strftime('%H:%M:%S')}] [PAPER] {ticker}: {current_price:,.0f}원 | 자산: {cur_equity:,.0f}원 ({profit_rate:+.2f}%) | 매도 {num_sell}건, 매수 {num_buy}건 (보유: {acc.coin_balance:.4f})")
+            # 3-2. 터미널 로깅: 체결 및 상태 변경 시에만 상세 출력 (30분마다 1회 생존 하트비트 간결 출력)
+            now_time_sec = time.time()
+            if now_time_sec - last_heartbeat_time >= 1800:
+                print(f"[{time.strftime('%H:%M:%S')}] [HEARTBEAT] {ticker}: {current_price:,.0f}원 | 감시 대기 중 (자산: {cur_equity:,.0f}원 | 매도 {num_sell}건, 매수 {num_buy}건)")
+                last_heartbeat_time = now_time_sec
 
             # 4. 상태 머신
             # Case 1 & 2: 정상 대기 (매도 1건, 매수 3건)

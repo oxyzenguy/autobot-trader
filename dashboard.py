@@ -191,17 +191,19 @@ with st.container():
         )
 
     with c_refresh:
-        r_cols = st.columns([1.1, 1.5])
-        with r_cols[0]:
-            st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
-            auto_refresh = st.toggle("자동 갱신", value=True)
-        with r_cols[1]:
-            refresh_interval = st.selectbox(
-                "갱신 주기",
-                [5, 10, 15, 30, 60],
-                index=1,
-                format_func=lambda x: f"⏱️ {x}초 간격"
-            )
+        refresh_mode = st.selectbox(
+            "🔄 갱신 주기",
+            ["trade_event", 10, 30, 60, "manual"],
+            index=0,
+            format_func=lambda x: {
+                "trade_event": "⚡ 거래 체결 시 (추천)",
+                10: "⏱️ 10초 주기 (시세)",
+                30: "⏱️ 30초 주기",
+                60: "⏱️ 60초 주기",
+                "manual": "🛑 수동 갱신"
+            }.get(x, str(x)),
+            help="⚡ '거래 체결 시': 새로운 매수/매도/물타기 체결 발생 시 자동으로 대시보드를 즉시 갱신합니다."
+        )
 
     with c_btn:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
@@ -210,9 +212,47 @@ with st.container():
 
 
 # =============================================================================
-# 2. 메인 대시보드 렌더링 프래그먼트
+# 2. 거래 체결 감지 리스너 & 대시보드 렌더링
 # =============================================================================
-@st.fragment(run_every=refresh_interval if auto_refresh else None)
+def get_trade_signature(market: str) -> str:
+    """체결 거래 수, 마지막 거래 ID, 최근 체결 시각, 실시간 상태 시그니처 생성"""
+    sig_parts = []
+    try:
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT count(*), max(id), max(timestamp) FROM paper_trades WHERE market = ?", (market,))
+            row = cur.fetchone()
+            if row:
+                sig_parts.append(f"db:{row[0]}-{row[1]}-{row[2]}")
+    except Exception:
+        pass
+
+    st_data = load_live_state(market)
+    if st_data:
+        sig_parts.append(f"st:{st_data.get('completed_cycles', 0)}-{len(st_data.get('open_orders', []))}-{st_data.get('realized_pnl', 0)}-{st_data.get('coin_balance', 0)}")
+    return "|".join(sig_parts)
+
+
+@st.fragment(run_every=2)
+def trade_event_listener(market: str):
+    """체결 이벤트 감지 백그라운드 리스너 (체결 발생 시 대시보드 자동 갱신)"""
+    current_sig = get_trade_signature(market)
+    sig_key = f"last_known_trade_sig_{market}"
+
+    if sig_key not in st.session_state:
+        st.session_state[sig_key] = current_sig
+        return
+
+    if current_sig != st.session_state[sig_key]:
+        st.session_state[sig_key] = current_sig
+        st.toast(f"🎯 [{market}] 새로운 주문이 체결되었습니다! 대시보드를 즉시 갱신합니다.", icon="⚡")
+        time.sleep(0.3)
+        st.rerun()
+
+
+periodic_seconds = refresh_mode if isinstance(refresh_mode, int) else None
+
+@st.fragment(run_every=periodic_seconds)
 def render_dashboard(market: str):
     # 1. 퀀트 분석 엔진 구동 및 실시간 데이터 로드
     analyzer = PerformanceAnalyzer(market)
@@ -757,3 +797,8 @@ def render_dashboard(market: str):
 
 # 메인 대시보드 렌더링 호출
 render_dashboard(selected_market)
+
+# 거래 체결 감지 모드인 경우 2초 주기 초경량 이벤트 감지 리스너 가동
+if refresh_mode == "trade_event":
+    trade_event_listener(selected_market)
+

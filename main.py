@@ -88,6 +88,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
         f"익절: +{(sell_profit_margin - 1) * 100:.2f}% | 손절: {STOP_LOSS_PERCENT * 100:.2f}%"
     )
 
+    last_heartbeat_time = 0
+
     while True:
         try:
             # 1. 현재가 및 잔고 조회
@@ -133,7 +135,11 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             buy_orders = [o for o in open_orders if o['side'] == 'bid']
             num_sell, num_buy = len(sell_orders), len(buy_orders)
 
-            print(f"[{time.strftime('%H:%M:%S')}] [{ticker}] 현재가: {current_price:,.0f}원 | 미체결: 매도 {num_sell}건, 매수 {num_buy}건 (보유: {quantity:.4f})")
+            # 3-1. 터미널 로깅: 30분 주기 생존 하트비트만 간결하게 출력 (체결 시에만 상세 출력)
+            now_sec = time.time()
+            if now_sec - last_heartbeat_time >= 1800:
+                print(f"[{time.strftime('%H:%M:%S')}] [HEARTBEAT] {ticker}: {current_price:,.0f}원 | 감시 대기 중 (미체결: 매도 {num_sell}건, 매수 {num_buy}건 | 보유: {quantity:.4f})")
+                last_heartbeat_time = now_sec
 
             # 4. 상태 머신 분기
             # Case 1 & 2: 정상 대기 상태 (매도 1건, 매수 3건)
