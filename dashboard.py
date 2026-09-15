@@ -12,6 +12,7 @@ from datetime import datetime
 
 from utils.analytics import PerformanceAnalyzer
 from utils.db_logger import DB_PATH, init_db
+from config import INVESTMENTS
 
 
 # --- Streamlit 페이지 설정 (사이드바 기본 접힘 상태) ---
@@ -122,37 +123,22 @@ st.markdown("""
 
 
 def get_available_markets():
-    """실제 체결 내역이나 상태 파일이 있는 마켓을 최우선으로 반환"""
+    """현재 전략이 적용된 유효 마켓(INVESTMENTS에 설정된 종목)만 반환 (BTC, XRP 등 미적용 종목 제외)"""
+    # .env 및 config.py에 설정된 대상 종목 (현재 KRW-SOL, KRW-ETH)
+    configured_markets = list(INVESTMENTS.keys()) if INVESTMENTS else ["KRW-SOL", "KRW-ETH"]
+
     active_markets = []
 
-    # 1. paper_state_*.json 파일 탐색 (실제 봇이 구동된 종목)
-    for f in os.listdir("."):
-        if f.startswith("paper_state_") and f.endswith(".json"):
-            m = f.replace("paper_state_", "").replace(".json", "").replace("_", "-")
-            if m not in active_markets:
-                active_markets.append(m)
+    # 실제 상태 파일이 존재하는 설정 종목 우선 배치
+    for m in configured_markets:
+        state_file = f"paper_state_{m.replace('-', '_')}.json"
+        if os.path.exists(state_file) and m not in active_markets:
+            active_markets.append(m)
 
-    # 2. SQLite DB 탐색
-    if os.path.exists(DB_PATH):
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("SELECT DISTINCT market FROM paper_trades")
-            for row in c.fetchall():
-                if row[0] and row[0] not in active_markets:
-                    active_markets.append(row[0])
-            conn.close()
-        except Exception:
-            pass
-
-    # 3. 데이터가 없을 경우 기본값
-    if not active_markets:
-        active_markets = ["KRW-SOL", "KRW-ETH", "KRW-XRP", "KRW-BTC"]
-    else:
-        # 혹시 다른 마켓도 전환할 수 있도록 기본 마켓들 추가
-        for def_m in ["KRW-SOL", "KRW-ETH", "KRW-XRP", "KRW-BTC"]:
-            if def_m not in active_markets:
-                active_markets.append(def_m)
+    # 아직 상태 파일이 생성되지 않은 설정 종목 추가
+    for m in configured_markets:
+        if m not in active_markets:
+            active_markets.append(m)
 
     return active_markets
 
