@@ -14,61 +14,107 @@ from utils.analytics import PerformanceAnalyzer
 from utils.db_logger import DB_PATH, init_db
 
 
-# --- Streamlit 페이지 설정 ---
+# --- Streamlit 페이지 설정 (사이드바 기본 접힘 상태) ---
 st.set_page_config(
     page_title="AutoBot 퀀트 트레이딩 성과 대시보드",
     page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# --- 커스텀 스타일 (Dark Financial Theme) ---
+# --- 커스텀 스타일 (Dark Financial Theme + 상단 컨트롤 바) ---
 st.markdown("""
 <style>
-    .metric-card {
-        background: linear-gradient(135deg, #1e222d 0%, #2a2e39 100%);
+    /* 상단 컨트롤 패널 카드 */
+    .top-control-card {
+        background: #1e222d;
+        border: 1px solid #2a2e39;
+        border-radius: 12px;
+        padding: 14px 20px;
+        margin-bottom: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+    .summary-banner {
+        background: linear-gradient(90deg, #181d26 0%, #202632 100%);
+        border: 1px solid #2f3746;
         border-radius: 10px;
-        padding: 16px 20px;
+        padding: 12px 18px;
+        margin-bottom: 20px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .summary-item {
+        display: flex;
+        flex-direction: column;
+    }
+    .summary-label {
+        font-size: 0.76rem;
+        color: #848e9c;
+        font-weight: 500;
+        margin-bottom: 2px;
+    }
+    .summary-value {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: #f0f3f6;
+    }
+    .summary-green {
+        color: #00c087;
+    }
+    .summary-red {
+        color: #ff3b69;
+    }
+
+    /* 8대 KPI 메트릭 카드 */
+    .metric-card {
+        background: linear-gradient(135deg, #1e222d 0%, #262b37 100%);
+        border-radius: 10px;
+        padding: 14px 18px;
         border: 1px solid #363c4e;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 4px 8px -2px rgba(0, 0, 0, 0.3);
+        height: 100%;
     }
     .metric-label {
-        font-size: 0.85rem;
+        font-size: 0.82rem;
         color: #9aa0a6;
         font-weight: 500;
         margin-bottom: 4px;
     }
     .metric-val-green {
-        font-size: 1.6rem;
+        font-size: 1.55rem;
         font-weight: 700;
         color: #00c087;
     }
     .metric-val-red {
-        font-size: 1.6rem;
+        font-size: 1.55rem;
         font-weight: 700;
         color: #ff3b69;
     }
     .metric-val-blue {
-        font-size: 1.6rem;
+        font-size: 1.55rem;
         font-weight: 700;
         color: #2962ff;
     }
     .metric-val-white {
-        font-size: 1.6rem;
+        font-size: 1.55rem;
         font-weight: 700;
         color: #f0f3f6;
     }
     .metric-sub {
-        font-size: 0.78rem;
+        font-size: 0.76rem;
         color: #787b86;
         margin-top: 4px;
     }
+
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
     .stTabs [data-baseweb="tab"] {
-        padding-top: 10px;
-        padding-bottom: 10px;
+        padding-top: 8px;
+        padding-bottom: 8px;
         font-weight: 600;
     }
 </style>
@@ -76,13 +122,39 @@ st.markdown("""
 
 
 def get_available_markets():
-    """모의 매매 상태 파일 또는 DB에서 감지된 마켓 목록 반환"""
-    markets = set(["KRW-SOL", "KRW-ETH"])
+    """실제 체결 내역이나 상태 파일이 있는 마켓을 최우선으로 반환"""
+    active_markets = []
+
+    # 1. paper_state_*.json 파일 탐색 (실제 봇이 구동된 종목)
     for f in os.listdir("."):
         if f.startswith("paper_state_") and f.endswith(".json"):
             m = f.replace("paper_state_", "").replace(".json", "").replace("_", "-")
-            markets.add(m)
-    return sorted(list(markets))
+            if m not in active_markets:
+                active_markets.append(m)
+
+    # 2. SQLite DB 탐색
+    if os.path.exists(DB_PATH):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT DISTINCT market FROM paper_trades")
+            for row in c.fetchall():
+                if row[0] and row[0] not in active_markets:
+                    active_markets.append(row[0])
+            conn.close()
+        except Exception:
+            pass
+
+    # 3. 데이터가 없을 경우 기본값
+    if not active_markets:
+        active_markets = ["KRW-SOL", "KRW-ETH", "KRW-XRP", "KRW-BTC"]
+    else:
+        # 혹시 다른 마켓도 전환할 수 있도록 기본 마켓들 추가
+        for def_m in ["KRW-SOL", "KRW-ETH", "KRW-XRP", "KRW-BTC"]:
+            if def_m not in active_markets:
+                active_markets.append(def_m)
+
+    return active_markets
 
 
 def load_live_state(market: str):
@@ -97,36 +169,58 @@ def load_live_state(market: str):
     return None
 
 
-# --- 사이드바 구성 ---
-st.sidebar.title("🤖 AutoBot Trader")
-st.sidebar.caption("실시간 모의 매매 8대 퀀트 성과 분석 대시보드")
-
+# =============================================================================
+# 1. 상단 컨트롤 패널 (기존 좌측 사이드바를 위쪽으로 전면 재배치)
+# =============================================================================
 available_markets = get_available_markets()
-selected_market = st.sidebar.selectbox("🎯 분석 마켓 선택", available_markets, index=0)
 
-refresh_interval = st.sidebar.slider("⏱️ 자동 갱신 주기 (초)", min_value=5, max_value=60, value=10, step=5)
-auto_refresh = st.sidebar.toggle("실시간 자동 갱신 활성화", value=True)
+with st.container():
+    c_title, c_market, c_refresh, c_btn = st.columns([3.2, 1.8, 2.2, 1.0])
 
-if st.sidebar.button("🔄 즉시 데이터 새로고침"):
-    st.rerun()
+    with c_title:
+        st.markdown("""
+        <div style="display:flex; align-items:center; gap:10px; padding-top:2px;">
+            <span style="font-size:2rem;">⚡</span>
+            <div>
+                <h2 style="margin:0; font-size:1.55rem; font-weight:800; color:#f0f3f6;">AutoBot Trader 성과 대시보드</h2>
+                <div style="color:#848e9c; font-size:0.82rem;">실시간 마틴게일 자동매매 & 8대 퀀트 성과 분석</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-st.sidebar.divider()
+    with c_market:
+        selected_market = st.selectbox(
+            "🎯 분석 마켓 선택",
+            available_markets,
+            index=0,
+            help="실제 거래가 감지된 마켓이 맨 위에 표시됩니다."
+        )
 
-# 계좌 메타데이터 요약
-live_state = load_live_state(selected_market)
-if live_state:
-    st.sidebar.markdown(f"**초기 자본:** {live_state.get('initial_capital', 500000):,.0f} 원")
-    st.sidebar.markdown(f"**보유 현금:** {live_state.get('krw_balance', 0):,.0f} 원")
-    st.sidebar.markdown(f"**보유 코인:** {live_state.get('coin_balance', 0):.6f} {selected_market.split('-')[1]}")
-    st.sidebar.markdown(f"**진행 사이클:** {live_state.get('completed_cycles', 0)}회")
-st.sidebar.divider()
-st.sidebar.caption(f"기준 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    with c_refresh:
+        r_cols = st.columns([1.1, 1.5])
+        with r_cols[0]:
+            st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
+            auto_refresh = st.toggle("자동 갱신", value=True)
+        with r_cols[1]:
+            refresh_interval = st.selectbox(
+                "갱신 주기",
+                [5, 10, 15, 30, 60],
+                index=1,
+                format_func=lambda x: f"⏱️ {x}초 간격"
+            )
+
+    with c_btn:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 새로고침", use_container_width=True):
+            st.rerun()
 
 
-# --- 메인 대시보드 프래그먼트 (지정 주기로 자동 갱신) ---
+# =============================================================================
+# 2. 메인 대시보드 렌더링 프래그먼트
+# =============================================================================
 @st.fragment(run_every=refresh_interval if auto_refresh else None)
 def render_dashboard(market: str):
-    # 1. 퀀트 성과 분석 데이터 산출
+    # 1. 퀀트 분석 엔진 구동 및 실시간 데이터 로드
     analyzer = PerformanceAnalyzer(market)
     data = analyzer.get_full_analysis()
 
@@ -141,39 +235,77 @@ def render_dashboard(market: str):
     raw_trades = data["raw_trades"]
 
     # 실시간 시세
-    current_price = pyupbit.get_current_price(market) or (raw_equity["coin_price"].iloc[-1] if not raw_equity.empty else 0.0)
+    current_price = pyupbit.get_current_price(market)
+    if not current_price and not raw_equity.empty:
+        current_price = float(raw_equity["coin_price"].iloc[-1])
+    current_price = current_price or 0.0
 
-    # 헤더 타이틀 및 배지
+    live_state = load_live_state(market) or {}
+    initial_cap = live_state.get("initial_capital", data.get("initial_capital", 1000000.0))
+    krw_bal = live_state.get("krw_balance", initial_cap)
+    coin_bal = live_state.get("coin_balance", 0.0)
+    eval_coin = coin_bal * current_price
+    total_cur_equity = krw_bal + eval_coin
+    total_ret_pct = ((total_cur_equity - initial_cap) / initial_cap) * 100.0 if initial_cap > 0 else 0.0
+    realized_pnl = live_state.get("realized_pnl", trade_perf.get("net_profit", 0.0))
+    cycles = live_state.get("completed_cycles", trade_perf.get("total_closed_trades", 0))
+
+    # -------------------------------------------------------------
+    # 상단 요약 배너 (실시간 계좌 상태 카드 바)
+    # -------------------------------------------------------------
+    ret_class = "summary-green" if total_ret_pct >= 0 else "summary-red"
+    pnl_class = "summary-green" if realized_pnl >= 0 else "summary-red"
     regime_color = "#00c087" if regimes["current_regime"] == "Bull" else ("#ff3b69" if regimes["current_regime"] == "Bear" else "#ffa726")
+
     st.markdown(f"""
-    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px;">
-        <div>
-            <h1 style="margin: 0; font-size: 2rem;">⚡ {market} 전략 성과 모니터</h1>
-            <p style="margin: 4px 0 0 0; color: #848e9c;">마틴게일 배수 물타기 + 리스크 관리 봇 실시간 통계</p>
+    <div class="summary-banner">
+        <div class="summary-item">
+            <span class="summary-label">🎯 종목 / 시장 국면</span>
+            <span class="summary-value" style="color:#2962ff;">{market} <span style="font-size:0.85rem; color:{regime_color}; background:{regime_color}22; padding:2px 8px; border-radius:12px; border:1px solid {regime_color};">{regimes['current_regime']}</span></span>
         </div>
-        <div style="text-align: right;">
-            <span style="background-color: {regime_color}22; color: {regime_color}; border: 1px solid {regime_color}; padding: 4px 12px; border-radius: 20px; font-weight: 600; font-size: 0.9rem;">
-                시장 국면: {regimes['current_regime']}
-            </span>
-            <div style="font-size: 1.4rem; font-weight: 700; margin-top: 6px;">
-                현재가: {current_price:,.0f} KRW
-            </div>
+        <div class="summary-item">
+            <span class="summary-label">⚡ 현재 시세</span>
+            <span class="summary-value">{current_price:,.0f} KRW</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">💰 총 평가 자산 (수익률)</span>
+            <span class="summary-value {ret_class}">{total_cur_equity:,.0f}원 ({total_ret_pct:+.2f}%)</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">💵 보유 현금 (KRW)</span>
+            <span class="summary-value">{krw_bal:,.0f} 원</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">🪙 보유 코인 ({ticker})</span>
+            <span class="summary-value">{coin_bal:.6f} ({eval_coin:,.0f}원)</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">🏆 실현 누적 손익</span>
+            <span class="summary-value {pnl_class}">{realized_pnl:+,.0f} 원</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">🔁 완료 사이클</span>
+            <span class="summary-value">{cycles} 회 완료</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">⏱️ 실시간 기준 시각</span>
+            <span class="summary-value" style="font-size:0.88rem; color:#848e9c; font-weight:normal;">{datetime.now().strftime('%H:%M:%S')}</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     # -------------------------------------------------------------
-    # 섹션 1: 8대 핵심 KPI 카드
+    # 섹션 1: 8대 핵심 퀀트 KPI 카드
     # -------------------------------------------------------------
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        ret_pct = returns_mdd["total_return_pct"]
+        ret_pct = total_ret_pct
         ret_color = "metric-val-green" if ret_pct >= 0 else "metric-val-red"
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-label">1. 총 자산 & 누적 수익률</div>
             <div class="{ret_color}">{ret_pct:+.2f}%</div>
-            <div class="metric-sub">자산: {returns_mdd['current_equity']:,.0f}원 (손익: {returns_mdd['total_pnl']:+,.0f}원)</div>
+            <div class="metric-sub">자산: {total_cur_equity:,.0f}원 (초기: {initial_cap:,.0f}원)</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -183,7 +315,7 @@ def render_dashboard(market: str):
         <div class="metric-card">
             <div class="metric-label">2. MDD (최대 낙폭)</div>
             <div class="metric-val-red">{mdd_pct:.2f}%</div>
-            <div class="metric-sub">현재 낙폭: {returns_mdd['current_drawdown_pct']:.2f}% | 최고점: {returns_mdd['peak_equity']:,.0f}원</div>
+            <div class="metric-sub">현재 낙폭: {returns_mdd['current_drawdown_pct']:.2f}% | 최고: {returns_mdd['peak_equity']:,.0f}원</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -204,11 +336,11 @@ def render_dashboard(market: str):
         <div class="metric-card">
             <div class="metric-label">4. 손익비 (Profit Factor)</div>
             <div class="{pf_color}">{pf:.2f}</div>
-            <div class="metric-sub">익/손비: {trade_perf['win_loss_ratio']:.2f} (평균익: {trade_perf['avg_win']:,.0f} / 손: {trade_perf['avg_loss']:,.0f})</div>
+            <div class="metric-sub">익/손비: {trade_perf['win_loss_ratio']:.2f} (평균익: {trade_perf['avg_win']:,.0f}원 / 손: {trade_perf['avg_loss']:,.0f}원)</div>
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
     c5, c6, c7, c8 = st.columns(4)
     with c5:
@@ -237,7 +369,7 @@ def render_dashboard(market: str):
         <div class="metric-card">
             <div class="metric-label">7. Buy & Hold 대비 성과 (Alpha)</div>
             <div class="{alpha_color}">{alpha:+.2f}%p</div>
-            <div class="metric-sub">봇: {bnh['strategy_return_pct']:+.2f}% vs B&H: {bnh['bnh_return_pct']:+.2f}%</div>
+            <div class="metric-sub">전략: {bnh['strategy_return_pct']:+.2f}% vs B&H: {bnh['bnh_return_pct']:+.2f}%</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -250,21 +382,55 @@ def render_dashboard(market: str):
         </div>
         """, unsafe_allow_html=True)
 
+    # -------------------------------------------------------------
+    # 섹션 2: 🔥 최근 체결 거래 내역 (사용자가 바로 볼 수 있도록 즉시 노출)
+    # -------------------------------------------------------------
+    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
+    st.markdown("### ⚡ 최근 체결 거래 피드 (Live Trade Feed)")
+
+    if not raw_trades.empty:
+        # 최근 10개 거래 포맷팅
+        feed_df = raw_trades.sort_values("timestamp", ascending=False).head(10).copy()
+
+        def format_action_kr(act):
+            act_s = str(act)
+            if "TAKE_PROFIT" in act_s:
+                return "🎯 익절 매도"
+            elif "STOP_LOSS" in act_s:
+                return "🚨 긴급 손절"
+            elif "MARKET_BUY" in act_s:
+                return "🚀 1차 진입 매수"
+            elif "BUY" in act_s:
+                return f"💧 {act_s.replace('LIMIT_BUY_', '')} 물타기 매수"
+            return act_s
+
+        feed_df["체결일시"] = feed_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        feed_df["구분"] = feed_df["action"].apply(format_action_kr)
+        feed_df["포지션"] = feed_df["side"].apply(lambda x: "매도 (ASK)" if x == "ask" else "매수 (BID)")
+        feed_df["체결단가"] = feed_df["price"].apply(lambda x: f"{x:,.0f}원")
+        feed_df["체결수량"] = feed_df["volume"].apply(lambda x: f"{x:.6f} {ticker}")
+        feed_df["체결금액"] = feed_df["cost_or_revenue"].apply(lambda x: f"{x:,.0f}원")
+        feed_df["실현손익"] = feed_df["pnl"].apply(lambda x: f"+{x:,.1f}원" if x > 0 else (f"{x:,.1f}원" if x < 0 else "-"))
+        feed_df["사이클"] = feed_df["cycle"].apply(lambda x: f"{x}차")
+
+        display_cols = ["체결일시", "구분", "포지션", "체결단가", "체결수량", "체결금액", "실현손익", "사이클"]
+        st.dataframe(feed_df[display_cols], hide_index=True, use_container_width=True)
+    else:
+        st.info(f"아직 {market}에 기록된 체결 거래 내역이 없습니다. (자동매매 봇이 신규 거래를 체결하면 즉시 표시됩니다)")
+
     st.divider()
 
     # -------------------------------------------------------------
-    # 섹션 2: 4대 상세 탭
+    # 섹션 3: 4대 상세 분석 탭
     # -------------------------------------------------------------
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📈 자산 곡선 vs B&H & MDD",
-        "🌐 시장 국면별 성과 분석",
-        "⚖️ 리스크 & 거래 통계",
-        "📋 실시간 주문 & 체결 내역"
+        "📈 자산 성장 곡선 & MDD",
+        "🌐 시장 국면별 성과 (Bull/Bear)",
+        "⚖️ 물타기 배수 & 리스크 분석",
+        "📋 실시간 미체결 주문 & 전체 거래 로그"
     ])
 
-    # -------------------------------------------------------------
     # TAB 1: 자산 곡선 vs B&H 및 Underwater Drawdown
-    # -------------------------------------------------------------
     with tab1:
         st.subheader("📊 자산 성장 곡선 vs Buy & Hold 벤치마크 & MDD")
         
@@ -276,7 +442,7 @@ def render_dashboard(market: str):
                 rows=2, cols=1,
                 shared_xaxes=True,
                 vertical_spacing=0.08,
-                subplot_titles=("자산 가치 비교 (KRW)", "고점 대비 낙폭 Drawdown Underwater (%)"),
+                subplot_titles=("자산 가치 추이 (KRW)", "고점 대비 낙폭 Drawdown Underwater (%)"),
                 row_heights=[0.7, 0.3]
             )
 
@@ -306,7 +472,7 @@ def render_dashboard(market: str):
 
             # 3) 초기 자본 기준선
             fig.add_hline(
-                y=data["initial_capital"],
+                y=initial_cap,
                 line=dict(color="#848e9c", width=1, dash="dash"),
                 row=1, col=1
             )
@@ -337,35 +503,32 @@ def render_dashboard(market: str):
         else:
             st.info("자산 시계열 스냅샷이 누적되는 중입니다. 잠시 후 차트가 표시됩니다.")
 
-    # -------------------------------------------------------------
-    # TAB 2: 시장 국면별 성과 분석 (Regime Analysis)
-    # -------------------------------------------------------------
+    # TAB 2: 시장 국면별 성과
     with tab2:
         st.subheader("🌐 시장 상승 / 하락 / 횡보 국면별 성과 비교")
-        st.caption("업비트 캔들의 이동평균선(SMA 20/60) 및 기울기를 기준으로 시장 국면을 분류하고 각 구간에서의 매매 성과를 평가합니다.")
+        st.caption("이동평균선(SMA 20/60) 기울기를 바탕으로 시장 국면을 판별하고 각 구간에서의 매매 성과를 평가합니다.")
 
         r_col1, r_col2 = st.columns([1, 1])
-        
         reg_data = regimes["summary"]
         reg_df = pd.DataFrame([
             {
                 "국면 (Regime)": "상승장 (Bull)",
                 "거래 횟수": reg_data["Bull"]["trades"],
-                "승률 (%)": reg_data["Bull"]["win_rate"],
+                "승률 (%)": f"{reg_data['Bull']['win_rate']:.1f}%",
                 "총 실현손익": f"{reg_data['Bull']['total_pnl']:+,.0f}원",
                 "평균 손익": f"{reg_data['Bull']['avg_pnl']:+,.0f}원"
             },
             {
                 "국면 (Regime)": "횡보장 (Sideways)",
                 "거래 횟수": reg_data["Sideways"]["trades"],
-                "승률 (%)": reg_data["Sideways"]["win_rate"],
+                "승률 (%)": f"{reg_data['Sideways']['win_rate']:.1f}%",
                 "총 실현손익": f"{reg_data['Sideways']['total_pnl']:+,.0f}원",
                 "평균 손익": f"{reg_data['Sideways']['avg_pnl']:+,.0f}원"
             },
             {
                 "국면 (Regime)": "하락장 (Bear)",
                 "거래 횟수": reg_data["Bear"]["trades"],
-                "승률 (%)": reg_data["Bear"]["win_rate"],
+                "승률 (%)": f"{reg_data['Bear']['win_rate']:.1f}%",
                 "총 실현손익": f"{reg_data['Bear']['total_pnl']:+,.0f}원",
                 "평균 손익": f"{reg_data['Bear']['avg_pnl']:+,.0f}원"
             }
@@ -376,7 +539,7 @@ def render_dashboard(market: str):
             st.dataframe(reg_df, hide_index=True, use_container_width=True)
 
         with r_col2:
-            st.markdown("##### 🎯 국면별 승률 및 거래량 비교")
+            st.markdown("##### 🎯 국면별 승률 비교")
             fig_bar = go.Figure()
             fig_bar.add_trace(go.Bar(
                 x=["상승장 (Bull)", "횡보장 (Sideways)", "하락장 (Bear)"],
@@ -392,7 +555,6 @@ def render_dashboard(market: str):
             )
             st.plotly_chart(fig_bar, use_container_width=True)
 
-        # 캔들 및 국면 이평선 차트
         df_candles = regimes.get("df_candles")
         if df_candles is not None and not df_candles.empty:
             st.markdown("##### 🕯️ 최근 시장 시세 및 이동평균 국면")
@@ -417,12 +579,9 @@ def render_dashboard(market: str):
             )
             st.plotly_chart(fig_candle, use_container_width=True)
 
-    # -------------------------------------------------------------
     # TAB 3: 리스크 & 거래 통계
-    # -------------------------------------------------------------
     with tab3:
         st.subheader("⚖️ 리스크 지표 및 물타기 단계 도달 분석")
-
         rk1, rk2 = st.columns(2)
         with rk1:
             st.markdown("##### 🌊 마틴게일 물타기 차수별(1X, 2X, 3X, 6X) 도달 횟수")
@@ -462,13 +621,11 @@ def render_dashboard(market: str):
             )
             st.plotly_chart(fig_pl, use_container_width=True)
 
-    # -------------------------------------------------------------
-    # TAB 4: 실시간 포지션 및 거래 로그
-    # -------------------------------------------------------------
+    # TAB 4: 실시간 미체결 주문 및 전체 체결 내역
     with tab4:
-        st.subheader("📋 실시간 포지션 상태 및 체결 로그")
-
+        st.subheader("📋 실시간 포지션 상태 및 전체 체결 로그")
         p_col1, p_col2 = st.columns([1, 1])
+
         with p_col1:
             st.markdown("##### 💼 현재 보유 포지션")
             if live_state:
@@ -484,7 +641,7 @@ def render_dashboard(market: str):
                 st.info("실시간 상태 정보를 불러올 수 없습니다.")
 
         with p_col2:
-            st.markdown("##### ⏳ 현재 걸려있는 미체결 주문")
+            st.markdown("##### ⏳ 현재 등록된 미체결 주문")
             if live_state and live_state.get("open_orders"):
                 orders = []
                 for o in live_state["open_orders"]:
@@ -498,17 +655,22 @@ def render_dashboard(market: str):
             else:
                 st.write("현재 등록된 미체결 주문이 없습니다.")
 
-        st.markdown("##### 📜 최근 체결 거래 내역")
+        st.markdown("##### 📜 전체 체결 거래 이력")
         if not raw_trades.empty:
-            show_trades = raw_trades.sort_values("timestamp", ascending=False).head(30).copy()
-            show_trades["price"] = show_trades["price"].apply(lambda x: f"{x:,.0f}원")
-            show_trades["cost_or_revenue"] = show_trades["cost_or_revenue"].apply(lambda x: f"{x:,.0f}원")
-            show_trades["pnl"] = show_trades["pnl"].apply(lambda x: f"{x:+,.0f}원" if x != 0 else "-")
-            show_trades["volume"] = show_trades["volume"].apply(lambda x: f"{x:.6f}")
-            st.dataframe(show_trades, hide_index=True, use_container_width=True)
+            full_trades = raw_trades.sort_values("timestamp", ascending=False).copy()
+            full_trades["체결일시"] = full_trades["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+            full_trades["체결단가"] = full_trades["price"].apply(lambda x: f"{x:,.0f}원")
+            full_trades["체결금액"] = full_trades["cost_or_revenue"].apply(lambda x: f"{x:,.0f}원")
+            full_trades["실현손익"] = full_trades["pnl"].apply(lambda x: f"+{x:,.1f}원" if x > 0 else (f"{x:,.1f}원" if x < 0 else "-"))
+            full_trades["체결수량"] = full_trades["volume"].apply(lambda x: f"{x:.6f}")
+            full_trades["구분"] = full_trades["action"].apply(lambda x: "익절 매도" if "SELL" in str(x) else "매수")
+            full_trades["방향"] = full_trades["side"].apply(lambda x: "매도 (ASK)" if x == "ask" else "매수 (BID)")
+            
+            show_cols = ["체결일시", "구분", "방향", "체결단가", "체결수량", "체결금액", "실현손익", "cycle"]
+            st.dataframe(full_trades[show_cols], hide_index=True, use_container_width=True)
         else:
             st.info("아직 기록된 체결 거래 내역이 없습니다.")
 
 
-# 대시보드 렌더링 호출
+# 메인 대시보드 렌더링 호출
 render_dashboard(selected_market)

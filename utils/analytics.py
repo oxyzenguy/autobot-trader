@@ -76,24 +76,60 @@ class PerformanceAnalyzer:
             return pd.DataFrame()
 
     def get_trades(self) -> pd.DataFrame:
-        """가상매매 체결 내역 조회"""
+        """가상매매 체결 내역 조회 (DB 및 JSON 상태 파일 완벽 연동)"""
+        df_db = pd.DataFrame()
         try:
-            conn = sqlite3.connect(DB_PATH)
-            query = """
-                SELECT timestamp, action, side, price, volume, cost_or_revenue, pnl, cycle
-                FROM paper_trades
-                WHERE market = ?
-                ORDER BY timestamp ASC
-            """
-            df = pd.read_sql_query(query, conn, params=(self.market,))
-            conn.close()
-
-            if not df.empty:
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-            return df
+            if os.path.exists(DB_PATH):
+                conn = sqlite3.connect(DB_PATH)
+                query = """
+                    SELECT timestamp, action, side, price, volume, cost_or_revenue, pnl, cycle
+                    FROM paper_trades
+                    WHERE market = ?
+                    ORDER BY timestamp ASC
+                """
+                df_db = pd.read_sql_query(query, conn, params=(self.market,))
+                conn.close()
         except Exception as e:
-            print(f"[ERROR] get_trades 오류: {e}")
-            return pd.DataFrame()
+            print(f"[WARN] DB get_trades 조회 실패: {e}")
+
+        # DB에 데이터가 존재하면 사용
+        if not df_db.empty:
+            df_db["timestamp"] = pd.to_datetime(df_db["timestamp"])
+            return df_db
+
+        # DB가 비어있거나 파일이 없을 경우 paper_state_*.json의 trade_history를 fallback 로드
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    history = data.get("trade_history", [])
+                    if history:
+                        rows = []
+                        cycle = 0
+                        for t in history:
+                            act = t.get("type", "UNKNOWN")
+                            side = "ask" if "SELL" in act else "bid"
+                            price = float(t.get("price", 0.0))
+                            volume = float(t.get("volume", 0.0))
+                            cost_or_rev = float(t.get("cost", t.get("revenue", 0.0)))
+                            pnl = float(t.get("pnl", 0.0))
+                            if "SELL" in act:
+                                cycle += 1
+                            rows.append({
+                                "timestamp": pd.to_datetime(t.get("time")),
+                                "action": act,
+                                "side": side,
+                                "price": price,
+                                "volume": volume,
+                                "cost_or_revenue": cost_or_rev,
+                                "pnl": pnl,
+                                "cycle": cycle
+                            })
+                        return pd.DataFrame(rows)
+            except Exception as e:
+                print(f"[WARN] JSON trade_history 로드 실패: {e}")
+
+        return pd.DataFrame()
 
     # -------------------------------------------------------------
     # 1. 수익률 & 2. MDD
