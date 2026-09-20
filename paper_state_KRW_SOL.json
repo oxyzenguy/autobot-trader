@@ -453,11 +453,11 @@
   "current_regime": "BULL",
   "active_sub_strategy": "MARTINGALE",
   "regime_indicators": {
-    "ma5": 148340.0,
-    "ma20": 149955.0,
-    "ma200": 140931.0,
-    "distance_ma200_pct": 5.37,
+    "ma5": 148360.0,
+    "ma20": 149960.0,
+    "ma200": 140931.5,
+    "distance_ma200_pct": 5.44,
     "signal": "HOLD",
-    "reason": "200 MA 상회 중 추세 유지 (5선 148,340원, 20선 149,955원)"
+    "reason": "200 MA 상회 중 추세 유지 (5선 148,360원, 20선 149,960원)"
   }
 }
