@@ -10,6 +10,15 @@ load_dotenv(dotenv_path=ENV_PATH)
 # 2. 기본 API 및 거래소 설정
 UPBIT_ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
 UPBIT_SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
+
+try:
+    import streamlit as st
+    if hasattr(st, "secrets"):
+        UPBIT_ACCESS_KEY = UPBIT_ACCESS_KEY or st.secrets.get("UPBIT_ACCESS_KEY")
+        UPBIT_SECRET_KEY = UPBIT_SECRET_KEY or st.secrets.get("UPBIT_SECRET_KEY")
+except Exception:
+    pass
+
 ACCESS_KEY = UPBIT_ACCESS_KEY
 SECRET_KEY = UPBIT_SECRET_KEY
 BASE_URL = "https://api.upbit.com"
