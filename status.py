@@ -38,10 +38,23 @@ def print_status():
         cycles = state.get("completed_cycles", 0)
         orders = state.get("open_orders", [])
 
-        print(f"\n🪙 [{market}] 현재가: {cur_price:,.0f}원")
-        print(f"   • 총 평가 자산: {total_equity:,.0f}원 (누적 수익률: {ret_pct:+.2f}%)")
-        print(f"   • 보유 현금: {krw:,.0f}원 | 보유 코인: {coin:.6f} {ticker} ({eval_coin:,.0f}원)")
-        print(f"   • 실현 누적 손익: {pnl:+,.0f}원 | 완료 사이클: {cycles}회")
+        regime = state.get("current_regime", "BULL")
+        regime_str = "🟢 상승 국면(BULL)" if regime == "BULL" else "🔴 하락 국면(BEAR)"
+        sub_strat = state.get("active_sub_strategy", "TREND")
+        strat_name = "5/20 MA 추세추종" if sub_strat == "TREND" else "마틴게일 1-2-3-6 방어"
+
+        from utils.real_balance import get_real_coin_status
+        r_stat = get_real_coin_status(market)
+        r_bal = r_stat.get("current_balance", 0.0)
+        r_eval = r_stat.get("current_eval", 0.0)
+        r_cost = r_stat.get("total_cost", 0.0)
+        r_avg = r_stat.get("current_avg_price", 0.0)
+        r_pnl_pct = r_stat.get("total_pnl_pct", 0.0)
+
+        print(f"\n🪙 [{market}] 현재가: {cur_price:,.0f}원 | {regime_str} | 모드: {strat_name}")
+        print(f"   📱 [업비트 앱 실계좌] 총보유: {r_bal:.4f} {ticker} | 평가금액: {r_eval:,.0f}원 | 평단: {r_avg:,.0f}원 (수익률: {r_pnl_pct:+.2f}%)")
+        print(f"   🤖 [100만원 모의투자] 총자산: {total_equity:,.0f}원 ({ret_pct:+.2f}%) | 현금: {krw:,.0f}원 | 코인: {coin:.6f} {ticker} ({eval_coin:,.0f}원)")
+        print(f"   • 모의투자 실현 손익: {pnl:+,.0f}원 | 완료 사이클: {cycles}회")
 
         # 미체결 주문
         if orders:

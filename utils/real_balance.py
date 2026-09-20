@@ -30,16 +30,18 @@ def init_or_load_base_snapshot() -> Dict[str, Any]:
             cur = b.get("currency")
             if cur in ["SOL", "ETH"]:
                 bal = float(b.get("balance", 0.0))
+                locked = float(b.get("locked", 0.0))
+                total_bal = bal + locked
                 avg_p = float(b.get("avg_buy_price", 0.0))
                 market = f"KRW-{cur}"
                 cur_p = pyupbit.get_current_price(market) or avg_p
-                total_cost = bal * avg_p
-                eval_amount = bal * cur_p
+                total_cost = total_bal * avg_p
+                eval_amount = total_bal * cur_p
                 pnl = eval_amount - total_cost
                 pnl_pct = (pnl / total_cost * 100.0) if total_cost > 0 else 0.0
                 data["coins"][market] = {
                     "currency": cur,
-                    "base_balance": bal,
+                    "base_balance": total_bal,
                     "base_avg_price": avg_p,
                     "base_total_cost": total_cost,
                     "base_price": cur_p,
@@ -58,6 +60,7 @@ def get_real_coin_status(market: str) -> Dict[str, Any]:
     """
     업비트 실제 계좌의 현재 코인모으기 잔고 및 성과를 조회하고,
     시작 시점(Base) 대비 성장 추이를 계산합니다.
+    (주문 가능 잔고 + 거래 대기 수량 모두 포함)
     """
     ticker = market.split("-")[1]
     base_data = init_or_load_base_snapshot()
@@ -77,7 +80,9 @@ def get_real_coin_status(market: str) -> Dict[str, Any]:
         upbit = get_upbit_client()
         balance_info = upbit.get_balance(ticker, verbose=True)
         if balance_info and 'avg_buy_price' in balance_info:
-            cur_bal = float(balance_info.get('balance', 0.0))
+            bal = float(balance_info.get('balance', 0.0))
+            locked = float(balance_info.get('locked', 0.0))
+            cur_bal = bal + locked
             cur_avg_p = float(balance_info.get('avg_buy_price', 0.0))
     except Exception as e:
         cur_bal = base_coin.get("base_balance", 0.0)
