@@ -31,6 +31,9 @@ FEE_RATE = 0.0005             # 0.05% 수수료율
 # 가상매매 (모의투자/Paper Trading) 모드 여부 (.env에서 변경 가능, 기본 True)
 IS_PAPER_TRADING = os.getenv("IS_PAPER_TRADING", "true").lower() in ("true", "1", "yes")
 
+# 전략 맞대결 (실제 코인모으기 vs 100만원 하이브리드 가상매매) 2~4주 실전 검증 시작 기준 시각
+SHOWDOWN_START_TIME = "2026-09-20 20:45:00"
+
 # 종목별 맞춤 익절 마진 (1단계 추천 적용: SOL 0.5%, ETH 0.8%)
 PROFIT_MARGINS = {
     "KRW-SOL": 1.005,  # 솔라나: +0.5% (초단타 빠른 회전)

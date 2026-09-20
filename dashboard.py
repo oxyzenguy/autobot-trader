@@ -366,14 +366,21 @@ def render_dashboard(market: str):
     real_pnl_color = "#00c087" if real_pnl_pct >= 0 else "#ff3b69"
     tot_ret_color = "#00c087" if total_ret_pct >= 0 else "#ff3b69"
 
+    from config import SHOWDOWN_START_TIME
+    try:
+        start_dt = datetime.strptime(SHOWDOWN_START_TIME, "%Y-%m-%d %H:%M:%S")
+        days_elapsed = (datetime.now() - start_dt).days
+    except Exception:
+        days_elapsed = 0
+
     st.html(f"""
     <div class="dca-compare-box">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #333d4e; padding-bottom:8px;">
             <div style="font-size:1.05rem; font-weight:700; color:#ffb300;">
-                ⚔️ 전략 맞대결: 실제 코인모으기(실계좌) vs 100만원 하이브리드(가상매매)
+                ⚔️ 2~4주 실전 검증 맞대결: 실제 코인모으기(실계좌) vs 100만원 하이브리드(가상매매)
             </div>
-            <div style="font-size:0.8rem; color:#848e9c;">
-                기점: {real_dca.get('snapshot_time', '2026-09-15 20:33')} (현재 매일 1만원씩 적립 중)
+            <div style="font-size:0.82rem; color:#4fc3f7; font-weight:600;">
+                🚀 검증 시작점: {SHOWDOWN_START_TIME} (경과: D+{days_elapsed}일차)
             </div>
         </div>
         <div style="display:grid; grid-template-columns: 1.2fr 0.8fr 1.2fr; gap:14px; align-items:center;">

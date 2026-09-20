@@ -1,14 +1,14 @@
 {
-  "snapshot_time": "2026-09-20 20:41:06",
+  "snapshot_time": "2026-09-20 20:45:00",
   "coins": {
     "KRW-ETH": {
       "currency": "ETH",
       "base_balance": 0.40756151,
       "base_avg_price": 3618032.20472639,
       "base_total_cost": 1474570.6685869168,
-      "base_price": 3532000.0,
-      "base_eval_amount": 1439507.2533200001,
-      "base_pnl_pct": -2.3778728286056268
+      "base_price": 3533000.0,
+      "base_eval_amount": 1439914.81483,
+      "base_pnl_pct": -2.3502334947518975
     },
     "KRW-SOL": {
       "currency": "SOL",

@@ -44,24 +44,24 @@ class PerformanceAnalyzer:
             self.initial_price = 0.0
 
     def get_equity_snapshots(self) -> pd.DataFrame:
-        """DB에서 시계열 자산 스냅샷 조회"""
+        """DB에서 시계열 자산 스냅샷 조회 (SHOWDOWN_START_TIME 기점 이후 데이터만 필터)"""
         try:
+            from config import SHOWDOWN_START_TIME
             conn = sqlite3.connect(DB_PATH)
             query = """
                 SELECT timestamp, krw_balance, coin_balance, coin_price, total_equity, benchmark_price, unrealized_pnl, real_dca_eval
                 FROM equity_snapshots
-                WHERE market = ?
+                WHERE market = ? AND timestamp >= ?
                 ORDER BY timestamp ASC
             """
-            df = pd.read_sql_query(query, conn, params=(self.market,))
+            df = pd.read_sql_query(query, conn, params=(self.market, SHOWDOWN_START_TIME))
             conn.close()
 
             if df.empty:
-                # 데이터가 없는 경우 기본값 1행 생성
+                # 데이터가 없는 경우 기준 시점 기본값 1행 생성
                 cur_p = pyupbit.get_current_price(self.market) or 100000.0
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 df = pd.DataFrame([{
-                    "timestamp": now_str,
+                    "timestamp": SHOWDOWN_START_TIME,
                     "krw_balance": self.initial_capital,
                     "coin_balance": 0.0,
                     "coin_price": cur_p,
@@ -78,18 +78,19 @@ class PerformanceAnalyzer:
             return pd.DataFrame()
 
     def get_trades(self) -> pd.DataFrame:
-        """가상매매 체결 내역 조회 (DB 및 JSON 상태 파일 완벽 연동)"""
+        """가상매매 체결 내역 조회 (SHOWDOWN_START_TIME 기점 이후 체결만 필터)"""
         df_db = pd.DataFrame()
         try:
+            from config import SHOWDOWN_START_TIME
             if os.path.exists(DB_PATH):
                 conn = sqlite3.connect(DB_PATH)
                 query = """
                     SELECT timestamp, action, side, price, volume, cost_or_revenue, pnl, cycle
                     FROM paper_trades
-                    WHERE market = ?
+                    WHERE market = ? AND timestamp >= ?
                     ORDER BY timestamp ASC
                 """
-                df_db = pd.read_sql_query(query, conn, params=(self.market,))
+                df_db = pd.read_sql_query(query, conn, params=(self.market, SHOWDOWN_START_TIME))
                 conn.close()
         except Exception as e:
             print(f"[WARN] DB get_trades 조회 실패: {e}")
