@@ -40,3 +40,5 @@ backtest_*.xlsx
 backtest_*.png
 bgf_crawler/
 paper_state_*.json
+scratch/
+

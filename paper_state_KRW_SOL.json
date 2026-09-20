@@ -8,35 +8,11 @@
   "total_cost": 30014.999487743997,
   "open_orders": [
     {
-      "uuid": "paper-bid-1789779371279",
-      "side": "bid",
-      "price": 144350.0,
-      "volume": 0.2078282,
-      "units": 3,
-      "created_at": "2026-09-19 09:56:11"
-    },
-    {
-      "uuid": "paper-bid-1789779371279",
-      "side": "bid",
-      "price": 138600.0,
-      "volume": 0.43290043,
-      "units": 6,
-      "created_at": "2026-09-19 09:56:11"
-    },
-    {
       "uuid": "paper-ask-1789856032095",
       "side": "ask",
       "price": 153300.0,
       "volume": 0.19683568040868454,
       "units": 1,
-      "created_at": "2026-09-20 07:13:52"
-    },
-    {
-      "uuid": "paper-bid-1789856032096",
-      "side": "bid",
-      "price": 133050.0,
-      "volume": 0.45095829,
-      "units": 6,
       "created_at": "2026-09-20 07:13:52"
     }
   ],
@@ -472,5 +448,16 @@
       "cost": 20009.999487743997
     }
   ],
-  "initial_price": 137300.0
+  "initial_price": 137300.0,
+  "strategy": "HYBRID",
+  "current_regime": "BULL",
+  "active_sub_strategy": "MARTINGALE",
+  "regime_indicators": {
+    "ma5": 148300.0,
+    "ma20": 149945.0,
+    "ma200": 140930.0,
+    "distance_ma200_pct": 5.23,
+    "signal": "HOLD",
+    "reason": "200 MA 상회 중 추세 유지 (5선 148,300원, 20선 149,945원)"
+  }
 }

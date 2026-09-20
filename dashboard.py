@@ -13,11 +13,12 @@ from datetime import datetime
 from utils.analytics import PerformanceAnalyzer
 from utils.db_logger import DB_PATH, init_db
 from config import INVESTMENTS
+from strategy.hybrid_regime import get_hybrid_regime_and_signals
 
 
 # --- Streamlit 페이지 설정 (사이드바 기본 접힘 상태) ---
 st.set_page_config(
-    page_title="AutoBot 퀀트 트레이딩 성과 대시보드",
+    page_title="AutoBot 퀀트 하이브리드 대시보드",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -180,7 +181,7 @@ with st.container():
             <span style="font-size:2rem;">⚡</span>
             <div>
                 <h2 style="margin:0; font-size:1.55rem; font-weight:800; color:#f0f3f6;">AutoBot Trader 성과 대시보드</h2>
-                <div style="color:#848e9c; font-size:0.82rem;">실시간 마틴게일 자동매매 & 8대 퀀트 성과 분석</div>
+                <div style="color:#848e9c; font-size:0.82rem;">실시간 하이브리드(국면전환) 자동매매 & 8대 퀀트 성과 분석</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -289,18 +290,32 @@ def render_dashboard(market: str):
     realized_pnl = live_state.get("realized_pnl", trade_perf.get("net_profit", 0.0))
     cycles = live_state.get("completed_cycles", trade_perf.get("total_closed_trades", 0))
 
+    # 하이브리드 실시간 국면 및 신호 조회
+    try:
+        hybrid_info = get_hybrid_regime_and_signals(market)
+    except Exception:
+        hybrid_info = {
+            "regime": live_state.get("current_regime", "BEAR") if live_state else "BEAR",
+            "regime_korean": "하락 국면 (기본)",
+            "curr_price": current_price,
+            "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
+            "distance_ma200_pct": 0.0,
+            "signal": "MARTINGALE_DEFENSE",
+            "reason": "시세 정보 동기화 중"
+        }
+
     # -------------------------------------------------------------
     # 상단 요약 배너 (실시간 계좌 상태 카드 바)
     # -------------------------------------------------------------
     ret_class = "summary-green" if total_ret_pct >= 0 else "summary-red"
     pnl_class = "summary-green" if realized_pnl >= 0 else "summary-red"
-    regime_color = "#00c087" if regimes["current_regime"] == "Bull" else ("#ff3b69" if regimes["current_regime"] == "Bear" else "#ffa726")
+    regime_color = "#00c087" if hybrid_info["regime"] == "BULL" else "#ff3b69"
 
     st.markdown(f"""
     <div class="summary-banner">
         <div class="summary-item">
-            <span class="summary-label">🎯 종목 / 시장 국면</span>
-            <span class="summary-value" style="color:#2962ff;">{market} <span style="font-size:0.85rem; color:{regime_color}; background:{regime_color}22; padding:2px 8px; border-radius:12px; border:1px solid {regime_color};">{regimes['current_regime']}</span></span>
+            <span class="summary-label">🎯 종목 / 하이브리드 국면</span>
+            <span class="summary-value" style="color:#2962ff;">{market} <span style="font-size:0.85rem; color:{regime_color}; background:{regime_color}22; padding:2px 8px; border-radius:12px; border:1px solid {regime_color};">{hybrid_info['regime_korean']}</span></span>
         </div>
         <div class="summary-item">
             <span class="summary-label">⚡ 현재 시세</span>
@@ -347,7 +362,7 @@ def render_dashboard(market: str):
 
     alpha_vs_dca = total_ret_pct - growth_pct
     alpha_dca_color = "#00c087" if alpha_vs_dca >= 0 else "#ff3b69"
-    alpha_desc = "마틴게일 전략 우세" if alpha_vs_dca >= 0 else "코인모으기 전략 우세"
+    alpha_desc = "하이브리드 전략 우세" if alpha_vs_dca >= 0 else "코인모으기 전략 우세"
     real_pnl_color = "#00c087" if real_pnl_pct >= 0 else "#ff3b69"
     tot_ret_color = "#00c087" if total_ret_pct >= 0 else "#ff3b69"
 
@@ -355,7 +370,7 @@ def render_dashboard(market: str):
     <div class="dca-compare-box">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #333d4e; padding-bottom:8px;">
             <div style="font-size:1.05rem; font-weight:700; color:#ffb300;">
-                ⚔️ 전략 맞대결: 실제 코인모으기(실계좌) vs 100만원 마틴게일(가상매매)
+                ⚔️ 전략 맞대결: 실제 코인모으기(실계좌) vs 100만원 하이브리드(가상매매)
             </div>
             <div style="font-size:0.8rem; color:#848e9c;">
                 기점: {real_dca.get('snapshot_time', '2026-09-15 20:33')} (현재 매일 1만원씩 적립 중)
@@ -377,7 +392,7 @@ def render_dashboard(market: str):
                 </div>
             </div>
             <div style="text-align:center; padding:8px;">
-                <div style="font-size:0.78rem; color:#848e9c; margin-bottom:2px;">마틴게일 초과성과 (Alpha)</div>
+                <div style="font-size:0.78rem; color:#848e9c; margin-bottom:2px;">하이브리드 초과성과 (Alpha)</div>
                 <div style="font-size:1.45rem; font-weight:800; color:{alpha_dca_color};">
                     {alpha_vs_dca:+.2f}%p
                 </div>
@@ -387,7 +402,7 @@ def render_dashboard(market: str):
             </div>
             <div style="background:#161b24; padding:12px 14px; border-radius:8px; border:1px solid #2d3648;">
                 <div style="color:#00c087; font-size:0.83rem; font-weight:600; margin-bottom:4px;">
-                    🔵 [가상 계좌] 100만원 마틴게일 자동매매
+                    🔵 [가상 계좌] 100만원 하이브리드(국면전환) 봇
                 </div>
                 <div style="font-size:1.15rem; font-weight:700; color:#f0f3f6;">
                     {total_cur_equity:,.0f}원 <span style="font-size:0.85rem; color:{tot_ret_color};">({total_ret_pct:+.2f}%)</span>
@@ -398,6 +413,52 @@ def render_dashboard(market: str):
                 <div style="font-size:0.75rem; color:#00e676; margin-top:2px;">
                     실현손익: {realized_pnl:+,.0f}원 | 완료: {cycles}회 사이클
                 </div>
+            </div>
+        </div>
+    </div>
+    """)
+
+    # -------------------------------------------------------------
+    # 🧭 실시간 하이브리드 국면 & 전략 가동 상태 배너
+    # -------------------------------------------------------------
+    is_bull = hybrid_info.get("is_bull", False)
+    active_mode = live_state.get("active_sub_strategy", "WAITING") if live_state else "WAITING"
+    
+    if is_bull:
+        regime_badge = '<span style="background:#00c087; color:#12161f; padding:4px 12px; border-radius:14px; font-weight:800; font-size:0.88rem;">🟢 상승 국면 (BULL)</span>'
+        mode_desc = '<span style="color:#00e676; font-weight:700; font-size:1.05rem;">🚀 5/20 MA 추세추종 모드 가동 중</span>'
+    else:
+        regime_badge = '<span style="background:#ff3b69; color:#fff; padding:4px 12px; border-radius:14px; font-weight:800; font-size:0.88rem;">🔴 하락 국면 (BEAR)</span>'
+        mode_desc = '<span style="color:#ffb300; font-weight:700; font-size:1.05rem;">🛡️ 마틴게일 1-2-3-6 방어 모드 가동 중</span>'
+
+    dist_color = "#00c087" if hybrid_info["distance_ma200_pct"] >= 0 else "#ff3b69"
+
+    st.html(f"""
+    <div style="background:linear-gradient(135deg, #1c222e 0%, #222938 100%); border:1px solid #364154; border-radius:10px; padding:14px 18px; margin-bottom:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:1.2rem;">🧭</span>
+                <span style="font-size:0.95rem; font-weight:700; color:#f0f3f6;">실시간 시장 국면 & 하이브리드 엔진 상태</span>
+                {regime_badge}
+            </div>
+            <div>{mode_desc}</div>
+        </div>
+        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; background:#141822; padding:10px 14px; border-radius:8px; border:1px solid #283142;">
+            <div>
+                <div style="font-size:0.73rem; color:#848e9c;">현재가</div>
+                <div style="font-size:0.95rem; font-weight:700; color:#f0f3f6;">{hybrid_info['curr_price']:,.0f}원</div>
+            </div>
+            <div>
+                <div style="font-size:0.73rem; color:#848e9c;">200시간선 (국면 기준)</div>
+                <div style="font-size:0.95rem; font-weight:700; color:#81d4fa;">{hybrid_info['ma200']:,.0f}원 <span style="font-size:0.75rem; color:{dist_color};">({hybrid_info['distance_ma200_pct']:+.2f}%)</span></div>
+            </div>
+            <div>
+                <div style="font-size:0.73rem; color:#848e9c;">5시간선 / 20시간선</div>
+                <div style="font-size:0.95rem; font-weight:700; color:#f48fb1;">{hybrid_info['ma5']:,.0f}원 / {hybrid_info['ma20']:,.0f}원</div>
+            </div>
+            <div>
+                <div style="font-size:0.73rem; color:#848e9c;">실시간 신호 판정</div>
+                <div style="font-size:0.85rem; font-weight:600; color:#ffd54f;">{hybrid_info['signal']} ({hybrid_info['reason'][:28]}...)</div>
             </div>
         </div>
     </div>
@@ -503,7 +564,13 @@ def render_dashboard(market: str):
 
         def format_action_kr(act):
             act_s = str(act)
-            if "TAKE_PROFIT" in act_s:
+            if "HYBRID_BULL_BUY" in act_s:
+                return "🚀 [하이브리드] 5/20 MA 추세 매수"
+            elif "HYBRID_BULL_SELL" in act_s or "TREND_DEAD_CROSS" in act_s:
+                return "🛑 [하이브리드] 5/20 MA 추세 매도"
+            elif "BEAR_REGIME_CUT" in act_s:
+                return "🛡️ [하이브리드] 200선 이탈 청산/방어 전환"
+            elif "TAKE_PROFIT" in act_s:
                 return "🎯 익절 매도"
             elif "STOP_LOSS" in act_s:
                 return "🚨 긴급 손절"
@@ -755,7 +822,17 @@ def render_dashboard(market: str):
     with p_col1:
         st.markdown("##### 💼 현재 보유 포지션")
         if live_state:
+            active_mode_str = {
+                "TREND": "🚀 상승장 5/20 추세모드",
+                "MARTINGALE": "🛡️ 하락장 마틴게일 방어모드",
+                "WAITING": "⏳ 대기 / 관망 중"
+            }.get(live_state.get("active_sub_strategy", "WAITING"), "기타")
+
+            regime_str = "🟢 상승 국면 (200 MA 상회)" if live_state.get("current_regime") == "BULL" else "🔴 하락 국면 (200 MA 하회)"
+
             pos_df = pd.DataFrame([
+                {"항목": "가동 전략 모드", "값": active_mode_str},
+                {"항목": "시장 국면", "값": regime_str},
                 {"항목": "보유 코인", "값": f"{live_state.get('coin_balance', 0):.6f} {ticker}"},
                 {"항목": "매수 평균단가", "값": f"{live_state.get('avg_buy_price', 0):,.0f} 원"},
                 {"항목": "총 매수 원가", "값": f"{live_state.get('total_cost', 0):,.0f} 원"},
