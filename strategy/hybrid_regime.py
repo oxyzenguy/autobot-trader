@@ -14,7 +14,9 @@
 
 3. 하락 국면 (BEAR) 매매 로직:
    - 추세 매수 전면 차단 (가짜 골든크로스 Whipsaw 회피)
+   - ClucMay 과매도 낙주 필터: 볼린저 하단 1.5% 이탈 패닉 투매 발생 시에만 1차 진입
    - 마틴게일 방어 모드 가동 (소액 물타기 1-2-3-6 Unit + 0.5% 기술적 반등 전량 익절)
+   - 낙주 신호 미발생 시 100% 현금 보존 관망
 """
 
 import time
@@ -84,11 +86,23 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
     else:
         df = df.copy()
 
-    # 2. 이동평균선 계산
+    # 2. 이동평균선 및 ClucMay 지표 계산
     close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    volume = df["volume"]
+
     ma5 = close.rolling(5).mean()
     ma20 = close.rolling(20).mean()
     ma200 = close.rolling(200).mean()
+
+    # ClucMay 낙주 포착 지표 (볼린저 밴드 20, 2 / EMA 50 / 30봉 평균 거래량)
+    typical_price = (high + low + close) / 3.0
+    bb_mid = typical_price.rolling(20).mean()
+    bb_std = typical_price.rolling(20).std()
+    bb_lower = bb_mid - 2.0 * bb_std
+    ema50 = close.ewm(span=50, adjust=False).mean()
+    vol_mean30 = volume.rolling(30).mean()
 
     curr_price = float(close.iloc[-1])
     curr_ma5 = float(ma5.iloc[-1])
@@ -96,6 +110,20 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
     curr_ma20 = float(ma20.iloc[-1])
     prev_ma20 = float(ma20.iloc[-2])
     curr_ma200 = float(ma200.iloc[-1])
+
+    curr_bb_lower = float(bb_lower.iloc[-1]) if not pd.isna(bb_lower.iloc[-1]) else curr_price * 0.95
+    curr_bb_mid = float(bb_mid.iloc[-1]) if not pd.isna(bb_mid.iloc[-1]) else curr_price
+    curr_ema50 = float(ema50.iloc[-1]) if not pd.isna(ema50.iloc[-1]) else curr_price
+    curr_vol = float(volume.iloc[-1])
+    prev_vol_mean30 = float(vol_mean30.iloc[-2]) if len(vol_mean30) >= 2 and not pd.isna(vol_mean30.iloc[-2]) else float(volume.mean())
+
+    # ClucMay 과매도 투매 조건: 종가 < EMA50 & 종가 < 볼린저하단*0.985 & 거래량 정상
+    cluc_threshold = curr_bb_lower * 0.985
+    is_cluc_dip = bool(
+        (curr_price < curr_ema50) and
+        (curr_price < cluc_threshold) and
+        (curr_vol < prev_vol_mean30 * 20.0)
+    )
 
     # 3. 시장 국면 판별 (200 MA 기준)
     is_bull = curr_price > curr_ma200
@@ -119,9 +147,20 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
             signal = "HOLD"
             reason = f"200 MA 상회 중 추세 유지 (5선 {curr_ma5:,.0f}원, 20선 {curr_ma20:,.0f}원)"
     else:
-        # 하락장 방어 신호
-        signal = "MARTINGALE_DEFENSE"
-        reason = f"현재가({curr_price:,.0f}원)가 200 MA({curr_ma200:,.0f}원) 이하: 마틴게일 소액 물타기 방어 가동"
+        # 하락장 방어 신호 (ClucMay 과매도 낙주 필터 적용)
+        if is_cluc_dip:
+            signal = "MARTINGALE_BUY_DIP"
+            reason = (
+                f"200 MA 하회 중 ClucMay 과매도 낙주 포착! "
+                f"볼린저하단-1.5% 기준가({cluc_threshold:,.0f}원) 하회: 현재가 {curr_price:,.0f}원 (1차 물타기 진입)"
+            )
+        else:
+            signal = "MARTINGALE_WAIT"
+            dist_cluc_pct = ((curr_price / cluc_threshold) - 1.0) * 100.0 if cluc_threshold > 0 else 0.0
+            reason = (
+                f"200 MA 하회 하락 국면: ClucMay 과매도 낙주 대기 중 "
+                f"(현재가 {curr_price:,.0f}원 / 기준가 {cluc_threshold:,.0f}원, {dist_cluc_pct:+.2f}%)"
+            )
 
     return {
         "market": market,
@@ -130,6 +169,11 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
         "ma5": curr_ma5,
         "ma20": curr_ma20,
         "ma200": curr_ma200,
+        "bb_lower": curr_bb_lower,
+        "bb_mid": curr_bb_mid,
+        "ema50": curr_ema50,
+        "cluc_threshold": cluc_threshold,
+        "is_cluc_dip": is_cluc_dip,
         "distance_ma200_pct": round(distance_ma200_pct, 2),
         "is_bull": is_bull,
         "regime": regime,

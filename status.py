@@ -41,7 +41,12 @@ def print_status():
         regime = state.get("current_regime", "BULL")
         regime_str = "🟢 상승 국면(BULL)" if regime == "BULL" else "🔴 하락 국면(BEAR)"
         sub_strat = state.get("active_sub_strategy", "TREND")
-        strat_name = "5/20 MA 추세추종" if sub_strat == "TREND" else "마틴게일 1-2-3-6 방어"
+        if sub_strat == "TREND":
+            strat_name = "5/20 MA 추세추종"
+        elif sub_strat == "MARTINGALE":
+            strat_name = "마틴게일 1-2-3-6 방어"
+        else:
+            strat_name = "ClucMay 과매도 낙주 대기 (현금 100%)"
 
         from utils.real_balance import get_real_coin_status
         r_stat = get_real_coin_status(market)

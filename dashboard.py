@@ -436,7 +436,10 @@ def render_dashboard(market: str):
         mode_desc = '<span style="color:#00e676; font-weight:700; font-size:1.05rem;">🚀 5/20 MA 추세추종 모드 가동 중</span>'
     else:
         regime_badge = '<span style="background:#ff3b69; color:#fff; padding:4px 12px; border-radius:14px; font-weight:800; font-size:0.88rem;">🔴 하락 국면 (BEAR)</span>'
-        mode_desc = '<span style="color:#ffb300; font-weight:700; font-size:1.05rem;">🛡️ 마틴게일 1-2-3-6 방어 모드 가동 중</span>'
+        if active_mode == "MARTINGALE":
+            mode_desc = '<span style="color:#ffb300; font-weight:700; font-size:1.05rem;">🛡️ 마틴게일 1-2-3-6 방어 모드 가동 중</span>'
+        else:
+            mode_desc = '<span style="color:#64b5f6; font-weight:700; font-size:1.05rem;">⏳ ClucMay 과매도 낙주 대기 중 (현금 100%)</span>'
 
     dist_color = "#00c087" if hybrid_info["distance_ma200_pct"] >= 0 else "#ff3b69"
 

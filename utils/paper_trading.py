@@ -475,6 +475,11 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                     "ma20": regime_info["ma20"],
                     "ma200": regime_info["ma200"],
                     "distance_ma200_pct": regime_info["distance_ma200_pct"],
+                    "bb_lower": regime_info.get("bb_lower", 0.0),
+                    "bb_mid": regime_info.get("bb_mid", 0.0),
+                    "ema50": regime_info.get("ema50", 0.0),
+                    "cluc_threshold": regime_info.get("cluc_threshold", 0.0),
+                    "is_cluc_dip": regime_info.get("is_cluc_dip", False),
                     "signal": regime_info["signal"],
                     "reason": regime_info["reason"]
                 }
@@ -578,45 +583,73 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                     time.sleep(5)
                     continue
 
-                acc.state["active_sub_strategy"] = "MARTINGALE"
-
                 # 마틴게일 Case 1 & 2: 정상 대기 (매도 1건, 매수 3건)
-                if num_sell == 1 and num_buy == 3:
-                    time.sleep(5)
-                    continue
+                if num_sell == 1:
+                    acc.state["active_sub_strategy"] = "MARTINGALE"
+                    if num_buy == 3:
+                        time.sleep(5)
+                        continue
 
                 # 마틴게일 Case 3: 매도 완료 또는 신규 시작 (매도 0건)
                 elif num_sell == 0:
-                    print(f"\n[{time.strftime('%H:%M:%S')}] [ACTION] 하락장 마틴게일 방어 신규/재진입 시작.")
-                    acc.cancel_all_orders("bid")
+                    # ClucMay 과매도 낙주 신호 발생 시에만 1차 진입
+                    if hybrid_signal == "MARTINGALE_BUY_DIP":
+                        print(f"\n[{time.strftime('%H:%M:%S')}] [ACTION] 📉 하락장 ClucMay 과매도 낙주 포착! 1차 마틴게일 시작.")
+                        acc.cancel_all_orders("bid")
 
-                    # 코인이 없으면 1 Unit 시장가 매수
-                    if acc.coin_balance <= 0 or (acc.coin_balance * current_price) < MIN_ORDER_KRW:
-                        if acc.krw_balance < unit_krw:
-                            print(f"[WARN] 가상 잔고 부족 ({acc.krw_balance:,.0f}원 < {unit_krw:,}원). 대기 중...")
-                            time.sleep(10)
-                            continue
-                        res = acc.buy_market(unit_krw, current_price)
-                        print(f"  - 1 Unit 가상 시장가 매수 완료: {unit_krw:,.0f}원")
+                        # 코인이 없으면 1 Unit 시장가 매수
+                        if acc.coin_balance <= 0 or (acc.coin_balance * current_price) < MIN_ORDER_KRW:
+                            if acc.krw_balance < unit_krw:
+                                print(f"[WARN] 가상 잔고 부족 ({acc.krw_balance:,.0f}원 < {unit_krw:,}원). 대기 중...")
+                                time.sleep(10)
+                                continue
+                            res = acc.buy_market(unit_krw, current_price)
+                            print(f"  - 1 Unit 가상 시장가 매수 완료: {unit_krw:,.0f}원")
 
-                    avg_price = acc.avg_buy_price
-                    quantity = acc.coin_balance
-                    print(f"  - 현재 가상 포지션: 평단가 {avg_price:,.0f}원, 보유수량 {quantity:.4f}")
+                        avg_price = acc.avg_buy_price
+                        quantity = acc.coin_balance
+                        print(f"  - 현재 가상 포지션: 평단가 {avg_price:,.0f}원, 보유수량 {quantity:.4f}")
 
-                    # 익절 매도 주문 등록 (+0.5%)
-                    sell_p = adjust_price_to_tick(avg_price * profit_margin, method="ceil")
-                    acc.add_limit_order("ask", sell_p, quantity)
-                    print(f"  - 가상 익절 매도 등록: {sell_p:,.0f}원 (+{(profit_margin - 1)*100:.2f}%)")
+                        # 익절 매도 주문 등록 (+0.5%)
+                        sell_p = adjust_price_to_tick(avg_price * profit_margin, method="ceil")
+                        acc.add_limit_order("ask", sell_p, quantity)
+                        print(f"  - 가상 익절 매도 등록: {sell_p:,.0f}원 (+{(profit_margin - 1)*100:.2f}%)")
 
-                    # 물타기 3단계 등록 (2x, 3x, 6x)
-                    plans = calculate_new_buy_prices(avg_buy_price=avg_price, existing_orders=None)
-                    for p_dict in plans:
-                        p = p_dict["price"]
-                        u = p_dict["units"]
-                        order_krw = unit_krw * u
-                        v = round(order_krw / p, 8)
-                        acc.add_limit_order("bid", p, v, units=u)
-                        print(f"    - 가상 매수 등록: {p:,.0f}원 | {u} Units ({order_krw:,.0f}원) | 수량: {v}")
+                        # 물타기 3단계 등록 (2x, 3x, 6x)
+                        plans = calculate_new_buy_prices(avg_buy_price=avg_price, existing_orders=None)
+                        for p_dict in plans:
+                            p = p_dict["price"]
+                            u = p_dict["units"]
+                            order_krw = unit_krw * u
+                            v = round(order_krw / p, 8)
+                            acc.add_limit_order("bid", p, v, units=u)
+                            print(f"    - 가상 매수 등록: {p:,.0f}원 | {u} Units ({order_krw:,.0f}원) | 수량: {v}")
+
+                        acc.state["active_sub_strategy"] = "MARTINGALE"
+                        acc._save_state()
+
+                        msg = (
+                            f"📉 [하락장 ClucMay 과매도 낙주 진입] {market}\n"
+                            f"볼린저 밴드 하단-1.5% 이탈 과매도 투매 포착!\n"
+                            f"매수가: {current_price:,.0f}원 | 1 Unit: {unit_krw:,}원\n"
+                            f"익절 목표: {sell_p:,.0f}원 (+{(profit_margin - 1)*100:.2f}%)"
+                        )
+                        print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
+                        try:
+                            from utils.bot import send_message
+                            send_message(msg)
+                        except Exception:
+                            pass
+                        time.sleep(5)
+                        continue
+                    else:
+                        # ClucMay 낙주 신호 미발생: 현금 100% 보존 관망 모드
+                        if sub_strategy != "WAITING":
+                            acc.state["active_sub_strategy"] = "WAITING"
+                            acc.cancel_all_orders("bid")
+                            acc._save_state()
+                        time.sleep(5)
+                        continue
 
                 # 마틴게일 Case 4: 물타기 체결 (매도 1건, 매수 2건 이하)
                 elif num_sell == 1 and num_buy <= 2:
