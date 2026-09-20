@@ -139,7 +139,7 @@ def get_available_markets():
 
     # 실제 상태 파일이 존재하는 설정 종목 우선 배치
     for m in configured_markets:
-        state_file = f"paper_state_{m.replace('-', '_')}.json"
+        state_file = os.path.join(BASE_DIR, f"paper_state_{m.replace('-', '_')}.json")
         if os.path.exists(state_file) and m not in active_markets:
             active_markets.append(m)
 
@@ -221,12 +221,14 @@ def get_trade_signature(market: str) -> str:
     """체결 거래 수, 마지막 거래 ID, 최근 체결 시각, 실시간 상태 시그니처 생성"""
     sig_parts = []
     try:
-        with get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT count(*), max(id), max(timestamp) FROM paper_trades WHERE market = ?", (market,))
-            row = cur.fetchone()
-            if row:
-                sig_parts.append(f"db:{row[0]}-{row[1]}-{row[2]}")
+        db_path = os.path.join(BASE_DIR, "trade_history.db")
+        if os.path.exists(db_path):
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT count(*), max(id), max(timestamp) FROM paper_trades WHERE market = ?", (market,))
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    sig_parts.append(f"db:{row[0]}-{row[1]}-{row[2]}")
     except Exception:
         pass
 

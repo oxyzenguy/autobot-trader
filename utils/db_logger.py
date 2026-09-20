@@ -1,7 +1,9 @@
+import os
 import sqlite3
 from datetime import datetime, timedelta
 
-DB_PATH = "trade_history.db"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE_DIR, "trade_history.db")
 
 def _get_send_message():
     try:
