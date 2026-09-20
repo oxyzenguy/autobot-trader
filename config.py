@@ -34,6 +34,11 @@ IS_PAPER_TRADING = os.getenv("IS_PAPER_TRADING", "true").lower() in ("true", "1"
 # 전략 맞대결 (실제 코인모으기 vs 100만원 하이브리드 가상매매) 2~4주 실전 검증 시작 기준 시각
 SHOWDOWN_START_TIME = "2026-09-20 20:45:00"
 
+# 하이브리드 상승장(BULL) 다이나믹 트레일링 스탑 설정 (Freqtrade Supertrend/Bandtastic 방식)
+USE_TRAILING_STOP = True          # 트레일링 스탑 사용 여부
+TRAILING_STOP_TRIGGER = 0.10      # 진입가 대비 +10.0% 도달 시 트레일링 스탑 가동
+TRAILING_STOP_DROP = 0.03         # 포지션 최고가 대비 -3.0% 하락 시 조기 익절 청산
+
 # 종목별 맞춤 익절 마진 (1단계 추천 적용: SOL 0.5%, ETH 0.8%)
 PROFIT_MARGINS = {
     "KRW-SOL": 1.005,  # 솔라나: +0.5% (초단타 빠른 회전)

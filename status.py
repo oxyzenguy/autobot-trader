@@ -42,7 +42,15 @@ def print_status():
         regime_str = "🟢 상승 국면(BULL)" if regime == "BULL" else "🔴 하락 국면(BEAR)"
         sub_strat = state.get("active_sub_strategy", "TREND")
         if sub_strat == "TREND":
-            strat_name = "5/20 MA 추세추종"
+            ts_active = state.get("trailing_stop_active", False)
+            peak_p = state.get("trend_highest_price", 0.0)
+            ts_p = state.get("trailing_stop_price", 0.0)
+            if ts_active and ts_p > 0:
+                strat_name = f"5/20 MA 추세 (🎯 트레일링 스탑 가동: 최고가 {peak_p:,.0f}원 / 익절선 {ts_p:,.0f}원)"
+            elif peak_p > 0:
+                strat_name = f"5/20 MA 추세 (트레일링 목표 +10% 추적: 최고가 {peak_p:,.0f}원)"
+            else:
+                strat_name = "5/20 MA 추세추종"
         elif sub_strat == "MARTINGALE":
             strat_name = "마틴게일 1-2-3-6 방어"
         else:

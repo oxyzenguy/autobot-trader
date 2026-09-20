@@ -433,7 +433,15 @@ def render_dashboard(market: str):
     
     if is_bull:
         regime_badge = '<span style="background:#00c087; color:#12161f; padding:4px 12px; border-radius:14px; font-weight:800; font-size:0.88rem;">🟢 상승 국면 (BULL)</span>'
-        mode_desc = '<span style="color:#00e676; font-weight:700; font-size:1.05rem;">🚀 5/20 MA 추세추종 모드 가동 중</span>'
+        ts_active = live_state.get("trailing_stop_active", False) if live_state else False
+        ts_price = live_state.get("trailing_stop_price", 0.0) if live_state else 0.0
+        if active_mode == "TREND":
+            if ts_active and ts_price > 0:
+                mode_desc = f'<span style="color:#ffea00; font-weight:700; font-size:1.05rem;">🎯 트레일링 스탑 가동 중 (익절선: {ts_price:,.0f}원)</span>'
+            else:
+                mode_desc = '<span style="color:#00e676; font-weight:700; font-size:1.05rem;">🚀 5/20 MA 추세추종 모드 가동 중</span>'
+        else:
+            mode_desc = '<span style="color:#81d4fa; font-weight:700; font-size:1.05rem;">⏳ 상승 국면 골든크로스 대기 중</span>'
     else:
         regime_badge = '<span style="background:#ff3b69; color:#fff; padding:4px 12px; border-radius:14px; font-weight:800; font-size:0.88rem;">🔴 하락 국면 (BEAR)</span>'
         if active_mode == "MARTINGALE":

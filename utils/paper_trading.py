@@ -9,7 +9,10 @@ from config import (
     MIN_ORDER_KRW,
     STOP_LOSS_PERCENT,
     FEE_RATE,
-    get_profit_margin
+    get_profit_margin,
+    USE_TRAILING_STOP,
+    TRAILING_STOP_TRIGGER,
+    TRAILING_STOP_DROP
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 from strategy.hybrid_regime import get_hybrid_regime_and_signals
@@ -77,6 +80,9 @@ class PaperAccount:
             "wins": 0,
             "losses": 0,
             "realized_pnl": 0.0,
+            "trend_highest_price": 0.0,
+            "trailing_stop_active": False,
+            "trailing_stop_price": 0.0,
             "trade_history": []
         }
         self._save_state(initial_state)
@@ -510,6 +516,52 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                     acc.cancel_all_orders("bid")
                     print(f"[{ticker}] [HYBRID] 🟢 상승 국면 전환: 하락장 마틴게일 매수 대기 주문 취소.")
 
+                # -----------------------------------------------------
+                # 신호 0: 다이나믹 트레일링 스탑 체크 (Freqtrade Supertrend/Bandtastic 방식)
+                # -----------------------------------------------------
+                if sub_strategy == "TREND" and acc.coin_balance > 0 and USE_TRAILING_STOP:
+                    cur_highest = max(acc.state.get("trend_highest_price", 0.0), current_price)
+                    if cur_highest > acc.state.get("trend_highest_price", 0.0):
+                        acc.state["trend_highest_price"] = cur_highest
+                        acc._save_state()
+
+                    avg_p = acc.avg_buy_price
+                    if avg_p > 0:
+                        max_gain = (cur_highest - avg_p) / avg_p
+                        # 진입 후 +10% 이상 도달 시 트레일링 스탑 활성화
+                        if max_gain >= TRAILING_STOP_TRIGGER:
+                            ts_price = adjust_price_to_tick(cur_highest * (1.0 - TRAILING_STOP_DROP), method="floor")
+                            if not acc.state.get("trailing_stop_active", False) or acc.state.get("trailing_stop_price", 0.0) != ts_price:
+                                acc.state["trailing_stop_active"] = True
+                                acc.state["trailing_stop_price"] = ts_price
+                                acc._save_state()
+
+                            # 최고가 대비 -3% 이하로 하락 시 조기 익절 청산!
+                            if current_price <= ts_price:
+                                acc.cancel_all_orders()
+                                res = acc.sell_market(acc.coin_balance, current_price, reason="TRAILING_STOP_PROFIT")
+                                acc.state["active_sub_strategy"] = "WAITING"
+                                acc.state["trend_highest_price"] = 0.0
+                                acc.state["trailing_stop_active"] = False
+                                acc.state["trailing_stop_price"] = 0.0
+                                acc._save_state()
+
+                                realized_gain_pct = ((current_price / avg_p) - 1.0) * 100.0
+                                msg = (
+                                    f"🎯 [하이브리드 다이나믹 트레일링 스탑 익절] {market}\n"
+                                    f"진입가: {avg_p:,.0f}원 | 최고가: {cur_highest:,.0f}원 (+{max_gain * 100:.2f}%)\n"
+                                    f"고점 대비 -{TRAILING_STOP_DROP * 100:.1f}% 하락 도달로 조기 익절 완료!\n"
+                                    f"매도가: {current_price:,.0f}원 (수익률: {realized_gain_pct:+.2f}%) | 손익: {res.get('pnl', 0):+,.0f}원"
+                                )
+                                print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
+                                try:
+                                    from utils.bot import send_message
+                                    send_message(msg)
+                                except Exception:
+                                    pass
+                                time.sleep(5)
+                                continue
+
                 # 신호 1: 5/20 MA 골든크로스 매수
                 if hybrid_signal == "BUY":
                     if acc.coin_balance <= 0 or (acc.coin_balance * current_price) < MIN_ORDER_KRW:
@@ -518,6 +570,9 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                             acc.cancel_all_orders()
                             res = acc.buy_market(invest_krw, current_price)
                             acc.state["active_sub_strategy"] = "TREND"
+                            acc.state["trend_highest_price"] = current_price
+                            acc.state["trailing_stop_active"] = False
+                            acc.state["trailing_stop_price"] = 0.0
                             acc._save_state()
                             msg = (
                                 f"🚀 [하이브리드 상승장 진입] {market}\n"
@@ -539,6 +594,9 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                         acc.cancel_all_orders()
                         res = acc.sell_market(acc.coin_balance, current_price, reason="TREND_DEAD_CROSS")
                         acc.state["active_sub_strategy"] = "WAITING"
+                        acc.state["trend_highest_price"] = 0.0
+                        acc.state["trailing_stop_active"] = False
+                        acc.state["trailing_stop_price"] = 0.0
                         acc._save_state()
                         msg = (
                             f"🛑 [하이브리드 추세 청산] {market}\n"
@@ -567,11 +625,14 @@ def run_paper_trading_loop(market: str = "KRW-SOL"):
                 if sub_strategy == "TREND" and acc.coin_balance > 0:
                     acc.cancel_all_orders()
                     res = acc.sell_market(acc.coin_balance, current_price, reason="BEAR_REGIME_CUT")
-                    acc.state["active_sub_strategy"] = "MARTINGALE"
+                    acc.state["active_sub_strategy"] = "WAITING"
+                    acc.state["trend_highest_price"] = 0.0
+                    acc.state["trailing_stop_active"] = False
+                    acc.state["trailing_stop_price"] = 0.0
                     acc._save_state()
                     msg = (
                         f"🛡️ [하이브리드 하락장 방어 전환] {market}\n"
-                        f"200 MA 하향 이탈로 추세 포지션 즉시 청산 후 마틴게일 방어 모드로 전환합니다.\n"
+                        f"200 MA 하향 이탈로 추세 포지션 즉시 청산 후 관망 모드로 전환합니다.\n"
                         f"청산가: {current_price:,.0f}원"
                     )
                     print(f"\n[{time.strftime('%H:%M:%S')}] {msg}")
