@@ -94,8 +94,14 @@ def get_total_account_summary() -> Dict[str, Any]:
     - 보유 코인 목록 (비중, 수익률 등)
     """
     init_db()
-    upbit = get_upbit_client()
-    balances = upbit.get_balances()
+    balances = []
+    is_api_key_missing = False
+    try:
+        upbit = get_upbit_client()
+        balances = upbit.get_balances() or []
+    except Exception as e:
+        is_api_key_missing = True
+        print(f"[WARN] 업비트 클라이언트 초기화 실패 (API 키 확인 필요): {e}")
 
     krw_balance = 0.0
     krw_locked = 0.0
@@ -161,22 +167,23 @@ def get_total_account_summary() -> Dict[str, Any]:
     growth_amount = total_equity - base_equity
     growth_pct = (growth_amount / base_equity * 100.0) if base_equity > 0 else 0.0
 
-    # 3. 예수금 10만원 이하 경고 플래그
-    is_krw_warning = krw_balance < MIN_KRW_ALERT_THRESHOLD
+    # 3. 예수금 10만원 이하 경고 플래그 (API 키 정상 연동 시에만)
+    is_krw_warning = (krw_balance < MIN_KRW_ALERT_THRESHOLD) and (not is_api_key_missing)
 
-    # 4. DB에 전체 계좌 스냅샷 기록 (시계열)
-    try:
-        log_total_account_snapshot(
-            total_equity=total_equity,
-            total_cost=total_invested,
-            unrealized_pnl=unrealized_pnl,
-            return_pct=growth_pct,
-            krw_balance=krw_balance,
-            coin_eval=total_coin_eval,
-            coins_json=json.dumps([{"currency": c["currency"], "eval": c["eval_amount"]} for c in coins_list])
-        )
-    except Exception:
-        pass
+    # 4. DB에 전체 계좌 스냅샷 기록 (시계열) - API 키가 정상일 때만 기록
+    if not is_api_key_missing:
+        try:
+            log_total_account_snapshot(
+                total_equity=total_equity,
+                total_cost=total_invested,
+                unrealized_pnl=unrealized_pnl,
+                return_pct=growth_pct,
+                krw_balance=krw_balance,
+                coin_eval=total_coin_eval,
+                coins_json=json.dumps([{"currency": c["currency"], "eval": c["eval_amount"]} for c in coins_list])
+            )
+        except Exception:
+            pass
 
     return {
         "total_equity": total_equity,
@@ -194,7 +201,8 @@ def get_total_account_summary() -> Dict[str, Any]:
         "growth_amount": growth_amount,
         "growth_pct": growth_pct,
         "base_snapshot_time": base_data.get("snapshot_time", "-"),
-        "coins": coins_list
+        "coins": coins_list,
+        "is_api_key_missing": is_api_key_missing
     }
 
 
@@ -207,7 +215,11 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
     """
     init_db()
     ticker = market.split("-")[1]
-    upbit = get_upbit_client()
+    upbit = None
+    try:
+        upbit = get_upbit_client()
+    except Exception:
+        pass
 
     # 1. 현재 포지션 조회
     cur_bal = 0.0
@@ -215,14 +227,15 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
     avg_price = 0.0
     current_price = safe_get_current_price(market, fallback=0.0)
 
-    try:
-        balance_info = upbit.get_balance(ticker, verbose=True)
-        if balance_info and 'avg_buy_price' in balance_info:
-            cur_bal = float(balance_info.get('balance', 0.0))
-            locked_bal = float(balance_info.get('locked', 0.0))
-            avg_price = float(balance_info.get('avg_buy_price', 0.0))
-    except Exception as e:
-        print(f"[{market}] 잔고 조회 실패: {e}")
+    if upbit is not None:
+        try:
+            balance_info = upbit.get_balance(ticker, verbose=True)
+            if balance_info and 'avg_buy_price' in balance_info:
+                cur_bal = float(balance_info.get('balance', 0.0))
+                locked_bal = float(balance_info.get('locked', 0.0))
+                avg_price = float(balance_info.get('avg_buy_price', 0.0))
+        except Exception as e:
+            print(f"[{market}] 잔고 조회 실패: {e}")
 
     total_coin_balance = cur_bal + locked_bal
     eval_amount = total_coin_balance * current_price
@@ -232,19 +245,20 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
 
     # 2. 미체결 주문 목록 조회
     open_orders = []
-    try:
-        orders = upbit.get_order(market, state="wait")
-        if orders:
-            for o in orders:
-                open_orders.append({
-                    "uuid": o.get("uuid"),
-                    "side": o.get("side"),
-                    "price": float(o.get("price", 0.0)),
-                    "volume": float(o.get("volume", 0.0)),
-                    "created_at": o.get("created_at")
-                })
-    except Exception as e:
-        print(f"[{market}] 미체결 주문 조회 실패: {e}")
+    if upbit is not None:
+        try:
+            orders = upbit.get_order(market, state="wait")
+            if orders:
+                for o in orders:
+                    open_orders.append({
+                        "uuid": o.get("uuid"),
+                        "side": o.get("side"),
+                        "price": float(o.get("price", 0.0)),
+                        "volume": float(o.get("volume", 0.0)),
+                        "created_at": o.get("created_at")
+                    })
+        except Exception as e:
+            print(f"[{market}] 미체결 주문 조회 실패: {e}")
 
     # 2-1. 하이브리드 국면 및 런타임 상태 로드
     from strategy.hybrid_regime import get_hybrid_regime_and_signals

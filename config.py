@@ -61,11 +61,39 @@ def get_profit_margin(market: str) -> float:
 
 
 
+def get_upbit_keys():
+    """런타임 시점에 환경변수 및 Streamlit Secrets에서 API 키를 탐색합니다."""
+    ak = os.getenv("UPBIT_ACCESS_KEY")
+    sk = os.getenv("UPBIT_SECRET_KEY")
+
+    try:
+        import streamlit as st
+        # Streamlit Secrets 탐색 (다양한 키 명칭 호환 지원)
+        if hasattr(st, "secrets"):
+            for ak_name in ["UPBIT_ACCESS_KEY", "upbit_access_key", "ACCESS_KEY", "access_key"]:
+                if ak_name in st.secrets:
+                    ak = ak or st.secrets[ak_name]
+                    break
+            for sk_name in ["UPBIT_SECRET_KEY", "upbit_secret_key", "SECRET_KEY", "secret_key"]:
+                if sk_name in st.secrets:
+                    sk = sk or st.secrets[sk_name]
+                    break
+            # [upbit] 섹션 하위 탐색
+            if not ak and "upbit" in st.secrets:
+                ak = st.secrets["upbit"].get("access_key") or st.secrets["upbit"].get("UPBIT_ACCESS_KEY")
+                sk = st.secrets["upbit"].get("secret_key") or st.secrets["upbit"].get("UPBIT_SECRET_KEY")
+    except Exception:
+        pass
+
+    return ak, sk
+
+
 def get_upbit_client():
     """업비트 클라이언트를 생성하여 반환합니다."""
-    if not UPBIT_ACCESS_KEY or not UPBIT_SECRET_KEY:
-        raise ValueError("업비트 API 키가 .env 파일에 설정되지 않았습니다. .env 파일을 확인해주세요.")
-    return pyupbit.Upbit(UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY)
+    ak, sk = get_upbit_keys()
+    if not ak or not sk:
+        raise ValueError("업비트 API 키가 설정되지 않았습니다. .env 파일 또는 Streamlit Secrets를 확인해주세요.")
+    return pyupbit.Upbit(ak, sk)
 
 
 def load_investments():
