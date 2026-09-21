@@ -15,7 +15,7 @@
 3. 하락 국면 (BEAR) 매매 로직:
    - 추세 매수 전면 차단 (가짜 골든크로스 Whipsaw 회피)
    - ClucMay 과매도 낙주 필터: 볼린저 하단 1.5% 이탈 패닉 투매 발생 시에만 1차 진입
-   - 마틴게일 방어 모드 가동 (소액 물타기 1-2-3-6 Unit + 0.5% 기술적 반등 전량 익절)
+   - 마틴게일 매직스플릿 방어 모드 (1-2-3-6 Unit 배수 진입 + 개별 차수 +3% OR 바스켓 익절 이중 트랙)
    - 낙주 신호 미발생 시 100% 현금 보존 관망
 """
 
@@ -147,19 +147,19 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
             signal = "HOLD"
             reason = f"200 MA 상회 중 추세 유지 (5선 {curr_ma5:,.0f}원, 20선 {curr_ma20:,.0f}원)"
     else:
-        # 하락장 방어 신호 (ClucMay 과매도 낙주 필터 적용)
+        # 하락장 방어 모듈: 마틴게일 배수 진입 + 하이브리드 매직스플릿 이중익절 (개별 +3% OR 바스켓 익절)
         if is_cluc_dip:
             signal = "MARTINGALE_BUY_DIP"
             reason = (
                 f"200 MA 하회 중 ClucMay 과매도 낙주 포착! "
-                f"볼린저하단-1.5% 기준가({cluc_threshold:,.0f}원) 하회: 현재가 {curr_price:,.0f}원 (1차 물타기 진입)"
+                f"기준가({cluc_threshold:,.0f}원) 하회(현재가 {curr_price:,.0f}원): 마틴-매직스플릿 방어 진입"
             )
         else:
-            signal = "MARTINGALE_WAIT"
-            dist_cluc_pct = ((curr_price / cluc_threshold) - 1.0) * 100.0 if cluc_threshold > 0 else 0.0
+            signal = "MARTINGALE_MAGIC_SPLIT_DEFENSE"
+            dist_ma = distance_ma200_pct
             reason = (
-                f"200 MA 하회 하락 국면: ClucMay 과매도 낙주 대기 중 "
-                f"(현재가 {curr_price:,.0f}원 / 기준가 {cluc_threshold:,.0f}원, {dist_cluc_pct:+.2f}%)"
+                f"200 MA 하회 하락 국면 (이격 {dist_ma:+.2f}%): "
+                f"마틴게일 배수 진입 + 매직스플릿 이중익절(개별 +3% OR 바스켓 익절) 방어 모드 가동"
             )
 
     return {
@@ -180,6 +180,59 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
         "regime_korean": regime_korean,
         "signal": signal,
         "reason": reason
+    }
+
+
+def check_magic_split_exits(
+    tranches: list,
+    current_price: float,
+    avg_buy_price: float,
+    profit_margin: float = 1.005,
+    tranche_profit_pct: float = 0.03
+) -> dict:
+    """
+    하이브리드 매직스플릿 이중익절(Dual Exit) 판별:
+    1. 바스켓 익절: 전체 평단가 대비 목표 마진(+0.5% 등) 도달 시 전량 청산
+    2. 개별 차수 익절: 각 차수 매수가 대비 +3.0% 반등 시 해당 차수만 단독 익절
+    """
+    # 1. 전체 바스켓 익절 우선 확인
+    if avg_buy_price > 0 and current_price >= (avg_buy_price * profit_margin):
+        pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
+        return {
+            "exit_type": "BASKET",
+            "target_price": avg_buy_price * profit_margin,
+            "current_price": current_price,
+            "pnl_pct": pnl_pct,
+            "reason": f"전체 포지션 바스켓 익절 조건 달성 (평단가 {avg_buy_price:,.0f}원 대비 {pnl_pct:+.2f}%)"
+        }
+
+    # 2. 개별 차수 매직스플릿 익절 확인
+    eligible_tranches = []
+    for t in tranches:
+        buy_p = float(t.get("buy_price", 0.0))
+        target_p = buy_p * (1.0 + tranche_profit_pct)
+        if buy_p > 0 and current_price >= target_p:
+            pnl_pct = ((current_price - buy_p) / buy_p) * 100.0
+            eligible_tranches.append({
+                "step": t.get("step", 0),
+                "buy_price": buy_p,
+                "target_price": target_p,
+                "volume": float(t.get("volume", 0.0)),
+                "units": t.get("units", 1),
+                "pnl_pct": pnl_pct
+            })
+
+    if eligible_tranches:
+        return {
+            "exit_type": "TRANCHE",
+            "eligible_tranches": eligible_tranches,
+            "current_price": current_price,
+            "reason": f"개별 {len(eligible_tranches)}개 차수 +{tranche_profit_pct*100:.1f}% 반등 매직스플릿 익절 조건 달성"
+        }
+
+    return {
+        "exit_type": "NONE",
+        "reason": "익절 조건 미달성 (대기)"
     }
 
 

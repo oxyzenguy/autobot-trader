@@ -10,114 +10,135 @@ import streamlit as st
 import pyupbit
 from datetime import datetime
 
-from utils.analytics import PerformanceAnalyzer
-from utils.db_logger import DB_PATH, init_db
-from config import INVESTMENTS
-from strategy.hybrid_regime import get_hybrid_regime_and_signals
+from config import INVESTMENTS, MIN_KRW_ALERT_THRESHOLD, get_profit_margin
+from utils.analytics import (
+    get_total_account_summary,
+    get_all_active_strategies,
+    get_strategy_performance
+)
+from utils.db_logger import (
+    DB_PATH,
+    init_db,
+    get_strategy_history,
+    archive_strategy,
+    save_or_update_strategy
+)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-# --- Streamlit 페이지 설정 (사이드바 기본 접힘 상태) ---
+def get_latest_trade_signature() -> str:
+    """
+    매매 체결 및 주문 상태 변경을 초경량으로 감지하기 위한 시그니처 생성
+    1) trade_history.db의 trades 테이블 레코드 수 및 최신 ID
+    2) real_strategy_state_{market}.json 파일들의 최종 수정 시각
+    """
+    db_sig = "0_0"
+    try:
+        if os.path.exists(DB_PATH):
+            conn = sqlite3.connect(DB_PATH, timeout=2.0)
+            cur = conn.cursor()
+            cur.execute("SELECT count(*), coalesce(max(id), 0) FROM trades")
+            row = cur.fetchone()
+            if row:
+                db_sig = f"{row[0]}_{row[1]}"
+            conn.close()
+    except Exception:
+        pass
+
+    state_sig = []
+    for m in INVESTMENTS.keys():
+        s_file = os.path.join(BASE_DIR, f"real_strategy_state_{m.replace('-', '_')}.json")
+        if os.path.exists(s_file):
+            try:
+                mtime = os.path.getmtime(s_file)
+                state_sig.append(f"{m}:{mtime:.1f}")
+            except Exception:
+                pass
+
+    return f"{db_sig}|{'_'.join(state_sig)}"
+
+
+
+# --- Streamlit 페이지 설정 ---
 st.set_page_config(
-    page_title="AutoBot 퀀트 하이브리드 대시보드",
+    page_title="AutoBot 전략 대시보드",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# --- 커스텀 스타일 (Dark Financial Theme + 상단 컨트롤 바) ---
+# --- 커스텀 스타일 (Dark Financial Theme) ---
 st.markdown("""
 <style>
-    /* 상단 컨트롤 패널 카드 */
-    .top-control-card {
-        background: #1e222d;
-        border: 1px solid #2a2e39;
+    /* 배경 및 카드 디자인 */
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+    }
+    .top-header {
+        background: linear-gradient(135deg, #151a23 0%, #1f2633 100%);
+        border: 1px solid #2d3648;
         border-radius: 12px;
-        padding: 14px 20px;
-        margin-bottom: 16px;
+        padding: 16px 22px;
+        margin-bottom: 18px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.25);
     }
-    .summary-banner {
-        background: linear-gradient(90deg, #181d26 0%, #202632 100%);
-        border: 1px solid #2f3746;
+    .krw-alert-box {
+        background: linear-gradient(90deg, #4a151b 0%, #731c26 100%);
+        border: 2px solid #ff3b69;
         border-radius: 10px;
-        padding: 12px 18px;
+        padding: 14px 20px;
         margin-bottom: 20px;
+        color: #ffffff;
+        box-shadow: 0 4px 14px rgba(255, 59, 105, 0.35);
         display: flex;
-        flex-wrap: wrap;
-        gap: 20px;
         align-items: center;
-        justify-content: space-between;
+        gap: 15px;
     }
-    .summary-item {
-        display: flex;
-        flex-direction: column;
-    }
-    .summary-label {
-        font-size: 0.76rem;
-        color: #848e9c;
-        font-weight: 500;
-        margin-bottom: 2px;
-    }
-    .summary-value {
-        font-size: 1.1rem;
-        font-weight: 700;
-        color: #f0f3f6;
-    }
-    .summary-green {
-        color: #00c087;
-    }
-    .summary-red {
-        color: #ff3b69;
-    }
-
-    /* 실제 코인모으기 vs 마틴게일 비교 박스 */
-    .dca-compare-box {
-        background: linear-gradient(135deg, #191f2c 0%, #202737 100%);
-        border: 1px solid #3d4659;
+    .section-card {
+        background: #181d27;
+        border: 1px solid #2a3242;
         border-radius: 12px;
-        padding: 16px 20px;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+        padding: 18px 22px;
+        margin-bottom: 22px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+    .strategy-card {
+        background: linear-gradient(135deg, #1a202c 0%, #202736 100%);
+        border: 1px solid #323d52;
+        border-radius: 12px;
+        padding: 18px 22px;
+        margin-bottom: 24px;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.25);
     }
     .metric-card {
-        background: linear-gradient(135deg, #1e222d 0%, #262b37 100%);
+        background: #141822;
         border-radius: 10px;
         padding: 14px 18px;
-        border: 1px solid #363c4e;
-        box-shadow: 0 4px 8px -2px rgba(0, 0, 0, 0.3);
+        border: 1px solid #2b3345;
         height: 100%;
     }
-    .metric-label {
-        font-size: 0.82rem;
-        color: #9aa0a6;
+    .metric-title {
+        font-size: 0.8rem;
+        color: #8c96a5;
         font-weight: 500;
         margin-bottom: 4px;
     }
-    .metric-val-green {
-        font-size: 1.55rem;
-        font-weight: 700;
-        color: #00c087;
-    }
-    .metric-val-red {
-        font-size: 1.55rem;
-        font-weight: 700;
-        color: #ff3b69;
-    }
-    .metric-val-blue {
-        font-size: 1.55rem;
-        font-weight: 700;
-        color: #2962ff;
-    }
-    .metric-val-white {
+    .metric-val {
         font-size: 1.55rem;
         font-weight: 700;
         color: #f0f3f6;
     }
     .metric-sub {
         font-size: 0.76rem;
-        color: #787b86;
+        color: #7b8595;
         margin-top: 4px;
     }
+    .text-green { color: #00c087 !important; }
+    .text-red { color: #ff3b69 !important; }
+    .text-blue { color: #2962ff !important; }
+    .text-yellow { color: #ffb300 !important; }
 
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
@@ -131,68 +152,34 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def get_available_markets():
-    """현재 전략이 적용된 유효 마켓(INVESTMENTS에 설정된 종목)만 반환 (BTC, XRP 등 미적용 종목 제외)"""
-    # .env 및 config.py에 설정된 대상 종목 (현재 KRW-SOL, KRW-ETH)
-    configured_markets = list(INVESTMENTS.keys()) if INVESTMENTS else ["KRW-SOL", "KRW-ETH"]
-
-    active_markets = []
-
-    # 실제 상태 파일이 존재하는 설정 종목 우선 배치
-    for m in configured_markets:
-        state_file = os.path.join(BASE_DIR, f"paper_state_{m.replace('-', '_')}.json")
-        if os.path.exists(state_file) and m not in active_markets:
-            active_markets.append(m)
-
-    # 아직 상태 파일이 생성되지 않은 설정 종목 추가
-    for m in configured_markets:
-        if m not in active_markets:
-            active_markets.append(m)
-
-    return active_markets
-
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-
-def load_live_state(market: str):
-    """현재 가상 계좌의 실시간 JSON 상태 로드"""
-    state_file = os.path.join(BASE_DIR, f"paper_state_{market.replace('-', '_')}.json")
-    if os.path.exists(state_file):
-        try:
-            with open(state_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return None
-
-
 # =============================================================================
-# 1. 상단 컨트롤 패널 (기존 좌측 사이드바를 위쪽으로 전면 재배치)
+# 상단 헤더 & 컨트롤 바
 # =============================================================================
-available_markets = get_available_markets()
-
 with st.container():
-    c_title, c_market, c_refresh, c_btn = st.columns([3.2, 1.8, 2.2, 1.0])
+    c_title, c_mode, c_refresh, c_btn = st.columns([3.6, 1.6, 1.8, 1.0])
 
     with c_title:
-        st.markdown("""
-        <div style="display:flex; align-items:center; gap:10px; padding-top:2px;">
-            <span style="font-size:2rem;">⚡</span>
+        st.html("""
+        <div style="display:flex; align-items:center; gap:12px;">
+            <span style="font-size:2.2rem;">⚡</span>
             <div>
-                <h2 style="margin:0; font-size:1.55rem; font-weight:800; color:#f0f3f6;">AutoBot Trader 성과 대시보드</h2>
-                <div style="color:#848e9c; font-size:0.82rem;">실시간 하이브리드(국면전환) 자동매매 & 8대 퀀트 성과 분석</div>
+                <h2 style="margin:0; font-size:1.6rem; font-weight:800; color:#f0f3f6;">
+                    AutoBot 전략 대시보드
+                </h2>
+                <div style="color:#8c96a5; font-size:0.84rem;">
+                    업비트 실전 매매 연동 | 전체 계좌 포트폴리오 & 다중 전략 성과 관리
+                </div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
-    with c_market:
-        selected_market = st.selectbox(
-            "🎯 분석 마켓 선택",
-            available_markets,
-            index=0,
-            help="실제 거래가 감지된 마켓이 맨 위에 표시됩니다."
-        )
+    with c_mode:
+        st.html("""
+        <div style="padding-top:8px;">
+            <div style="font-size:0.75rem; color:#8c96a5;">현재 매매 모드</div>
+            <div style="font-size:1.05rem; font-weight:700; color:#00c087;">🟢 실전매매 (Real)</div>
+        </div>
+        """)
 
     with c_refresh:
         refresh_mode = st.selectbox(
@@ -200,703 +187,517 @@ with st.container():
             ["trade_event", 10, 30, 60, "manual"],
             index=0,
             format_func=lambda x: {
-                "trade_event": "⚡ 거래 체결 시 (추천)",
-                10: "⏱️ 10초 주기 (시세)",
+                "trade_event": "⚡ 매매체결 시 (기본)",
+                10: "⏱️ 10초 주기",
                 30: "⏱️ 30초 주기",
                 60: "⏱️ 60초 주기",
                 "manual": "🛑 수동 갱신"
-            }.get(x, str(x)),
-            help="⚡ '거래 체결 시': 새로운 매수/매도/물타기 체결 발생 시 자동으로 대시보드를 즉시 갱신합니다."
+            }.get(x, str(x))
         )
 
     with c_btn:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 새로고침", use_container_width=True):
+        if st.button("🔄 즉시 새로고침", use_container_width=True):
+            st.rerun()
+
+st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+
+# =============================================================================
+# 데이터 로드 (실시간 업비트 전체 계좌 및 활성 전략)
+# =============================================================================
+account_data = get_total_account_summary()
+active_strategies = get_all_active_strategies()
+
+
+# =============================================================================
+# [🚨 예수금 10만원 미만 긴급 경고 배너]
+# =============================================================================
+if account_data["is_krw_warning"]:
+    st.html(f"""
+    <div class="krw-alert-box">
+        <span style="font-size:2.2rem;">🚨</span>
+        <div>
+            <div style="font-size:1.15rem; font-weight:800; color:#ffffff;">
+                [예수금 10만원 미만 경고] 현재 주문가능 예수금이 {account_data['krw_balance']:,.0f}원 입니다!
+            </div>
+            <div style="font-size:0.86rem; color:#ffcdd2; margin-top:3px;">
+                최소 유지 기준({MIN_KRW_ALERT_THRESHOLD:,}원) 이하로 떨어졌습니다. 
+                추가 원화를 입금하시거나 다른 보유 자산을 매도하여 예수금을 확보하세요. (텔레그램 알림 발송됨)
+            </div>
+        </div>
+    </div>
+    """)
+
+
+# =============================================================================
+# 1. 전체 계좌 현황 & 전체 계좌 수익률 (제목의 [위] 삭제)
+# =============================================================================
+st.markdown("### 🏛️ 전체 계좌 현황 & 전체 계좌 수익률")
+
+# 1-1. 핵심 계좌 지표 4분할 카드
+c1, c2, c3, c4 = st.columns(4)
+
+tot_equity = account_data["total_equity"]
+growth_pct = account_data["growth_pct"]
+growth_amt = account_data["growth_amount"]
+growth_color = "text-green" if growth_pct >= 0 else "text-red"
+
+with c1:
+    st.html(f"""
+    <div class="metric-card">
+        <div class="metric-title">1. 전체 계좌 총 평가자산</div>
+        <div class="metric-val">{tot_equity:,.0f} <span style="font-size:1rem; color:#8c96a5;">KRW</span></div>
+        <div class="metric-sub">
+            기준 대비 성장률: <b class="{growth_color}">{growth_pct:+.2f}%</b> ({growth_amt:+,.0f}원)
+        </div>
+    </div>
+    """)
+
+with c2:
+    krw_bal = account_data["krw_balance"]
+    krw_warn = account_data["is_krw_warning"]
+    krw_badge = '<span style="background:#ff3b6922; color:#ff3b69; padding:2px 8px; border-radius:10px; font-size:0.75rem; border:1px solid #ff3b69; font-weight:700;">🚨 10만원 미만 부족</span>' if krw_warn else '<span style="background:#00c08722; color:#00c087; padding:2px 8px; border-radius:10px; font-size:0.75rem; border:1px solid #00c087; font-weight:700;">✅ 정상</span>'
+    krw_color = "text-red" if krw_warn else "text-green"
+    st.html(f"""
+    <div class="metric-card" style="border-color: {'#ff3b69' if krw_warn else '#2b3345'};">
+        <div class="metric-title" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>2. 💵 주문가능 예수금 (KRW)</span>
+            {krw_badge}
+        </div>
+        <div class="metric-val {krw_color}">{krw_bal:,.0f} <span style="font-size:1rem; color:#8c96a5;">원</span></div>
+        <div class="metric-sub">
+            묶인 금액(주문중): {account_data['krw_locked']:,.0f}원 | 알림 기준: {MIN_KRW_ALERT_THRESHOLD:,}원
+        </div>
+    </div>
+    """)
+
+with c3:
+    c_eval = account_data["total_coin_eval"]
+    u_pnl = account_data["unrealized_pnl"]
+    c_pnl_pct = account_data["coin_pnl_pct"]
+    pnl_color = "text-green" if u_pnl >= 0 else "text-red"
+    st.html(f"""
+    <div class="metric-card">
+        <div class="metric-title">3. 코인 총 평가금액</div>
+        <div class="metric-val">{c_eval:,.0f} <span style="font-size:1rem; color:#8c96a5;">원</span></div>
+        <div class="metric-sub">
+            총 평가손익: <b class="{pnl_color}">{u_pnl:+,.0f}원 ({c_pnl_pct:+.2f}%)</b>
+        </div>
+    </div>
+    """)
+
+with c4:
+    t_cost = account_data["total_invested"]
+    st.html(f"""
+    <div class="metric-card">
+        <div class="metric-title">4. 전체 투자 원가 (원금)</div>
+        <div class="metric-val">{t_cost:,.0f} <span style="font-size:1rem; color:#8c96a5;">원</span></div>
+        <div class="metric-sub">
+            코인 매수원가: {account_data['total_coin_cost']:,.0f}원
+        </div>
+    </div>
+    """)
+
+st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+
+# 1-2. 계좌 자산 구성 파이 차트 & 보유 자산 상세 테이블
+with st.expander("📊 계좌 자산 포트폴리오 구성 & 보유 종목 상세", expanded=True):
+    col_chart, col_table = st.columns([1.1, 1.9])
+
+    coins = account_data["coins"]
+
+    with col_chart:
+        labels = ["KRW (예수금)"] + [c["currency"] for c in coins if c["eval_amount"] > 0]
+        values = [account_data["total_krw"]] + [c["eval_amount"] for c in coins if c["eval_amount"] > 0]
+        colors = ["#2962ff", "#f7931a", "#627eea", "#14f195", "#8c96a5"]
+
+        fig_pie = go.Figure(data=[go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.55,
+            marker=dict(colors=colors),
+            textinfo="label+percent",
+            hovertemplate="<b>%{label}</b><br>평가액: %{value:,.0f}원<br>비중: %{percent}<extra></extra>"
+        )])
+        fig_pie.update_layout(
+            height=250,
+            margin=dict(l=10, r=10, t=15, b=15),
+            template="plotly_dark",
+            showlegend=False
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    with col_table:
+        table_rows = []
+        # KRW 행 추가
+        table_rows.append({
+            "자산": "KRW (원화)",
+            "총보유수량": f"{account_data['total_krw']:,.0f}원",
+            "매수평단가": "-",
+            "현재가": "-",
+            "평가금액": f"{account_data['total_krw']:,.0f}원",
+            "평가손익(수익률)": "-",
+            "비중": f"{(account_data['total_krw']/tot_equity*100.0):.1f}%" if tot_equity > 0 else "0%"
+        })
+
+        for c in coins:
+            pnl_s = f"{c['pnl']:+,.0f}원 ({c['pnl_pct']:+.2f}%)" if c["cost_amount"] > 0 else "-"
+            table_rows.append({
+                "자산": c["currency"],
+                "총보유수량": f"{c['total_balance']:.6f}",
+                "매수평단가": f"{c['avg_buy_price']:,.0f}원" if c["avg_buy_price"] > 0 else "-",
+                "현재가": f"{c['current_price']:,.0f}원",
+                "평가금액": f"{c['eval_amount']:,.0f}원",
+                "평가손익(수익률)": pnl_s,
+                "비중": f"{c['weight_pct']:.1f}%"
+            })
+
+        st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+
+st.divider()
+
+
+# =============================================================================
+# 2. 현재 적용한 전략의 수익률 및 현황 (제목의 [아래] 삭제, 복수 전략 지원)
+# =============================================================================
+st.markdown("### 🎯 현재 적용한 전략의 수익률 및 현황")
+st.caption("각 코인/전략별로 배정된 투자금과 개별 전략의 실시간 수익률 및 미체결 물타기 주문을 아래에 별도로 표시합니다.")
+
+if not active_strategies:
+    st.info("현재 활성화된 전략이 없습니다. config.py의 INVESTMENTS 설정을 확인해주세요.")
+else:
+    for idx, strat in enumerate(active_strategies, start=1):
+        market = strat["market"]
+        ticker = strat["ticker"]
+        strat_name = strat["strategy_name"]
+        unit_krw = strat["unit_krw"]
+        initial_cap = strat["initial_capital"]
+        strat_ret = strat["strategy_return_pct"]
+        strat_pnl = strat["total_strat_pnl"]
+        realized_pnl = strat["realized_pnl"]
+        unrealized_pnl = strat["unrealized_pnl"]
+        cur_p = strat["current_price"]
+        avg_p = strat["avg_buy_price"]
+        coin_bal = strat["coin_balance"]
+        eval_amt = strat["eval_amount"]
+        open_orders = strat["open_orders"]
+        trades_df = strat["trades_df"]
+
+        ret_color = "text-green" if strat_ret >= 0 else "text-red"
+        pnl_color = "text-green" if strat_pnl >= 0 else "text-red"
+        badge_style = "background:#2962ff22; color:#2962ff; border:1px solid #2962ff;"
+
+        regime_info = strat.get("regime_info", {})
+        is_bull = regime_info.get("is_bull", False)
+        regime_color = "#00c087" if is_bull else "#ff3b69"
+        regime_badge = f'<span style="background:{regime_color}22; color:{regime_color}; border:1px solid {regime_color}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "국면 분석 중")}</span>'
+        mode_desc = "🚀 5/20 MA 추세추종 & 트레일링 스탑" if is_bull else "🛡️ 마틴-매직스플릿 방어 (개별+3% OR 바스켓 이중익절)"
+
+        basket_target_p = avg_p * strat["profit_margin"] if avg_p > 0 else 0.0
+
+        dist_pct = regime_info.get("distance_ma200_pct", 0.0)
+        dist_color = "#00c087" if dist_pct >= 0 else "#ff3b69"
+        sig_text = regime_info.get("signal", "HOLD")
+        reason_text = regime_info.get("reason", "분석 중")
+        short_reason = (reason_text[:35] + "...") if len(reason_text) > 35 else reason_text
+
+        # 전략 개별 카드 (st.html을 사용하여 코드 노출 원천 차단)
+        st.html(f"""
+        <div class="strategy-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid #2d3648; padding-bottom:10px;">
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <span style="font-size:1.4rem;">⚡</span>
+                    <span style="font-size:1.2rem; font-weight:800; color:#f0f3f6;">
+                        전략 {idx}. {strat_name}
+                    </span>
+                    <span style="{badge_style} padding:2px 10px; border-radius:12px; font-size:0.82rem; font-weight:700;">
+                        {market}
+                    </span>
+                </div>
+                <div style="font-size:0.85rem; color:#8c96a5;">
+                    전략 배정 원금: <b style="color:#f0f3f6;">{initial_cap:,.0f}원</b> | 1 Unit: <b style="color:#f0f3f6;">{unit_krw:,.0f}원</b>
+                </div>
+            </div>
+
+            <div style="background:linear-gradient(135deg, #181d27 0%, #1f2634 100%); border:1px solid #333d4e; border-radius:10px; padding:12px 16px; margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span style="font-size:1.25rem;">🧭</span>
+                        <span style="font-size:0.95rem; font-weight:700; color:#f0f3f6;">실시간 시장 국면 & 하이브리드 엔진 상태</span>
+                        {regime_badge}
+                    </div>
+                    <div>
+                        <span style="background:{regime_color}18; color:{regime_color}; border:1px solid {regime_color}44; padding:3px 10px; border-radius:8px; font-size:0.84rem; font-weight:700;">
+                            {mode_desc}
+                        </span>
+                    </div>
+                </div>
+                <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; background:#12161f; padding:10px 14px; border-radius:8px; border:1px solid #232b3a;">
+                    <div>
+                        <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">현재가</div>
+                        <div style="font-size:1.05rem; font-weight:700; color:#f0f3f6;">{cur_p:,.0f}원</div>
+                    </div>
+                    <div>
+                        <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">200시간선 (국면 기준)</div>
+                        <div style="font-size:1.05rem; font-weight:700; color:#81d4fa;">
+                            {regime_info.get('ma200', 0):,.0f}원 <span style="font-size:0.78rem; color:{dist_color}; font-weight:600;">({dist_pct:+.2f}%)</span>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">5시간선 / 20시간선</div>
+                        <div style="font-size:1.05rem; font-weight:700; color:#f48fb1;">
+                            {regime_info.get('ma5', 0):,.0f}원 / {regime_info.get('ma20', 0):,.0f}원
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">실시간 신호 판정</div>
+                        <div style="font-size:0.92rem; font-weight:700; color:#ffd54f;">
+                            {sig_text} <span style="font-size:0.75rem; color:#8c96a5; font-weight:normal;">({short_reason})</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:8px; border-top:1px dashed #2a3344; font-size:0.8rem;">
+                    <div>
+                        <span style="color:#8c96a5;">🎯 바스켓 익절 목표가:</span>
+                        <b style="color:#00c087; margin-left:4px;">{basket_target_p:,.0f}원</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(평단가 대비 +{(strat['profit_margin']-1)*100:.2f}%)</span>
+                    </div>
+                    <div>
+                        <span style="color:#8c96a5;">💧 개별 차수 매직스플릿 익절선:</span>
+                        <b style="color:#ffb300; margin-left:4px;">각 차수 매수가 대비 +3.0% 반등</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(차수 단독 청산)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """)
+
+        # 전략 핵심 성과 지표 4분할
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        with sc1:
+            st.html(f"""
+            <div class="metric-card">
+                <div class="metric-title">전략 총 수익률</div>
+                <div class="metric-val {ret_color}">{strat_ret:+.2f}%</div>
+                <div class="metric-sub">순손익: <b class="{pnl_color}">{strat_pnl:+,.0f}원</b></div>
+            </div>
+            """)
+
+        with sc2:
+            real_color = "text-green" if realized_pnl >= 0 else "text-red"
+            st.html(f"""
+            <div class="metric-card">
+                <div class="metric-title">실현 누적 손익</div>
+                <div class="metric-val {real_color}">{realized_pnl:+,.0f} <span style="font-size:1rem; color:#8c96a5;">원</span></div>
+                <div class="metric-sub">완료 사이클: {strat['completed_cycles']}회</div>
+            </div>
+            """)
+
+        with sc3:
+            st.html(f"""
+            <div class="metric-card">
+                <div class="metric-title">승률 (Win Rate)</div>
+                <div class="metric-val text-blue">{strat['win_rate']:.1f}%</div>
+                <div class="metric-sub">{strat['wins']}승 {strat['losses']}패 (총 청산 {strat['wins'] + strat['losses']}건)</div>
+            </div>
+            """)
+
+        with sc4:
+            pf = strat["profit_factor"]
+            pf_color = "text-green" if pf >= 1.0 else "text-red"
+            st.html(f"""
+            <div class="metric-card">
+                <div class="metric-title">손익비 (Profit Factor)</div>
+                <div class="metric-val {pf_color}">{pf:.2f}</div>
+                <div class="metric-sub">평균익 {strat['avg_win']:,.0f}원 / 평균손 {strat['avg_loss']:,.0f}원</div>
+            </div>
+            """)
+
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+        # 포지션 및 미체결 주문 2분할
+        p_col1, p_col2 = st.columns([1.1, 1.9])
+
+        with p_col1:
+            st.markdown(f"##### 💼 {ticker} 현재 포지션")
+            u_color = "text-green" if unrealized_pnl >= 0 else "text-red"
+            pos_data = [
+                {"항목": "현재 시세", "값": f"{cur_p:,.0f} 원"},
+                {"항목": "보유 수량", "값": f"{coin_bal:.6f} {ticker}"},
+                {"항목": "매수 평균단가", "값": f"{avg_p:,.0f} 원" if avg_p > 0 else "-"},
+                {"항목": "총 매수원가", "값": f"{strat['cost_amount']:,.0f} 원"},
+                {"항목": "현재 평가금액", "값": f"{eval_amt:,.0f} 원"},
+                {"항목": "미실현 손익", "값": f"{unrealized_pnl:+,.0f} 원 ({strat['unrealized_pnl_pct']:+.2f}%)"}
+            ]
+            st.dataframe(pd.DataFrame(pos_data), hide_index=True, use_container_width=True)
+
+        with p_col2:
+            st.markdown(f"##### ⏳ 실시간 등록 미체결 주문 ({len(open_orders)}건)")
+            if open_orders:
+                orders_list = []
+                for o in open_orders:
+                    side_kr = "🎯 익절 매도" if o["side"] == "ask" else "💧 물타기 매수"
+                    diff = ((o["price"] - cur_p) / cur_p * 100.0) if cur_p > 0 else 0.0
+                    orders_list.append({
+                        "구분": side_kr,
+                        "주문가격": f"{o['price']:,.0f}원 ({diff:+.2f}%)",
+                        "주문수량": f"{o['volume']:.6f} {ticker}",
+                        "주문금액": f"{o['price'] * o['volume']:,.0f}원",
+                        "등록시각": str(o.get("created_at", "-"))[:19]
+                    })
+                st.dataframe(pd.DataFrame(orders_list), hide_index=True, use_container_width=True)
+            else:
+                st.info(f"현재 {market}에 등록된 미체결 주문이 없습니다.")
+
+        # 해당 전략의 최근 체결 내역
+        with st.expander(f"📜 전략 {idx}. {market} 최근 실거래 체결 이력"):
+            if not trades_df.empty:
+                show_trades = trades_df.head(10).copy()
+                show_trades["체결단가"] = show_trades["price"].apply(lambda x: f"{x:,.0f}원")
+                show_trades["체결수량"] = show_trades["volume"].apply(lambda x: f"{x:.6f}")
+                show_trades["체결금액"] = show_trades["cost_or_revenue"].apply(lambda x: f"{x:,.0f}원")
+                show_trades["실현손익"] = show_trades["pnl"].apply(lambda x: f"{x:+,.0f}원" if x != 0 else "-")
+                show_trades["구분"] = show_trades["side"].apply(lambda x: "매도 (ASK)" if x == "ask" else "매수 (BID)")
+                cols = ["timestamp", "action", "구분", "체결단가", "체결수량", "체결금액", "실현손익", "cycle"]
+                st.dataframe(show_trades[cols], hide_index=True, use_container_width=True)
+            else:
+                st.info(f"아직 {market} 실거래 체결 내역이 없습니다.")
+
+        st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+
+st.divider()
+
+
+# =============================================================================
+# 3. 전략 히스토리 & 1~3달 주기 평가 관리소
+# =============================================================================
+st.markdown("### 📚 1~3달 주기 전략 평가 & 히스토리 보관소 (Strategy Archive)")
+st.caption("1달 ~ 3달 운영 후 전략을 교체하더라도, 과거 전략의 수익률, 승률, MDD 및 설정 파라미터를 보관하고 언제든 다시 불러올 수 있습니다.")
+
+tab_history, tab_archive_tool = st.tabs(["📜 과거 전략 히스토리 목록 & 파라미터 불러오기", "⚙️ 현재 전략 평가 완료 & 아카이브(종료) 등록"])
+
+with tab_history:
+    histories = get_strategy_history(include_active=True)
+
+    if histories:
+        hist_df = pd.DataFrame([
+            {
+                "전략ID": h["strategy_id"],
+                "전략명": h["strategy_name"],
+                "종목": h["market"],
+                "시작일": h["start_time"],
+                "종료일": h["end_time"] or "운영 중 (ACTIVE)",
+                "투자원금": f"{h['initial_capital']:,.0f}원",
+                "최종수익률": f"{h['return_pct']:+.2f}%",
+                "실현손익": f"{h['realized_pnl']:+,.0f}원",
+                "승률": f"{h['win_rate']:.1f}%",
+                "거래수": f"{h['trade_count']}회",
+                "손익비": f"{h['profit_factor']:.2f}",
+                "상태": "🟢 운영중" if h["status"] == "ACTIVE" else "📦 보관됨",
+                "평가메모": h.get("notes", "-")
+            }
+            for h in histories
+        ])
+        st.dataframe(hist_df, hide_index=True, use_container_width=True)
+
+        st.markdown("##### 🔍 과거 전략 파라미터 상세 조회 & 복원 가이드")
+        selected_strat_id = st.selectbox("파라미터를 확인할 과거 전략 선택", [h["strategy_id"] for h in histories])
+        selected_hist = next((h for h in histories if h["strategy_id"] == selected_strat_id), None)
+
+        if selected_hist:
+            col_p1, col_p2 = st.columns([1, 1])
+            with col_p1:
+                st.markdown(f"**전략명**: {selected_hist['strategy_name']} ({selected_hist['market']})")
+                st.markdown(f"**운영 기간**: {selected_hist['start_time']} ~ {selected_hist['end_time'] or '현재'}")
+                st.markdown(f"**최종 성과**: 수익률 {selected_hist['return_pct']:+.2f}% | 승률 {selected_hist['win_rate']:.1f}%")
+                st.markdown(f"**평가 메모**: {selected_hist.get('notes', '없음')}")
+
+            with col_p2:
+                st.markdown("**저장된 설정 파라미터 (JSON):**")
+                try:
+                    params = json.loads(selected_hist.get("parameters_json", "{}"))
+                    st.json(params)
+                except Exception:
+                    st.code(selected_hist.get("parameters_json", "{}"))
+    else:
+        st.info("아직 보관된 전략 히스토리가 없습니다. 현재 전략을 운영 후 아래 탭에서 아카이브(보관)할 수 있습니다.")
+
+with tab_archive_tool:
+    st.markdown("##### 📝 현재 전략 성과를 히스토리에 아카이브(보관)하기")
+    st.write("1~3달간 운영한 전략을 종료하고 성과를 영구 기록할 때 사용합니다.")
+
+    target_strat_market = st.selectbox("종료 및 보관할 전략 종목 선택", list(INVESTMENTS.keys()))
+    strat_perf = get_strategy_performance(target_strat_market)
+
+    col_ar1, col_ar2 = st.columns(2)
+    with col_ar1:
+        archive_name = st.text_input("보관할 전략 이름", value=strat_perf["strategy_name"])
+        archive_id = st.text_input("고유 전략 ID", value=f"STRAT_{target_strat_market.replace('-', '_')}_{datetime.now().strftime('%Y%m%d')}")
+        archive_notes = st.text_area("전략 평가 메모 (1~3달 운영 소회 및 평가 요인)", placeholder="예: 2026년 9월~11월 횡보장에서 안정적 익절. 손절 없이 100% 승률 달성. 하락장 방어력 우수.")
+
+    with col_ar2:
+        st.markdown("**보관될 성과 지표 요약:**")
+        st.write(f"- 시작원금: {strat_perf['initial_capital']:,.0f}원")
+        st.write(f"- 누적수익률: **{strat_perf['strategy_return_pct']:+.2f}%**")
+        st.write(f"- 누적 실현손익: {strat_perf['realized_pnl']:+,.0f}원")
+        st.write(f"- 승률: {strat_perf['win_rate']:.1f}% ({strat_perf['wins']}승 {strat_perf['losses']}패)")
+        st.write(f"- 거래횟수: {strat_perf['total_trades']}건 | 완료 사이클: {strat_perf['completed_cycles']}회")
+
+        if st.button("📦 이 전략을 히스토리에 보관(Archive) 등록", use_container_width=True):
+            params_dict = {
+                "market": target_strat_market,
+                "unit_krw": strat_perf["unit_krw"],
+                "profit_margin": strat_perf["profit_margin"],
+                "initial_capital": strat_perf["initial_capital"],
+                "stop_loss_pct": -0.10
+            }
+            save_or_update_strategy(
+                strategy_id=archive_id,
+                strategy_name=archive_name,
+                market=target_strat_market,
+                start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                initial_capital=strat_perf["initial_capital"],
+                parameters_dict=params_dict,
+                status="ARCHIVED",
+                end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                final_capital=strat_perf["initial_capital"] + strat_perf["total_strat_pnl"],
+                realized_pnl=strat_perf["realized_pnl"],
+                return_pct=strat_perf["strategy_return_pct"],
+                win_rate=strat_perf["win_rate"],
+                trade_count=strat_perf["total_trades"],
+                profit_factor=strat_perf["profit_factor"],
+                notes=archive_notes
+            )
+            st.success(f"✅ [{archive_id}] 전략이 히스토리에 성공적으로 보관되었습니다!")
+            time.sleep(1)
             st.rerun()
 
 
 # =============================================================================
-# 2. 거래 체결 감지 리스너 & 대시보드 렌더링
+# 자동 새로고침 타이머 & 체결 이벤트 감지기
 # =============================================================================
-def get_trade_signature(market: str) -> str:
-    """체결 거래 수, 마지막 거래 ID, 최근 체결 시각, 실시간 상태 시그니처 생성"""
-    sig_parts = []
-    try:
-        db_path = os.path.join(BASE_DIR, "trade_history.db")
-        if os.path.exists(db_path):
-            with sqlite3.connect(db_path) as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT count(*), max(id), max(timestamp) FROM paper_trades WHERE market = ?", (market,))
-                row = cur.fetchone()
-                if row and row[0] is not None:
-                    sig_parts.append(f"db:{row[0]}-{row[1]}-{row[2]}")
-    except Exception:
-        pass
-
-    st_data = load_live_state(market)
-    if st_data:
-        sig_parts.append(f"st:{st_data.get('completed_cycles', 0)}-{len(st_data.get('open_orders', []))}-{st_data.get('realized_pnl', 0)}-{st_data.get('coin_balance', 0)}")
-    return "|".join(sig_parts)
-
-
 @st.fragment(run_every=2)
-def trade_event_listener(market: str):
-    """체결 이벤트 감지 백그라운드 리스너 (체결 발생 시 대시보드 자동 갱신)"""
-    current_sig = get_trade_signature(market)
-    sig_key = f"last_known_trade_sig_{market}"
+def trade_event_listener():
+    """2초 주기로 신규 매매 체결 및 주문/차수 변경을 감지하는 초경량 리스너"""
+    curr_sig = get_latest_trade_signature()
+    prev_sig = st.session_state.get("last_trade_sig")
 
-    if sig_key not in st.session_state:
-        st.session_state[sig_key] = current_sig
-        return
-
-    if current_sig != st.session_state[sig_key]:
-        st.session_state[sig_key] = current_sig
-        st.toast(f"🎯 [{market}] 새로운 주문이 체결되었습니다! 대시보드를 즉시 갱신합니다.", icon="⚡")
-        time.sleep(0.3)
+    if prev_sig is not None and curr_sig != prev_sig:
+        st.session_state["last_trade_sig"] = curr_sig
+        st.toast("⚡ 신규 매매 체결(또는 주문 상태 변경)이 감지되어 대시보드를 갱신합니다!", icon="🔔")
         st.rerun()
-
-
-periodic_seconds = refresh_mode if isinstance(refresh_mode, int) else None
-
-@st.fragment(run_every=periodic_seconds)
-def render_dashboard(market: str):
-    # 1. 퀀트 분석 엔진 구동 및 실시간 데이터 로드
-    analyzer = PerformanceAnalyzer(market)
-    data = analyzer.get_full_analysis()
-
-    ticker = data["ticker"]
-    returns_mdd = data["returns_mdd"]
-    trade_perf = data["trade_perf"]
-    cons_losses = data["cons_losses"]
-    trade_freq = data["trade_freq"]
-    bnh = data["buy_and_hold"]
-    regimes = data["regimes"]
-    raw_equity = data["raw_equity"]
-    raw_trades = data["raw_trades"]
-
-    # 실시간 시세
-    current_price = pyupbit.get_current_price(market)
-    if not current_price and not raw_equity.empty:
-        current_price = float(raw_equity["coin_price"].iloc[-1])
-    current_price = current_price or 0.0
-
-    live_state = load_live_state(market) or {}
-    initial_cap = live_state.get("initial_capital", data.get("initial_capital", 1000000.0))
-    krw_bal = live_state.get("krw_balance", initial_cap)
-    coin_bal = live_state.get("coin_balance", 0.0)
-    eval_coin = coin_bal * current_price
-    total_cur_equity = krw_bal + eval_coin
-    total_ret_pct = ((total_cur_equity - initial_cap) / initial_cap) * 100.0 if initial_cap > 0 else 0.0
-    realized_pnl = live_state.get("realized_pnl", trade_perf.get("net_profit", 0.0))
-    cycles = live_state.get("completed_cycles", trade_perf.get("total_closed_trades", 0))
-
-    # 하이브리드 실시간 국면 및 신호 조회
-    try:
-        hybrid_info = get_hybrid_regime_and_signals(market)
-    except Exception:
-        hybrid_info = {
-            "regime": live_state.get("current_regime", "BEAR") if live_state else "BEAR",
-            "regime_korean": "하락 국면 (기본)",
-            "curr_price": current_price,
-            "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
-            "distance_ma200_pct": 0.0,
-            "signal": "MARTINGALE_DEFENSE",
-            "reason": "시세 정보 동기화 중"
-        }
-
-    # -------------------------------------------------------------
-    # 상단 요약 배너 (실시간 계좌 상태 카드 바)
-    # -------------------------------------------------------------
-    ret_class = "summary-green" if total_ret_pct >= 0 else "summary-red"
-    pnl_class = "summary-green" if realized_pnl >= 0 else "summary-red"
-    regime_color = "#00c087" if hybrid_info["regime"] == "BULL" else "#ff3b69"
-
-    st.markdown(f"""
-    <div class="summary-banner">
-        <div class="summary-item">
-            <span class="summary-label">🎯 종목 / 하이브리드 국면</span>
-            <span class="summary-value" style="color:#2962ff;">{market} <span style="font-size:0.85rem; color:{regime_color}; background:{regime_color}22; padding:2px 8px; border-radius:12px; border:1px solid {regime_color};">{hybrid_info['regime_korean']}</span></span>
-        </div>
-        <div class="summary-item">
-            <span class="summary-label">⚡ 현재 시세</span>
-            <span class="summary-value">{current_price:,.0f} KRW</span>
-        </div>
-        <div class="summary-item">
-            <span class="summary-label">💰 총 평가 자산 (수익률)</span>
-            <span class="summary-value {ret_class}">{total_cur_equity:,.0f}원 ({total_ret_pct:+.2f}%)</span>
-        </div>
-        <div class="summary-item">
-            <span class="summary-label">💵 보유 현금 (KRW)</span>
-            <span class="summary-value">{krw_bal:,.0f} 원</span>
-        </div>
-        <div class="summary-item">
-            <span class="summary-label">🪙 보유 코인 ({ticker})</span>
-            <span class="summary-value">{coin_bal:.6f} ({eval_coin:,.0f}원)</span>
-        </div>
-        <div class="summary-item">
-            <span class="summary-label">🏆 실현 누적 손익</span>
-            <span class="summary-value {pnl_class}">{realized_pnl:+,.0f} 원</span>
-        </div>
-        <div class="summary-item">
-            <span class="summary-label">🔁 완료 사이클</span>
-            <span class="summary-value">{cycles} 회 완료</span>
-        </div>
-        <div class="summary-item">
-            <span class="summary-label">⏱️ 실시간 기준 시각</span>
-            <span class="summary-value" style="font-size:0.88rem; color:#848e9c; font-weight:normal;">{datetime.now().strftime('%H:%M:%S')}</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # -------------------------------------------------------------
-    # 🌟 실제 코인모으기(실계좌) vs 100만원 마틴게일(가상매매) 맞대결 카드
-    # -------------------------------------------------------------
-    real_dca = data.get("real_dca", {})
-    real_bal = real_dca.get("current_balance", 0.0)
-    real_avg = real_dca.get("current_avg_price", 0.0)
-    real_cost = real_dca.get("total_cost", 0.0)
-    real_eval = real_dca.get("current_eval", 0.0)
-    real_pnl_pct = real_dca.get("total_pnl_pct", 0.0)
-    base_eval = real_dca.get("base_eval_amount", real_eval)
-    growth_pct = real_dca.get("growth_pct_since_base", 0.0)
-
-    alpha_vs_dca = total_ret_pct - growth_pct
-    alpha_dca_color = "#00c087" if alpha_vs_dca >= 0 else "#ff3b69"
-    alpha_desc = "하이브리드 전략 우세" if alpha_vs_dca >= 0 else "코인모으기 전략 우세"
-    real_pnl_color = "#00c087" if real_pnl_pct >= 0 else "#ff3b69"
-    tot_ret_color = "#00c087" if total_ret_pct >= 0 else "#ff3b69"
-
-    from config import SHOWDOWN_START_TIME
-    try:
-        start_dt = datetime.strptime(SHOWDOWN_START_TIME, "%Y-%m-%d %H:%M:%S")
-        days_elapsed = (datetime.now() - start_dt).days
-    except Exception:
-        days_elapsed = 0
-
-    st.html(f"""
-    <div class="dca-compare-box">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #333d4e; padding-bottom:8px;">
-            <div style="font-size:1.05rem; font-weight:700; color:#ffb300;">
-                ⚔️ 2~4주 실전 검증 맞대결: 실제 코인모으기(실계좌) vs 100만원 하이브리드(가상매매)
-            </div>
-            <div style="font-size:0.82rem; color:#4fc3f7; font-weight:600;">
-                🚀 검증 시작점: {SHOWDOWN_START_TIME} (경과: D+{days_elapsed}일차)
-            </div>
-        </div>
-        <div style="display:grid; grid-template-columns: 1.2fr 0.8fr 1.2fr; gap:14px; align-items:center;">
-            <div style="background:#161b24; padding:12px 14px; border-radius:8px; border:1px solid #2d3648;">
-                <div style="color:#ffa726; font-size:0.83rem; font-weight:600; margin-bottom:4px;">
-                    🟢 [실제 계좌] 매일 1만원 코인모으기
-                </div>
-                <div style="font-size:1.15rem; font-weight:700; color:#f0f3f6;">
-                    {real_eval:,.0f}원 <span style="font-size:0.85rem; color:{real_pnl_color};">({real_pnl_pct:+.2f}%)</span>
-                </div>
-                <div style="font-size:0.76rem; color:#848e9c; margin-top:4px;">
-                    보유: {real_bal:.4f} {ticker} | 평단: {real_avg:,.0f}원 | 원금: {real_cost:,.0f}원
-                </div>
-                <div style="font-size:0.75rem; color:#29b6f6; margin-top:2px;">
-                    기점 이후 가치변화: {growth_pct:+.2f}%
-                </div>
-            </div>
-            <div style="text-align:center; padding:8px;">
-                <div style="font-size:0.78rem; color:#848e9c; margin-bottom:2px;">하이브리드 초과성과 (Alpha)</div>
-                <div style="font-size:1.45rem; font-weight:800; color:{alpha_dca_color};">
-                    {alpha_vs_dca:+.2f}%p
-                </div>
-                <div style="font-size:0.74rem; color:#9aa0a6; margin-top:2px;">
-                    {alpha_desc}
-                </div>
-            </div>
-            <div style="background:#161b24; padding:12px 14px; border-radius:8px; border:1px solid #2d3648;">
-                <div style="color:#00c087; font-size:0.83rem; font-weight:600; margin-bottom:4px;">
-                    🔵 [가상 계좌] 100만원 하이브리드(국면전환) 봇
-                </div>
-                <div style="font-size:1.15rem; font-weight:700; color:#f0f3f6;">
-                    {total_cur_equity:,.0f}원 <span style="font-size:0.85rem; color:{tot_ret_color};">({total_ret_pct:+.2f}%)</span>
-                </div>
-                <div style="font-size:0.76rem; color:#848e9c; margin-top:4px;">
-                    현금: {krw_bal:,.0f}원 | 코인: {coin_bal:.4f} {ticker} ({eval_coin:,.0f}원)
-                </div>
-                <div style="font-size:0.75rem; color:#00e676; margin-top:2px;">
-                    실현손익: {realized_pnl:+,.0f}원 | 완료: {cycles}회 사이클
-                </div>
-            </div>
-        </div>
-    </div>
-    """)
-
-    # -------------------------------------------------------------
-    # 🧭 실시간 하이브리드 국면 & 전략 가동 상태 배너
-    # -------------------------------------------------------------
-    is_bull = hybrid_info.get("is_bull", False)
-    active_mode = live_state.get("active_sub_strategy", "WAITING") if live_state else "WAITING"
-    
-    if is_bull:
-        regime_badge = '<span style="background:#00c087; color:#12161f; padding:4px 12px; border-radius:14px; font-weight:800; font-size:0.88rem;">🟢 상승 국면 (BULL)</span>'
-        ts_active = live_state.get("trailing_stop_active", False) if live_state else False
-        ts_price = live_state.get("trailing_stop_price", 0.0) if live_state else 0.0
-        if active_mode == "TREND":
-            if ts_active and ts_price > 0:
-                mode_desc = f'<span style="color:#ffea00; font-weight:700; font-size:1.05rem;">🎯 트레일링 스탑 가동 중 (익절선: {ts_price:,.0f}원)</span>'
-            else:
-                mode_desc = '<span style="color:#00e676; font-weight:700; font-size:1.05rem;">🚀 5/20 MA 추세추종 모드 가동 중</span>'
-        else:
-            mode_desc = '<span style="color:#81d4fa; font-weight:700; font-size:1.05rem;">⏳ 상승 국면 골든크로스 대기 중</span>'
     else:
-        regime_badge = '<span style="background:#ff3b69; color:#fff; padding:4px 12px; border-radius:14px; font-weight:800; font-size:0.88rem;">🔴 하락 국면 (BEAR)</span>'
-        if active_mode == "MARTINGALE":
-            mode_desc = '<span style="color:#ffb300; font-weight:700; font-size:1.05rem;">🛡️ 마틴게일 1-2-3-6 방어 모드 가동 중</span>'
-        else:
-            mode_desc = '<span style="color:#64b5f6; font-weight:700; font-size:1.05rem;">⏳ ClucMay 과매도 낙주 대기 중 (현금 100%)</span>'
-
-    dist_color = "#00c087" if hybrid_info["distance_ma200_pct"] >= 0 else "#ff3b69"
-
-    st.html(f"""
-    <div style="background:linear-gradient(135deg, #1c222e 0%, #222938 100%); border:1px solid #364154; border-radius:10px; padding:14px 18px; margin-bottom:20px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <div style="display:flex; align-items:center; gap:10px;">
-                <span style="font-size:1.2rem;">🧭</span>
-                <span style="font-size:0.95rem; font-weight:700; color:#f0f3f6;">실시간 시장 국면 & 하이브리드 엔진 상태</span>
-                {regime_badge}
-            </div>
-            <div>{mode_desc}</div>
-        </div>
-        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; background:#141822; padding:10px 14px; border-radius:8px; border:1px solid #283142;">
-            <div>
-                <div style="font-size:0.73rem; color:#848e9c;">현재가</div>
-                <div style="font-size:0.95rem; font-weight:700; color:#f0f3f6;">{hybrid_info['curr_price']:,.0f}원</div>
-            </div>
-            <div>
-                <div style="font-size:0.73rem; color:#848e9c;">200시간선 (국면 기준)</div>
-                <div style="font-size:0.95rem; font-weight:700; color:#81d4fa;">{hybrid_info['ma200']:,.0f}원 <span style="font-size:0.75rem; color:{dist_color};">({hybrid_info['distance_ma200_pct']:+.2f}%)</span></div>
-            </div>
-            <div>
-                <div style="font-size:0.73rem; color:#848e9c;">5시간선 / 20시간선</div>
-                <div style="font-size:0.95rem; font-weight:700; color:#f48fb1;">{hybrid_info['ma5']:,.0f}원 / {hybrid_info['ma20']:,.0f}원</div>
-            </div>
-            <div>
-                <div style="font-size:0.73rem; color:#848e9c;">실시간 신호 판정</div>
-                <div style="font-size:0.85rem; font-weight:600; color:#ffd54f;">{hybrid_info['signal']} ({hybrid_info['reason'][:28]}...)</div>
-            </div>
-        </div>
-    </div>
-    """)
-
-    # -------------------------------------------------------------
-    # 섹션 1: 8대 핵심 퀀트 KPI 카드
-    # -------------------------------------------------------------
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        ret_pct = total_ret_pct
-        ret_color = "metric-val-green" if ret_pct >= 0 else "metric-val-red"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">1. 총 자산 & 누적 수익률</div>
-            <div class="{ret_color}">{ret_pct:+.2f}%</div>
-            <div class="metric-sub">자산: {total_cur_equity:,.0f}원 (초기: {initial_cap:,.0f}원)</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c2:
-        mdd_pct = returns_mdd["mdd_pct"]
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">2. MDD (최대 낙폭)</div>
-            <div class="metric-val-red">{mdd_pct:.2f}%</div>
-            <div class="metric-sub">현재 낙폭: {returns_mdd['current_drawdown_pct']:.2f}% | 최고: {returns_mdd['peak_equity']:,.0f}원</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c3:
-        win_rate = trade_perf["win_rate"]
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">3. 승률 (Win Rate)</div>
-            <div class="metric-val-blue">{win_rate:.1f}%</div>
-            <div class="metric-sub">청산 {trade_perf['total_closed_trades']}건 ({trade_perf['wins']}승 {trade_perf['losses']}패)</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c4:
-        pf = trade_perf["profit_factor"]
-        pf_color = "metric-val-green" if pf >= 1.0 else "metric-val-red"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">4. 손익비 (Profit Factor)</div>
-            <div class="{pf_color}">{pf:.2f}</div>
-            <div class="metric-sub">익/손비: {trade_perf['win_loss_ratio']:.2f} (평균익: {trade_perf['avg_win']:,.0f}원 / 손: {trade_perf['avg_loss']:,.0f}원)</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-
-    c5, c6, c7, c8 = st.columns(4)
-    with c5:
-        max_cl = cons_losses["max_consecutive_losses"]
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">5. 연속 손실 (Consecutive Losses)</div>
-            <div class="metric-val-white">{max_cl} <span style="font-size: 1rem; color:#848e9c;">회</span></div>
-            <div class="metric-sub">현재 연속 손실: {cons_losses['current_consecutive_losses']}회 | 최장 연승: {cons_losses['max_consecutive_wins']}회</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c6:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">6. 거래 빈도 (Trade Frequency)</div>
-            <div class="metric-val-white">{trade_freq['daily_trade_frequency']} <span style="font-size: 1rem; color:#848e9c;">건/일</span></div>
-            <div class="metric-sub">총 체결: {trade_freq['total_orders']}건 | 평균 보유: {trade_freq['avg_cycle_duration_hours']:.1f}시간</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c7:
-        alpha = bnh["alpha_pct"]
-        alpha_color = "metric-val-green" if alpha >= 0 else "metric-val-red"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">7. Buy & Hold 대비 성과 (Alpha)</div>
-            <div class="{alpha_color}">{alpha:+.2f}%p</div>
-            <div class="metric-sub">전략: {bnh['strategy_return_pct']:+.2f}% vs B&H: {bnh['bnh_return_pct']:+.2f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c8:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">8. 시장 국면별 승률 (Regime)</div>
-            <div class="metric-val-white">{regimes['summary'].get('Sideways', {}).get('win_rate', 0)}% <span style="font-size: 0.9rem; color:#848e9c;">(횡보)</span></div>
-            <div class="metric-sub">상승: {regimes['summary'].get('Bull', {}).get('win_rate', 0)}% | 하락: {regimes['summary'].get('Bear', {}).get('win_rate', 0)}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # -------------------------------------------------------------
-    # 섹션 2: 🔥 최근 체결 거래 내역 (사용자가 바로 볼 수 있도록 즉시 노출)
-    # -------------------------------------------------------------
-    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-    st.markdown("### ⚡ 최근 체결 거래 피드 (Live Trade Feed)")
-
-    if not raw_trades.empty:
-        # 최근 10개 거래 포맷팅
-        feed_df = raw_trades.sort_values("timestamp", ascending=False).head(10).copy()
-
-        def format_action_kr(act):
-            act_s = str(act)
-            if "HYBRID_BULL_BUY" in act_s:
-                return "🚀 [하이브리드] 5/20 MA 추세 매수"
-            elif "HYBRID_BULL_SELL" in act_s or "TREND_DEAD_CROSS" in act_s:
-                return "🛑 [하이브리드] 5/20 MA 추세 매도"
-            elif "BEAR_REGIME_CUT" in act_s:
-                return "🛡️ [하이브리드] 200선 이탈 청산/방어 전환"
-            elif "TAKE_PROFIT" in act_s:
-                return "🎯 익절 매도"
-            elif "STOP_LOSS" in act_s:
-                return "🚨 긴급 손절"
-            elif "MARKET_BUY" in act_s:
-                return "🚀 1차 진입 매수"
-            elif "BUY" in act_s:
-                return f"💧 {act_s.replace('LIMIT_BUY_', '')} 물타기 매수"
-            return act_s
-
-        feed_df["체결일시"] = feed_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-        feed_df["구분"] = feed_df["action"].apply(format_action_kr)
-        feed_df["포지션"] = feed_df["side"].apply(lambda x: "매도 (ASK)" if x == "ask" else "매수 (BID)")
-        feed_df["체결단가"] = feed_df["price"].apply(lambda x: f"{x:,.0f}원")
-        feed_df["체결수량"] = feed_df["volume"].apply(lambda x: f"{x:.6f} {ticker}")
-        feed_df["체결금액"] = feed_df["cost_or_revenue"].apply(lambda x: f"{x:,.0f}원")
-        feed_df["실현손익"] = feed_df["pnl"].apply(lambda x: f"+{x:,.1f}원" if x > 0 else (f"{x:,.1f}원" if x < 0 else "-"))
-        feed_df["사이클"] = feed_df["cycle"].apply(lambda x: f"{x}차")
-
-        display_cols = ["체결일시", "구분", "포지션", "체결단가", "체결수량", "체결금액", "실현손익", "사이클"]
-        st.dataframe(feed_df[display_cols], hide_index=True, use_container_width=True)
-    else:
-        st.info(f"아직 {market}에 기록된 체결 거래 내역이 없습니다. (자동매매 봇이 신규 거래를 체결하면 즉시 표시됩니다)")
-
-    st.divider()
-
-    # -------------------------------------------------------------
-    # 섹션 3: 모바일 최적화 세로 원페이지 스크롤 레이아웃
-    # -------------------------------------------------------------
-    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-
-    # =============================================================
-    # 1. 📈 자산 성장 곡선 & MDD
-    # =============================================================
-    st.divider()
-    st.markdown("### 📈 1. 자산 성장 곡선 & MDD")
-    df_comp = bnh["df_comparison"]
-    df_mdd = returns_mdd["df_mdd"]
-
-    if not df_comp.empty and "timestamp" in df_comp.columns:
-        fig = make_subplots(
-            rows=2, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.08,
-            subplot_titles=("자산 가치 추이 (KRW)", "고점 대비 낙폭 Drawdown Underwater (%)"),
-            row_heights=[0.7, 0.3]
-        )
-
-        # 1) 전략 자산 곡선
-        fig.add_trace(
-            go.Scatter(
-                x=df_comp["timestamp"],
-                y=df_comp["total_equity"],
-                name="AutoBot 전략 자산",
-                line=dict(color="#00c087", width=2.5),
-                hovertemplate="전략: %{y:,.0f}원<br>일시: %{x}<extra></extra>"
-            ),
-            row=1, col=1
-        )
-
-        # 2) 실제 코인모으기 (실계좌 환산 비교) 곡선
-        if "real_dca_equity" in df_comp.columns and df_comp["real_dca_equity"].notna().any():
-            fig.add_trace(
-                go.Scatter(
-                    x=df_comp["timestamp"],
-                    y=df_comp["real_dca_equity"],
-                    name=f"실제 코인모으기 (환산 비교)",
-                    line=dict(color="#ffa726", width=2.2, dash="dash"),
-                    hovertemplate="코인모으기(환산): %{y:,.0f}원<br>일시: %{x}<extra></extra>"
-                ),
-                row=1, col=1
-            )
-
-        # 3) Buy & Hold 곡선
-        fig.add_trace(
-            go.Scatter(
-                x=df_comp["timestamp"],
-                y=df_comp["bnh_equity"],
-                name=f"Buy & Hold ({ticker})",
-                line=dict(color="#2962ff", width=1.8, dash="dot"),
-                hovertemplate="B&H: %{y:,.0f}원<br>일시: %{x}<extra></extra>"
-            ),
-            row=1, col=1
-        )
-
-        # 4) 초기 자본 기준선
-        fig.add_hline(
-            y=initial_cap,
-            line=dict(color="#848e9c", width=1, dash="dash"),
-            row=1, col=1
-        )
-
-        # 4) Drawdown Underwater Chart
-        if not df_mdd.empty and "drawdown_pct" in df_mdd.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_mdd["timestamp"],
-                    y=df_mdd["drawdown_pct"],
-                    name="Drawdown (%)",
-                    line=dict(color="#ff3b69", width=1.5),
-                    fill="tozeroy",
-                    fillcolor="rgba(255, 59, 105, 0.2)",
-                    hovertemplate="낙폭: %{y:.2f}%<br>일시: %{x}<extra></extra>"
-                ),
-                row=2, col=1
-            )
-
-        fig.update_layout(
-            height=480,
-            margin=dict(l=15, r=15, t=35, b=20),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            template="plotly_dark",
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("자산 시계열 스냅샷이 누적되는 중입니다. 잠시 후 차트가 표시됩니다.")
-
-    # =============================================================
-    # 2. 🌐 시장 국면별 성과 (Bull / Sideways / Bear)
-    # =============================================================
-    st.divider()
-    st.markdown("### 🌐 2. 시장 국면별 성과 (Bull/Bear)")
-    st.caption("이동평균선(SMA 20/60) 기울기를 바탕으로 시장 국면을 판별하고 각 구간에서의 매매 성과를 평가합니다.")
-
-    r_col1, r_col2 = st.columns([1, 1])
-    reg_data = regimes["summary"]
-    reg_df = pd.DataFrame([
-        {
-            "국면 (Regime)": "상승장 (Bull)",
-            "거래 횟수": reg_data["Bull"]["trades"],
-            "승률 (%)": f"{reg_data['Bull']['win_rate']:.1f}%",
-            "총 실현손익": f"{reg_data['Bull']['total_pnl']:+,.0f}원",
-            "평균 손익": f"{reg_data['Bull']['avg_pnl']:+,.0f}원"
-        },
-        {
-            "국면 (Regime)": "횡보장 (Sideways)",
-            "거래 횟수": reg_data["Sideways"]["trades"],
-            "승률 (%)": f"{reg_data['Sideways']['win_rate']:.1f}%",
-            "총 실현손익": f"{reg_data['Sideways']['total_pnl']:+,.0f}원",
-            "평균 손익": f"{reg_data['Sideways']['avg_pnl']:+,.0f}원"
-        },
-        {
-            "국면 (Regime)": "하락장 (Bear)",
-            "거래 횟수": reg_data["Bear"]["trades"],
-            "승률 (%)": f"{reg_data['Bear']['win_rate']:.1f}%",
-            "총 실현손익": f"{reg_data['Bear']['total_pnl']:+,.0f}원",
-            "평균 손익": f"{reg_data['Bear']['avg_pnl']:+,.0f}원"
-        }
-    ])
-
-    with r_col1:
-        st.markdown("##### 📊 국면별 성과 요약")
-        st.dataframe(reg_df, hide_index=True, use_container_width=True)
-
-    with r_col2:
-        st.markdown("##### 🎯 국면별 승률 비교")
-        fig_bar = go.Figure()
-        fig_bar.add_trace(go.Bar(
-            x=["상승장 (Bull)", "횡보장 (Sideways)", "하락장 (Bear)"],
-            y=[reg_data["Bull"]["win_rate"], reg_data["Sideways"]["win_rate"], reg_data["Bear"]["win_rate"]],
-            name="승률 (%)",
-            marker_color=["#00c087", "#ffa726", "#ff3b69"]
-        ))
-        fig_bar.update_layout(
-            height=250,
-            margin=dict(l=15, r=15, t=25, b=20),
-            template="plotly_dark",
-            yaxis=dict(title="승률 (%)", range=[0, 100])
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    df_candles = regimes.get("df_candles")
-    if df_candles is not None and not df_candles.empty:
-        st.markdown("##### 🕯️ 최근 시장 시세 및 이동평균 국면")
-        fig_candle = go.Figure()
-        fig_candle.add_trace(go.Candlestick(
-            x=df_candles.index,
-            open=df_candles['open'],
-            high=df_candles['high'],
-            low=df_candles['low'],
-            close=df_candles['close'],
-            name="캔들"
-        ))
-        if "sma20" in df_candles.columns:
-            fig_candle.add_trace(go.Scatter(x=df_candles.index, y=df_candles['sma20'], line=dict(color="#f48fb1", width=1.5), name="SMA 20"))
-        if "sma60" in df_candles.columns:
-            fig_candle.add_trace(go.Scatter(x=df_candles.index, y=df_candles['sma60'], line=dict(color="#81d4fa", width=1.5), name="SMA 60"))
-        fig_candle.update_layout(
-            height=320,
-            margin=dict(l=15, r=15, t=15, b=20),
-            template="plotly_dark",
-            xaxis_rangeslider_visible=False
-        )
-        st.plotly_chart(fig_candle, use_container_width=True)
-
-    # =============================================================
-    # 3. ⚖️ 물타기 배수 & 리스크 분석
-    # =============================================================
-    st.divider()
-    st.markdown("### ⚖️ 3. 물타기 배수 & 리스크 분석")
-
-    rk1, rk2 = st.columns(2)
-    with rk1:
-        st.markdown("##### 🌊 마틴게일 물타기 차수별 도달 횟수")
-        st.caption("진입 차수가 깊어질수록 리스크가 증가합니다. 각 차수별 도달 빈도를 확인하세요.")
-        steps = cons_losses["martingale_steps"]
-        fig_steps = go.Figure(data=[
-            go.Bar(
-                x=list(steps.keys()),
-                y=list(steps.values()),
-                marker_color=["#2962ff", "#00bcd4", "#ffb300", "#ff3b69", "#78909c"]
-            )
-        ])
-        fig_steps.update_layout(
-            height=260,
-            margin=dict(l=15, r=15, t=25, b=20),
-            template="plotly_dark",
-            xaxis_title="물타기 배수",
-            yaxis_title="체결 횟수"
-        )
-        st.plotly_chart(fig_steps, use_container_width=True)
-
-    with rk2:
-        st.markdown("##### 💰 평균 수익 vs 평균 손실 비교")
-        st.caption("이긴 거래와 진 거래의 1회당 평균 금액 비교")
-        fig_pl = go.Figure(data=[
-            go.Bar(
-                x=["평균 익절", "평균 손절"],
-                y=[trade_perf["avg_win"], trade_perf["avg_loss"]],
-                marker_color=["#00c087", "#ff3b69"]
-            )
-        ])
-        fig_pl.update_layout(
-            height=260,
-            margin=dict(l=15, r=15, t=25, b=20),
-            template="plotly_dark",
-            yaxis_title="금액 (KRW)"
-        )
-        st.plotly_chart(fig_pl, use_container_width=True)
-
-    # =============================================================
-    # 4. 📋 실시간 미체결 주문 & 전체 거래 로그
-    # =============================================================
-    st.divider()
-    st.markdown("### 📋 4. 실시간 미체결 주문 & 전체 거래 로그")
-
-    p_col1, p_col2 = st.columns([1, 1])
-
-    with p_col1:
-        st.markdown("##### 💼 현재 보유 포지션")
-        if live_state:
-            active_mode_str = {
-                "TREND": "🚀 상승장 5/20 추세모드",
-                "MARTINGALE": "🛡️ 하락장 마틴게일 방어모드",
-                "WAITING": "⏳ 대기 / 관망 중"
-            }.get(live_state.get("active_sub_strategy", "WAITING"), "기타")
-
-            regime_str = "🟢 상승 국면 (200 MA 상회)" if live_state.get("current_regime") == "BULL" else "🔴 하락 국면 (200 MA 하회)"
-
-            pos_df = pd.DataFrame([
-                {"항목": "가동 전략 모드", "값": active_mode_str},
-                {"항목": "시장 국면", "값": regime_str},
-                {"항목": "보유 코인", "값": f"{live_state.get('coin_balance', 0):.6f} {ticker}"},
-                {"항목": "매수 평균단가", "값": f"{live_state.get('avg_buy_price', 0):,.0f} 원"},
-                {"항목": "총 매수 원가", "값": f"{live_state.get('total_cost', 0):,.0f} 원"},
-                {"항목": "현재 평가금액", "값": f"{live_state.get('coin_balance', 0) * current_price:,.0f} 원"},
-                {"항목": "미실현 손익", "값": f"{(live_state.get('coin_balance', 0) * current_price) - live_state.get('total_cost', 0):+,.0f} 원"}
-            ])
-            st.dataframe(pos_df, hide_index=True, use_container_width=True)
-        else:
-            st.info("실시간 상태 정보를 불러올 수 없습니다.")
-
-    with p_col2:
-        st.markdown("##### ⏳ 현재 등록된 미체결 주문")
-        if live_state and live_state.get("open_orders"):
-            orders = []
-            for o in live_state["open_orders"]:
-                orders.append({
-                    "구분": "매도(익절)" if o["side"] == "ask" else f"매수({o.get('units', 1)}X 물타기)",
-                    "주문가격": f"{o['price']:,.0f}원",
-                    "수량": f"{o['volume']:.6f}",
-                    "주문일시": o.get("created_at", "-")
-                })
-            st.dataframe(pd.DataFrame(orders), hide_index=True, use_container_width=True)
-        else:
-            st.write("현재 등록된 미체결 주문이 없습니다.")
-
-    st.markdown("##### 📜 전체 체결 거래 이력")
-    if not raw_trades.empty:
-        full_trades = raw_trades.sort_values("timestamp", ascending=False).copy()
-        full_trades["체결일시"] = full_trades["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-        full_trades["체결단가"] = full_trades["price"].apply(lambda x: f"{x:,.0f}원")
-        full_trades["체결금액"] = full_trades["cost_or_revenue"].apply(lambda x: f"{x:,.0f}원")
-        full_trades["실현손익"] = full_trades["pnl"].apply(lambda x: f"+{x:,.1f}원" if x > 0 else (f"{x:,.1f}원" if x < 0 else "-"))
-        full_trades["체결수량"] = full_trades["volume"].apply(lambda x: f"{x:.6f}")
-        full_trades["구분"] = full_trades["action"].apply(lambda x: "익절 매도" if "SELL" in str(x) else "매수")
-        full_trades["방향"] = full_trades["side"].apply(lambda x: "매도 (ASK)" if x == "ask" else "매수 (BID)")
-        
-        show_cols = ["체결일시", "구분", "방향", "체결단가", "체결수량", "체결금액", "실현손익", "cycle"]
-        st.dataframe(full_trades[show_cols], hide_index=True, use_container_width=True)
-    else:
-        st.info("아직 기록된 체결 거래 내역이 없습니다.")
+        st.caption("🟢 체결 감지 리스너 가동 중 (신규 체결 시 실시간 자동 갱신)")
 
 
-# 메인 대시보드 렌더링 호출
-render_dashboard(selected_market)
+# 현재 상태를 세션 스테이트에 최신화
+st.session_state["last_trade_sig"] = get_latest_trade_signature()
 
-# 거래 체결 감지 모드인 경우 2초 주기 초경량 이벤트 감지 리스너 가동
 if refresh_mode == "trade_event":
-    trade_event_listener(selected_market)
+    trade_event_listener()
+elif isinstance(refresh_mode, int) and refresh_mode > 0:
+    time.sleep(refresh_mode)
+    st.rerun()
 

@@ -2,10 +2,10 @@
   "market": "KRW-SOL",
   "created_at": "2026-09-20 20:45:00",
   "initial_capital": 1000000.0,
-  "krw_balance": 1000000.0,
-  "coin_balance": 0.0,
-  "avg_buy_price": 0.0,
-  "total_cost": 0.0,
+  "krw_balance": 19510.0,
+  "coin_balance": 6.51595744680851,
+  "avg_buy_price": 150475.2,
+  "total_cost": 980490.0,
   "open_orders": [],
   "completed_cycles": 0,
   "wins": 0,
@@ -14,14 +14,22 @@
   "strategy": "HYBRID",
   "current_regime": "BULL",
   "active_sub_strategy": "TREND",
-  "trade_history": [],
+  "trade_history": [
+    {
+      "time": "2026-09-21 02:00:45",
+      "type": "MARKET_BUY",
+      "price": 150400.0,
+      "volume": 6.51595744680851,
+      "cost": 980490.0
+    }
+  ],
   "initial_price": 148500.0,
   "regime_indicators": {
-    "ma5": 148420.0,
-    "ma20": 149755.0,
-    "ma200": 140984.5,
-    "distance_ma200_pct": 5.61,
+    "ma5": 155000.0,
+    "ma20": 152135.0,
+    "ma200": 142444.5,
+    "distance_ma200_pct": 9.94,
     "signal": "HOLD",
-    "reason": "200 MA 상회 중 추세 유지 (5선 148,420원, 20선 149,755원)"
+    "reason": "200 MA 상회 중 추세 유지 (5선 155,000원, 20선 152,135원)"
   }
 }
