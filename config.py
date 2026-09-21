@@ -62,28 +62,41 @@ def get_profit_margin(market: str) -> float:
 
 
 def get_upbit_keys():
-    """런타임 시점에 환경변수 및 Streamlit Secrets에서 API 키를 탐색합니다."""
+    """런타임 시점에 환경변수 및 Streamlit Secrets에서 API 키를 탐색하고 정제합니다."""
     ak = os.getenv("UPBIT_ACCESS_KEY")
     sk = os.getenv("UPBIT_SECRET_KEY")
 
     try:
         import streamlit as st
-        # Streamlit Secrets 탐색 (다양한 키 명칭 호환 지원)
+        # Streamlit Secrets 탐색 (다양한 키 명칭 및 섹션 호환 지원)
         if hasattr(st, "secrets"):
             for ak_name in ["UPBIT_ACCESS_KEY", "upbit_access_key", "ACCESS_KEY", "access_key"]:
                 if ak_name in st.secrets:
-                    ak = ak or st.secrets[ak_name]
-                    break
+                    val = str(st.secrets[ak_name]).strip().strip('"').strip("'")
+                    if val:
+                        ak = val
+                        break
             for sk_name in ["UPBIT_SECRET_KEY", "upbit_secret_key", "SECRET_KEY", "secret_key"]:
                 if sk_name in st.secrets:
-                    sk = sk or st.secrets[sk_name]
-                    break
+                    val = str(st.secrets[sk_name]).strip().strip('"').strip("'")
+                    if val:
+                        sk = val
+                        break
             # [upbit] 섹션 하위 탐색
             if not ak and "upbit" in st.secrets:
-                ak = st.secrets["upbit"].get("access_key") or st.secrets["upbit"].get("UPBIT_ACCESS_KEY")
-                sk = st.secrets["upbit"].get("secret_key") or st.secrets["upbit"].get("UPBIT_SECRET_KEY")
+                u_ak = st.secrets["upbit"].get("access_key") or st.secrets["upbit"].get("UPBIT_ACCESS_KEY")
+                u_sk = st.secrets["upbit"].get("secret_key") or st.secrets["upbit"].get("UPBIT_SECRET_KEY")
+                if u_ak:
+                    ak = str(u_ak).strip().strip('"').strip("'")
+                if u_sk:
+                    sk = str(u_sk).strip().strip('"').strip("'")
     except Exception:
         pass
+
+    if ak:
+        ak = str(ak).strip().strip('"').strip("'")
+    if sk:
+        sk = str(sk).strip().strip('"').strip("'")
 
     return ak, sk
 

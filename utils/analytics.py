@@ -36,12 +36,15 @@ def init_or_load_account_base() -> Dict[str, Any]:
     # 신규 전체 기준점 생성
     try:
         upbit = get_upbit_client()
-        balances = upbit.get_balances()
+        raw_b = upbit.get_balances()
+        balances = raw_b if isinstance(raw_b, list) else []
         krw_bal = 0.0
         total_eval = 0.0
         coins_info = {}
 
         for b in balances:
+            if not isinstance(b, dict):
+                continue
             cur = b.get("currency")
             bal = float(b.get("balance", 0.0))
             locked = float(b.get("locked", 0.0))
@@ -96,11 +99,27 @@ def get_total_account_summary() -> Dict[str, Any]:
     init_db()
     balances = []
     is_api_key_missing = False
+    api_error_message = ""
     try:
         upbit = get_upbit_client()
-        balances = upbit.get_balances() or []
+        raw_balances = upbit.get_balances()
+        if isinstance(raw_balances, list):
+            balances = raw_balances
+        elif isinstance(raw_balances, dict):
+            # 업비트 API에서 에러 응답(예: IP 제한, 인증키 불일치 등)을 반환한 경우
+            is_api_key_missing = True
+            err_dict = raw_balances.get("error", {})
+            err_name = err_dict.get("name", "")
+            err_msg = err_dict.get("message", "")
+            api_error_message = f"{err_name}: {err_msg}" if err_name or err_msg else str(raw_balances)
+            print(f"[WARN] 업비트 API 오류 응답: {api_error_message}")
+        else:
+            is_api_key_missing = True
+            api_error_message = f"응답 형식 오류 ({type(raw_balances)})"
+            print(f"[WARN] 업비트 응답 형식 비정상: {raw_balances}")
     except Exception as e:
         is_api_key_missing = True
+        api_error_message = str(e)
         print(f"[WARN] 업비트 클라이언트 초기화 실패 (API 키 확인 필요): {e}")
 
     krw_balance = 0.0
@@ -111,6 +130,8 @@ def get_total_account_summary() -> Dict[str, Any]:
 
     # 1. 각 통화별 자산 계산
     for b in balances:
+        if not isinstance(b, dict):
+            continue
         cur = b.get("currency")
         bal = float(b.get("balance", 0.0))
         locked = float(b.get("locked", 0.0))
@@ -202,7 +223,8 @@ def get_total_account_summary() -> Dict[str, Any]:
         "growth_pct": growth_pct,
         "base_snapshot_time": base_data.get("snapshot_time", "-"),
         "coins": coins_list,
-        "is_api_key_missing": is_api_key_missing
+        "is_api_key_missing": is_api_key_missing,
+        "api_error_message": api_error_message
     }
 
 
@@ -230,7 +252,7 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
     if upbit is not None:
         try:
             balance_info = upbit.get_balance(ticker, verbose=True)
-            if balance_info and 'avg_buy_price' in balance_info:
+            if isinstance(balance_info, dict) and 'avg_buy_price' in balance_info and 'error' not in balance_info:
                 cur_bal = float(balance_info.get('balance', 0.0))
                 locked_bal = float(balance_info.get('locked', 0.0))
                 avg_price = float(balance_info.get('avg_buy_price', 0.0))
@@ -248,15 +270,16 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
     if upbit is not None:
         try:
             orders = upbit.get_order(market, state="wait")
-            if orders:
+            if isinstance(orders, list):
                 for o in orders:
-                    open_orders.append({
-                        "uuid": o.get("uuid"),
-                        "side": o.get("side"),
-                        "price": float(o.get("price", 0.0)),
-                        "volume": float(o.get("volume", 0.0)),
-                        "created_at": o.get("created_at")
-                    })
+                    if isinstance(o, dict) and "uuid" in o:
+                        open_orders.append({
+                            "uuid": o.get("uuid"),
+                            "side": o.get("side"),
+                            "price": float(o.get("price", 0.0)),
+                            "volume": float(o.get("volume", 0.0)),
+                            "created_at": o.get("created_at")
+                        })
         except Exception as e:
             print(f"[{market}] 미체결 주문 조회 실패: {e}")
 

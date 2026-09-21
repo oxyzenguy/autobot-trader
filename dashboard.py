@@ -214,21 +214,39 @@ active_strategies = get_all_active_strategies()
 # [🔑 Streamlit Cloud Secrets 설정 안내 배너 (API 키 미설정 시)]
 # =============================================================================
 if account_data.get("is_api_key_missing"):
-    st.warning("""
-    ### ⚠️ 업비트 API 키 연동 필요 (Streamlit Cloud 환경)
+    api_err = account_data.get("api_error_message", "")
+    is_ip_error = ("no_authorization_i_p" in api_err.lower()) or ("허용되지 않은 ip" in api_err.lower())
     
-    웹 대시보드(Streamlit Cloud)는 보안상 로컬 `.env` 파일을 읽지 못하므로, **Streamlit Secrets**에 업비트 API 키를 등록해주셔야 실시간 계좌 및 매매 현황 조회가 가능합니다.
-    
-    **👉 설정 방법 (30초 완료):**
-    1. 화면 우측 하단의 **'Manage app'** 클릭 (또는 우측 상단 `⋮` 메뉴)
-    2. **Settings** ➔ **Secrets** 탭 선택
-    3. 아래 내용을 복사하여 본인의 API 키를 입력 후 **Save** 클릭:
-    ```toml
-    UPBIT_ACCESS_KEY = "발급받은_UPBIT_ACCESS_KEY"
-    UPBIT_SECRET_KEY = "발급받은_UPBIT_SECRET_KEY"
-    ```
-    4. 저장 즉시 페이지가 자동으로 새로고침되며 실시간 계좌 정보가 정상 연동됩니다!
-    """)
+    if is_ip_error:
+        st.error(f"""
+        ### 🚨 [업비트 API] IP 주소 제한 오류 감지
+        **업비트 응답**: `{api_err}`
+        
+        현재 등록된 업비트 API 키는 특정 IP 주소(예: 자택 PC)만 허용되어 있어, 고정 IP가 없는 **Streamlit Cloud(클라우드 서버)**의 요청이 업비트에서 차단되었습니다.
+        
+        **👉 해결 방법 (자산조회 전용 키 신규 발급 권장):**
+        1. 업비트 로그인 ➔ **[마이] ➔ [Open API 관리]** 이동
+        2. **'자산조회'** 권한만 체크 (출금/주문 권한 제외로 안전)
+        3. ⚠️ **'IP 주소 등록'을 비워둔 상태(미등록)**로 신규 API 키 발급
+        4. 발급받은 새 키를 Streamlit Cloud의 **Secrets**에 업데이트 후 저장
+        """)
+    else:
+        err_hint = f"\n\n**세부 응답/오류**: `{api_err}`" if api_err else ""
+        st.warning(f"""
+        ### ⚠️ 업비트 API 키 연동 필요 (Streamlit Cloud 환경){err_hint}
+        
+        웹 대시보드(Streamlit Cloud)는 보안상 로컬 `.env` 파일을 읽지 못하므로, **Streamlit Secrets**에 업비트 API 키를 등록해주셔야 실시간 계좌 및 매매 현황 조회가 가능합니다.
+        
+        **👉 설정 방법 (30초 완료):**
+        1. 화면 우측 하단의 **'Manage app'** 클릭 (또는 우측 상단 `⋮` 메뉴)
+        2. **Settings** ➔ **Secrets** 탭 선택
+        3. 아래 내용을 복사하여 본인의 API 키를 입력 후 **Save** 클릭:
+        ```toml
+        UPBIT_ACCESS_KEY = "발급받은_UPBIT_ACCESS_KEY"
+        UPBIT_SECRET_KEY = "발급받은_UPBIT_SECRET_KEY"
+        ```
+        4. 저장 즉시 페이지가 자동으로 새로고침되며 실시간 계좌 정보가 정상 연동됩니다!
+        """)
 
 
 # =============================================================================
