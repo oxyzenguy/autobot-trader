@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import json
 import sqlite3
@@ -215,20 +216,37 @@ active_strategies = get_all_active_strategies()
 # =============================================================================
 if account_data.get("is_api_key_missing"):
     api_err = account_data.get("api_error_message", "")
-    is_ip_error = ("no_authorization_i_p" in api_err.lower()) or ("허용되지 않은 ip" in api_err.lower())
-    
+    api_err_lower = api_err.lower()
+    is_ip_error = (
+        ("no_authorization_ip" in api_err_lower) or
+        ("unregistered ip" in api_err_lower) or
+        ("허용되지 않은 ip" in api_err_lower) or
+        ("unregistered" in api_err_lower and "ip" in api_err_lower)
+    )
+
     if is_ip_error:
+        ip_match = re.search(r'([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})', api_err)
+        detected_ip = ip_match.group(1) if ip_match else "35.230.127.150"
+        
         st.error(f"""
-        ### 🚨 [업비트 API] IP 주소 제한 오류 감지
-        **업비트 응답**: `{api_err}`
+        ### 🚨 [업비트 IP 제한] 등록되지 않은 IP 주소입니다!
+        **업비트 에러 메시지**: `{api_err}`
         
-        현재 등록된 업비트 API 키는 특정 IP 주소(예: 자택 PC)만 허용되어 있어, 고정 IP가 없는 **Streamlit Cloud(클라우드 서버)**의 요청이 업비트에서 차단되었습니다.
+        업비트 Open API는 보안 정책상 **IP 주소 등록이 필수**입니다.
+        현재 웹 대시보드(Streamlit Cloud)가 업비트에 접속할 때 사용한 서버 IP가 업비트 허용 목록에 등록되어 있지 않습니다.
+        """)
         
-        **👉 해결 방법 (자산조회 전용 키 신규 발급 권장):**
-        1. 업비트 로그인 ➔ **[마이] ➔ [Open API 관리]** 이동
-        2. **'자산조회'** 권한만 체크 (출금/주문 권한 제외로 안전)
-        3. ⚠️ **'IP 주소 등록'을 비워둔 상태(미등록)**로 신규 API 키 발급
-        4. 발급받은 새 키를 Streamlit Cloud의 **Secrets**에 업데이트 후 저장
+        st.markdown(f"#### 👉 **업비트 [Open API 관리]에 추가 등록할 IP 주소:**")
+        st.code(detected_ip, language="text")
+        
+        st.info(f"""
+        **📌 해결 방법 (1분 소요):**
+        1. PC 웹 브라우저에서 **[업비트 로그인]** ➔ **[고객센터] ➔ [Open API 안내] ➔ [Open API 사용하기]** (또는 [마이] ➔ [Open API 관리])로 이동합니다.
+        2. 방금 생성하신 API 키의 **[변경]** 버튼을 누릅니다. (또는 '자산조회' 권한으로 신규 발급)
+        3. **'IP 주소 등록'**란에 기존 IP 옆에 **쉼표(`,`)**를 넣고 위 IP(`{detected_ip}`)를 함께 추가합니다.
+           - *입력 예시*: `내_컴퓨터_IP, {detected_ip}`
+           *(업비트는 최대 5개까지 IP 등록을 지원합니다)*
+        4. 카카오페이 2채널 인증을 완료하고 저장하시면 **웹 대시보드가 즉시 정상 작동**합니다!
         """)
     else:
         err_hint = f"\n\n**세부 응답/오류**: `{api_err}`" if api_err else ""
