@@ -543,27 +543,71 @@ else:
             st.dataframe(pd.DataFrame(pos_data), hide_index=True, use_container_width=True)
 
         with p_col2:
-            st.markdown(f"##### ⏳ 실시간 등록 미체결 주문 ({len(open_orders)}건)")
+            st.markdown(f"##### 📋 {ticker} 실시간 주문 & 체결 통합 타임라인")
+            timeline_items = []
+
+            # 1. 미체결 대기 주문 (호가창 등록 중인 주문)
             if open_orders:
-                orders_list = []
                 for o in open_orders:
-                    side_kr = "🎯 익절 매도" if o["side"] == "ask" else "💧 물타기 매수"
+                    side_kr = "🎯 [익절매도]" if o["side"] == "ask" else "💧 [물타기매수]"
                     diff = ((o["price"] - cur_p) / cur_p * 100.0) if cur_p > 0 else 0.0
-                    orders_list.append({
+                    reg_time = str(o.get("created_at", "-"))[:19].replace("T", " ")
+                    timeline_items.append({
+                        "상태": "⏳ 대기중",
+                        "시각": reg_time,
                         "구분": side_kr,
                         "주문가격": f"{o['price']:,.0f}원 ({diff:+.2f}%)",
-                        "주문수량": f"{o['volume']:.6f} {ticker}",
+                        "수량": f"{o['volume']:.6f} {ticker}",
                         "주문금액": f"{o['price'] * o['volume']:,.0f}원",
-                        "등록시각": str(o.get("created_at", "-"))[:19]
+                        "상세 / 손익": "호가창 등록 대기 중 (미체결)"
                     })
-                st.dataframe(pd.DataFrame(orders_list), hide_index=True, use_container_width=True)
-            else:
-                st.info(f"현재 {market}에 등록된 미체결 주문이 없습니다.")
 
-        # 해당 전략의 최근 체결 내역
-        with st.expander(f"📜 전략 {idx}. {market} 최근 실거래 체결 이력"):
+            # 2. 최근 체결 완료 내역 (실거래 trades 테이블)
             if not trades_df.empty:
-                show_trades = trades_df.head(10).copy()
+                action_map = {
+                    "INITIAL_10K_ENTRY": "1회차 신규 진입",
+                    "TREND_GOLDEN_CROSS_BUY": "5/20 골든크로스 매수",
+                    "MARTINGALE_BUY_INITIAL": "마틴게일 1차 매수",
+                    "TRAILING_STOP_EXIT": "트레일링스탑 익절",
+                    "TREND_DEAD_CROSS_SELL": "5/20 데드크로스 청산",
+                    "BASKET_TAKE_PROFIT": "바스켓 전량 익절",
+                    "STOP_LOSS": "STOP-LOSS 손절"
+                }
+                for _, t in trades_df.head(15).iterrows():
+                    raw_action = str(t.get("action", ""))
+                    if raw_action.startswith("TRANCHE_TAKE_PROFIT"):
+                        action_kr = "매직스플릿 차수 익절"
+                    else:
+                        action_kr = action_map.get(raw_action, raw_action or "실전 체결")
+
+                    side_icon = "🔴 매도" if t.get("side") == "ask" else "🔵 매수"
+                    pnl_val = float(t.get("pnl") or 0.0)
+                    detail_str = f"손익: {pnl_val:+,.0f}원" if pnl_val != 0 else f"{action_kr} 완료"
+
+                    t_time = str(t.get("timestamp", "-"))[:19]
+                    p_val = float(t.get("price") or 0.0)
+                    v_val = float(t.get("volume") or 0.0)
+                    c_val = float(t.get("cost_or_revenue") or 0.0)
+
+                    timeline_items.append({
+                        "상태": "✅ 체결완료",
+                        "시각": t_time,
+                        "구분": f"{side_icon} ({action_kr})",
+                        "주문가격": f"{p_val:,.0f}원",
+                        "수량": f"{v_val:.6f} {ticker}",
+                        "주문금액": f"{c_val:,.0f}원",
+                        "상세 / 손익": detail_str
+                    })
+
+            if timeline_items:
+                st.dataframe(pd.DataFrame(timeline_items), hide_index=True, use_container_width=True, height=270)
+            else:
+                st.info(f"현재 {market}에 등록된 대기 주문 및 체결 내역이 없습니다.")
+
+        # 해당 전략의 전체 체결 기록 더보기
+        with st.expander(f"📜 전략 {idx}. {market} 전체 체결 원본 기록 (총 {len(trades_df)}건)"):
+            if not trades_df.empty:
+                show_trades = trades_df.copy()
                 show_trades["체결단가"] = show_trades["price"].apply(lambda x: f"{x:,.0f}원")
                 show_trades["체결수량"] = show_trades["volume"].apply(lambda x: f"{x:.6f}")
                 show_trades["체결금액"] = show_trades["cost_or_revenue"].apply(lambda x: f"{x:,.0f}원")
