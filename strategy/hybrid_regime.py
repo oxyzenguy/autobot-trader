@@ -8,7 +8,9 @@
    - 현재가 <= 200 MA: 하락 국면 (BEAR)
 
 2. 상승 국면 (BULL) 매매 로직:
-   - 5/20 MA 골든크로스 & 현재가 > 5선: 매수 (BUY)
+   - 5/20 MA 골든크로스 & 현재가 > 5선: 1차수 매수 (10,000원)
+   - 피라미딩(불타기) 추가매수: 직전 매수가 대비 +3% 상승 & 5선 상회 시 10,000원씩 추가 매수 (최대 10회)
+   - 다이나믹 트레일링 스탑: 평단가 대비 +10% 도달 시 고점 추적 -> 최고점 대비 -3% 하락 시 일괄 익절
    - 5/20 MA 데드크로스 & 현재가 < 5선: 전량 매도 (SELL)
    - 그 외: 보유 또는 관망 (HOLD)
 
@@ -234,6 +236,40 @@ def check_magic_split_exits(
         "exit_type": "NONE",
         "reason": "익절 조건 미달성 (대기)"
     }
+
+
+def check_daily_closing_buy_condition(market: str = "KRW-SOL", current_price: float = 0.0) -> Dict[str, Any]:
+    """
+    업비트 일봉 마감(08:50 ~ 09:00 KST) 시점에 일봉 양봉(종가 > 시가) 및 5일선 지지 여부를 검사합니다.
+    """
+    try:
+        df_day = pyupbit.get_ohlcv(market, interval="day", count=10)
+        if df_day is not None and len(df_day) >= 5:
+            today_open = float(df_day['open'].iloc[-1])
+            today_close = float(df_day['close'].iloc[-1]) if current_price <= 0 else current_price
+            daily_ma5 = float(df_day['close'].rolling(5).mean().iloc[-1])
+
+            is_bullish_candle = today_close > today_open
+            is_above_ma5 = today_close > daily_ma5
+
+            can_buy = is_bullish_candle and is_above_ma5
+            reason = (
+                f"일봉 양봉(시가 {today_open:,.0f}원 < 현재가 {today_close:,.0f}원) & 5일선({daily_ma5:,.0f}원) 지지 충족"
+                if can_buy else
+                f"일봉 조건 미충족 (양봉:{is_bullish_candle}, 5일선지지:{is_above_ma5})"
+            )
+            return {
+                "can_buy": can_buy,
+                "today_open": today_open,
+                "today_close": today_close,
+                "daily_ma5": daily_ma5,
+                "is_bullish_candle": is_bullish_candle,
+                "is_above_ma5": is_above_ma5,
+                "reason": reason
+            }
+    except Exception as e:
+        return {"can_buy": False, "reason": f"일봉 조회 예외: {e}"}
+    return {"can_buy": False, "reason": "일봉 데이터 부족"}
 
 
 if __name__ == "__main__":

@@ -8,6 +8,14 @@
   "initial_entry_done": true,
   "trend_peak_price": 3667000.0,
   "trailing_stop_active": false,
-  "tranches": [],
+  "tranches": [
+    {
+      "step": 0,
+      "units": 1,
+      "buy_price": 3667000.0,
+      "volume": 0.00272627999999997,
+      "time": "2026-09-21 20:43:55"
+    }
+  ],
   "completed_cycles": 0
 }

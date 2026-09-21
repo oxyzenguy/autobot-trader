@@ -41,6 +41,12 @@ USE_TRAILING_STOP = True          # 트레일링 스탑 사용 여부
 TRAILING_STOP_TRIGGER = 0.10      # 진입가 대비 +10.0% 도달 시 트레일링 스탑 가동
 TRAILING_STOP_DROP = 0.03         # 포지션 최고가 대비 -3.0% 하락 시 조기 익절 청산
 
+# 하이브리드 상승장(BULL) 피라미딩(불타기) 및 일봉 종가매매 설정
+USE_BULL_PYRAMID = True           # 상승장 피라미딩(추가매수) 사용 여부
+PYRAMID_STEP_PCT = 0.03           # 직전 매수가 대비 +3.0% 상승 시 추가매수
+MAX_PYRAMID_STEPS = 10            # 최대 추가매수 차수 (10회 = 총 10만 원, 불타기+종가매수 공유)
+USE_BULL_CLOSING_BUY = True       # 당일 불타기 미체결 시 일봉(08:50 KST) 양봉 종가매매 결합 여부
+
 # 하이브리드 하락장(BEAR) 마틴게일 매직스플릿 방어 설정 (Dual Exit: 바스켓 +0.5% OR 개별 +3%)
 USE_MAGIC_SPLIT_DEFENSE = True       # 매직스플릿 개별 익절 병행 방어 모드
 MAGIC_SPLIT_TRANCHE_PROFIT = 0.03   # 개별 차수 반등 시 단독 익절 목표 마진 (+3.0%)
@@ -50,7 +56,6 @@ MAGIC_SPLIT_DOWN_PCT = 0.04         # 추가 차수 물타기 간격 (-4.0%)
 PROFIT_MARGINS = {
     "KRW-SOL": 1.005,  # 솔라나: +0.5% (초단타 빠른 회전)
     "KRW-ETH": 1.008,  # 이더리움: +0.8% (추세 반영 최적 마진)
-    "KRW-XRP": 1.005,  # 리플: +0.5%
     "KRW-BTC": 1.005,  # 비트코인: +0.5%
 }
 
@@ -111,11 +116,13 @@ def get_upbit_client():
 
 def load_investments():
     """
-    .env에서 종목별 총 투자금을 불러오고 1Unit 금액을 계산합니다.
+    .env 및 Streamlit Secrets에서 종목별 총 투자금을 불러오고 1Unit 금액을 계산합니다.
     - 1Unit = max(MIN_ORDER_KRW, 총 투자금 // 100)
     - 업비트 최소 주문 금액(5,000원) 미만이 되지 않도록 보정합니다.
     """
     investments = {}
+
+    # 1. os.environ 탐색 (.env)
     for key, value in os.environ.items():
         if key.startswith("INVEST_"):
             try:
@@ -129,12 +136,42 @@ def load_investments():
             except ValueError:
                 continue
 
-    # .env에 없을 경우 기본 fallback 설정
+    # 2. Streamlit Secrets 탐색 (웹 대시보드 클라우드 호환)
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            for key in st.secrets.keys():
+                if str(key).startswith("INVEST_"):
+                    try:
+                        market = str(key).replace("INVEST_", "").replace("_", "-")
+                        total_invest = int(st.secrets[key])
+                        unit = max(MIN_ORDER_KRW, total_invest // 100)
+                        investments[market] = {
+                            "total": total_invest,
+                            "unit": unit
+                        }
+                    except ValueError:
+                        continue
+            # [investments] 하위 섹션이 있을 경우
+            if "investments" in st.secrets:
+                for k, v in st.secrets["investments"].items():
+                    m = k.replace("_", "-").upper()
+                    if not m.startswith("KRW-"):
+                        m = f"KRW-{m}"
+                    total_invest = int(v)
+                    unit = max(MIN_ORDER_KRW, total_invest // 100)
+                    investments[m] = {
+                        "total": total_invest,
+                        "unit": unit
+                    }
+    except Exception:
+        pass
+
+    # 3. .env 및 Secrets 모두 없을 경우 기본 fallback 설정 (SOL 100만원, ETH 100만원, XRP 없음)
     if not investments:
         investments = {
-            "KRW-SOL": {"total": 500_000, "unit": 5_000},
-            "KRW-ETH": {"total": 500_000, "unit": 5_000},
-            "KRW-XRP": {"total": 500_000, "unit": 5_000}
+            "KRW-SOL": {"total": 1_000_000, "unit": 10_000},
+            "KRW-ETH": {"total": 1_000_000, "unit": 10_000}
         }
 
     return investments

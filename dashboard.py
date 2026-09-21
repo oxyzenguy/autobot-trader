@@ -460,6 +460,42 @@ else:
         reason_text = regime_info.get("reason", "분석 중")
         short_reason = (reason_text[:35] + "...") if len(reason_text) > 35 else reason_text
 
+        if is_bull:
+            r_state = strat.get("runtime_state", {})
+            tranches = r_state.get("tranches", [])
+            from config import MAX_PYRAMID_STEPS, PYRAMID_STEP_PCT, TRAILING_STOP_TRIGGER
+            curr_steps = len(tranches) if tranches else (1 if strat.get("bot_quantity", 0) > 0 else 0)
+            last_p = tranches[-1].get("buy_price", target_base_p) if tranches else target_base_p
+            next_p = last_p * (1.0 + PYRAMID_STEP_PCT) if last_p > 0 else 0.0
+            ts_active = r_state.get("trailing_stop_active", False)
+            ts_status = "🔥 고점 추적 가동 중" if ts_active else f"대기 (+{TRAILING_STOP_TRIGGER*100:.0f}% 도달 시)"
+
+            sub_info_html = f"""
+                    <div>
+                        <span style="color:#8c96a5;">📈 불타기 & 종가매수:</span>
+                        <b style="color:#ffb300; margin-left:4px;">{curr_steps} / {MAX_PYRAMID_STEPS}회차</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(다음 불타기: {next_p:,.0f}원 / 🌅 08:50 양봉 시 1U)</span>
+                    </div>
+                    <div>
+                        <span style="color:#8c96a5;">🎯 다이나믹 트레일링 스탑:</span>
+                        <b style="color:#00c087; margin-left:4px;">{ts_status}</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(+10% 도달 후 고점대비 -3% 익절)</span>
+                    </div>
+            """
+        else:
+            sub_info_html = f"""
+                    <div>
+                        <span style="color:#8c96a5;">🎯 바스켓 익절 목표가:</span>
+                        <b style="color:#00c087; margin-left:4px;">{basket_target_p:,.0f}원</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(평단가 대비 +{(strat['profit_margin']-1)*100:.2f}%)</span>
+                    </div>
+                    <div>
+                        <span style="color:#8c96a5;">💧 개별 차수 매직스플릿 익절선:</span>
+                        <b style="color:#ffb300; margin-left:4px;">각 차수 매수가 대비 +3.0% 반등</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(차수 단독 청산)</span>
+                    </div>
+            """
+
         # 전략 개별 카드 (st.html을 사용하여 코드 노출 원천 차단)
         st.html(f"""
         <div class="strategy-card">
@@ -517,16 +553,7 @@ else:
                 </div>
 
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:8px; border-top:1px dashed #2a3344; font-size:0.8rem;">
-                    <div>
-                        <span style="color:#8c96a5;">🎯 바스켓 익절 목표가:</span>
-                        <b style="color:#00c087; margin-left:4px;">{basket_target_p:,.0f}원</b>
-                        <span style="color:#8c96a5; font-size:0.74rem;">(평단가 대비 +{(strat['profit_margin']-1)*100:.2f}%)</span>
-                    </div>
-                    <div>
-                        <span style="color:#8c96a5;">💧 개별 차수 매직스플릿 익절선:</span>
-                        <b style="color:#ffb300; margin-left:4px;">각 차수 매수가 대비 +3.0% 반등</b>
-                        <span style="color:#8c96a5; font-size:0.74rem;">(차수 단독 청산)</span>
-                    </div>
+                    {sub_info_html}
                 </div>
             </div>
         </div>

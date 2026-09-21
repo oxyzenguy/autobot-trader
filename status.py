@@ -51,8 +51,6 @@ def print_status():
         reg_info = s.get("regime_info", {})
         is_bull = reg_info.get("is_bull", False)
         reg_str = reg_info.get("regime_korean", "분석중")
-        mode_str = "🚀 상승장 5/20 추세모드" if is_bull else "🛡️ 하락장 마틴-매직스플릿 방어 (개별+3% OR 바스켓 익절)"
-
         bot_q = s.get("bot_quantity", 0.0)
         bot_avg = s.get("bot_avg_price", 0.0)
         bot_eval = s.get("bot_eval", 0.0)
@@ -60,11 +58,28 @@ def print_status():
         bot_pnl_pct = s.get("bot_pnl_pct", 0.0)
         prot_q = s.get("protected_quantity", 0.0)
 
+        r_state = s.get("runtime_state", {})
+        tranches = r_state.get("tranches", [])
+        if is_bull:
+            from config import MAX_PYRAMID_STEPS, PYRAMID_STEP_PCT, TRAILING_STOP_TRIGGER
+            curr_steps = len(tranches) if tranches else (1 if bot_q > 0 else 0)
+            last_p = tranches[-1].get("buy_price", bot_avg) if tranches else bot_avg
+            next_p = last_p * (1.0 + PYRAMID_STEP_PCT) if last_p > 0 else 0.0
+            ts_active = r_state.get("trailing_stop_active", False)
+            ts_status = "🔥 고점 추적 가동 중" if ts_active else f"대기 (+{TRAILING_STOP_TRIGGER*100:.0f}% 도달 시)"
+            mode_str = "🚀 상승장 5/20 추세모드 (피라미딩 불타기 + 일봉 종가매매 결합)"
+            pyramid_info = f" • 📈 피라미딩(불타기): {curr_steps}/{MAX_PYRAMID_STEPS}회차 | 직전매수가: {last_p:,.0f}원 -> 다음 불타기 기준가: {next_p:,.0f}원 (+{PYRAMID_STEP_PCT*100:.1f}%) | 🌅 종가매수: 08:50 KST 양봉 시 1U | 트레일링: {ts_status}"
+        else:
+            mode_str = "🛡️ 하락장 마틴-매직스플릿 방어 (개별+3% OR 바스켓 익절)"
+            pyramid_info = ""
+
         print(f"\n[전략 {idx}] {s['strategy_name']} ({market})")
         print(f" • 시장 국면: {reg_str} | 현재 모드: {mode_str}")
         print(f" • 200 MA: {reg_info.get('ma200', 0):,.0f}원 ({reg_info.get('distance_ma200_pct', 0):+.2f}%) | 바스켓 익절선: {bot_avg*s['profit_margin']:,.0f}원 (+{(s['profit_margin']-1)*100:.2f}%)")
         print(f" • 배정 원금: {s['initial_capital']:,.0f}원 | 1Unit: {s['unit_krw']:,.0f}원 | 봇 전략 수익률: {ret_s} (순손익: {pnl_s})")
         print(f" • 🤖 봇 운용 포지션: {bot_q:.6f} {ticker} (평단: {bot_avg:,.0f}원 | 평가액: {bot_eval:,.0f}원 | 미실현: {bot_pnl:+,.0f}원, {bot_pnl_pct:+.2f}%)")
+        if pyramid_info:
+            print(pyramid_info)
         print(f" • 🔒 기존 보유 자산 (안전 보호 중): {prot_q:.6f} {ticker} (계좌 총 잔고: {s.get('account_total_coin_balance', s['coin_balance']):.6f} {ticker})")
 
         open_orders = s["open_orders"]
