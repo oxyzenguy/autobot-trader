@@ -1,0 +1,13 @@
+{
+  "market": "KRW-SOL",
+  "current_regime": "BULL",
+  "active_mode": "TREND",
+  "bot_quantity": 0.06397952000000018,
+  "bot_avg_price": 156300.0,
+  "protected_quantity": 6.66887531,
+  "initial_entry_done": true,
+  "trend_peak_price": 156300.0,
+  "trailing_stop_active": false,
+  "tranches": [],
+  "completed_cycles": 0
+}

@@ -1,23 +1,35 @@
 {
-  "snapshot_time": "2026-09-20 20:45:00",
+  "snapshot_time": "2026-09-21 19:05:27",
+  "total_base_equity": 7198359.73255551,
+  "base_krw": 385124.26997851,
   "coins": {
+    "KRW-BTC": {
+      "currency": "BTC",
+      "base_balance": 0.03724281,
+      "base_avg_price": 127583275.72721513,
+      "base_price": 114599000.0,
+      "base_eval_amount": 4267988.78319
+    },
     "KRW-ETH": {
       "currency": "ETH",
-      "base_balance": 0.40756151,
+      "base_balance": 0.40756150999999996,
       "base_avg_price": 3618032.20472639,
-      "base_total_cost": 1474570.6685869168,
-      "base_price": 3533000.0,
-      "base_eval_amount": 1439914.81483,
-      "base_pnl_pct": -2.3502334947518975
+      "base_price": 3681000.0,
+      "base_eval_amount": 1500233.9183099999
     },
     "KRW-SOL": {
       "currency": "SOL",
-      "base_balance": 6.668875310000001,
+      "base_balance": 6.66887531,
       "base_avg_price": 171913.80720731,
-      "base_total_cost": 1146471.7443329298,
-      "base_price": 148600.0,
-      "base_eval_amount": 990994.8710660001,
-      "base_pnl_pct": -13.56133494222253
+      "base_price": 156700.0,
+      "base_eval_amount": 1045012.761077
+    },
+    "KRW-ETHW": {
+      "currency": "ETHW",
+      "base_balance": 0.12660165,
+      "base_avg_price": 0.0,
+      "base_price": 0.0,
+      "base_eval_amount": 0.0
     }
   }
 }

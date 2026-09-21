@@ -5,6 +5,8 @@ import warnings
 warnings.filterwarnings("ignore")
 import pyupbit
 from datetime import datetime
+from config import MIN_KRW_ALERT_THRESHOLD
+from utils.analytics import get_total_account_summary, get_all_active_strategies
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "trade_history.db")
@@ -12,107 +14,98 @@ DB_FILE = os.path.join(BASE_DIR, "trade_history.db")
 
 def print_status():
     print("\n" + "=" * 70)
-    print(f"🚀 AutoBot Trader 가상매매 실시간 현황 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+    print(f"🚀 AutoBot Trader 실전 매매(Real Trading) 실시간 현황 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
     print("=" * 70)
 
-    for ticker in ["SOL", "ETH"]:
-        market = f"KRW-{ticker}"
-        state_file = os.path.join(BASE_DIR, f"paper_state_KRW_{ticker}.json")
-        if not os.path.exists(state_file):
-            continue
+    # 1. 전체 계좌 요약
+    acc = get_total_account_summary()
+    growth_str = f"+{acc['growth_pct']:.2f}%" if acc['growth_pct'] >= 0 else f"{acc['growth_pct']:.2f}%"
+    krw_status = "🚨 10만원 미만 경고!" if acc['is_krw_warning'] else "✅ 정상"
 
-        try:
-            with open(state_file, "r", encoding="utf-8") as f:
-                state = json.load(f)
-        except Exception:
-            continue
+    print("\n🏛️ [업비트 전체 계좌 현황]")
+    print(f" • 총 평가 자산: {acc['total_equity']:,.0f} KRW (기준 대비 성장률: {growth_str}, {acc['growth_amount']:+,.0f}원)")
+    print(f" • 주문가능 예수금: {acc['krw_balance']:,.0f} KRW (묶인 금액: {acc['krw_locked']:,.0f}원) -> 상태: {krw_status}")
+    print(f" • 코인 총 평가금액: {acc['total_coin_eval']:,.0f}원 (평가손익: {acc['unrealized_pnl']:+,.0f}원, {acc['coin_pnl_pct']:+.2f}%)")
+    print(f" • 전체 투자원금: {acc['total_invested']:,.0f}원")
 
-        cur_price = pyupbit.get_current_price(market) or 0.0
-        krw = state.get("krw_balance", 0.0)
-        coin = state.get("coin_balance", 0.0)
-        eval_coin = coin * cur_price
-        total_equity = krw + eval_coin
-        init_cap = state.get("initial_capital", 1000000.0)
-        ret_pct = ((total_equity - init_cap) / init_cap * 100.0) if init_cap > 0 else 0.0
-        pnl = state.get("realized_pnl", 0.0)
-        cycles = state.get("completed_cycles", 0)
-        orders = state.get("open_orders", [])
+    print("\n📊 [보유 코인 자산 목록]")
+    for c in acc['coins']:
+        if c['eval_amount'] > 0:
+            avg_s = f"{c['avg_buy_price']:,.0f}원" if c['avg_buy_price'] > 0 else "-"
+            cur_s = f"{c['current_price']:,.0f}원"
+            pnl_s = f"{c['pnl']:+,.0f}원 ({c['pnl_pct']:+.2f}%)" if c['avg_buy_price'] > 0 else "-"
+            print(f" • {c['currency']}: {c['total_balance']:.6f}개 | 평가액: {c['eval_amount']:,.0f}원 ({c['weight_pct']:.1f}%) | 평단: {avg_s} | 시세: {cur_s} | 손익: {pnl_s}")
 
-        regime = state.get("current_regime", "BULL")
-        regime_str = "🟢 상승 국면(BULL)" if regime == "BULL" else "🔴 하락 국면(BEAR)"
-        sub_strat = state.get("active_sub_strategy", "TREND")
-        if sub_strat == "TREND":
-            ts_active = state.get("trailing_stop_active", False)
-            peak_p = state.get("trend_highest_price", 0.0)
-            ts_p = state.get("trailing_stop_price", 0.0)
-            if ts_active and ts_p > 0:
-                strat_name = f"5/20 MA 추세 (🎯 트레일링 스탑 가동: 최고가 {peak_p:,.0f}원 / 익절선 {ts_p:,.0f}원)"
-            elif peak_p > 0:
-                strat_name = f"5/20 MA 추세 (트레일링 목표 +10% 추적: 최고가 {peak_p:,.0f}원)"
-            else:
-                strat_name = "5/20 MA 추세추종"
-        elif sub_strat == "MARTINGALE":
-            strat_name = "마틴게일 1-2-3-6 방어"
-        else:
-            strat_name = "ClucMay 과매도 낙주 대기 (현금 100%)"
+    # 2. 적용된 전략별 현황
+    print("\n" + "-" * 70)
+    print("🎯 [현재 적용 전략별 현황]")
+    print("-" * 70)
 
-        from utils.real_balance import get_real_coin_status
-        r_stat = get_real_coin_status(market)
-        r_bal = r_stat.get("current_balance", 0.0)
-        r_eval = r_stat.get("current_eval", 0.0)
-        r_cost = r_stat.get("total_cost", 0.0)
-        r_avg = r_stat.get("current_avg_price", 0.0)
-        r_pnl_pct = r_stat.get("total_pnl_pct", 0.0)
+    strategies = get_all_active_strategies()
+    for idx, s in enumerate(strategies, 1):
+        market = s["market"]
+        ticker = s["ticker"]
+        ret_s = f"+{s['strategy_return_pct']:.2f}%" if s['strategy_return_pct'] >= 0 else f"{s['strategy_return_pct']:.2f}%"
+        pnl_s = f"{s['total_strat_pnl']:+,.0f}원"
 
-        print(f"\n🪙 [{market}] 현재가: {cur_price:,.0f}원 | {regime_str} | 모드: {strat_name}")
-        print(f"   📱 [업비트 앱 실계좌] 총보유: {r_bal:.4f} {ticker} | 평가금액: {r_eval:,.0f}원 | 평단: {r_avg:,.0f}원 (수익률: {r_pnl_pct:+.2f}%)")
-        print(f"   🤖 [100만원 모의투자] 총자산: {total_equity:,.0f}원 ({ret_pct:+.2f}%) | 현금: {krw:,.0f}원 | 코인: {coin:.6f} {ticker} ({eval_coin:,.0f}원)")
-        print(f"   • 모의투자 실현 손익: {pnl:+,.0f}원 | 완료 사이클: {cycles}회")
+        reg_info = s.get("regime_info", {})
+        is_bull = reg_info.get("is_bull", False)
+        reg_str = reg_info.get("regime_korean", "분석중")
+        mode_str = "🚀 상승장 5/20 추세모드" if is_bull else "🛡️ 하락장 마틴-매직스플릿 방어 (개별+3% OR 바스켓 익절)"
 
-        # 미체결 주문
-        if orders:
-            print(f"   📋 미체결 주문 ({len(orders)}건 등록 중):")
-            for o in orders:
-                side_str = "🎯 [익절매도]" if o.get("side") == "ask" else f"💧 [물타기 {o.get('units', 1)}배]"
+        bot_q = s.get("bot_quantity", 0.0)
+        bot_avg = s.get("bot_avg_price", 0.0)
+        bot_eval = s.get("bot_eval", 0.0)
+        bot_pnl = s.get("bot_unrealized_pnl", 0.0)
+        bot_pnl_pct = s.get("bot_pnl_pct", 0.0)
+        prot_q = s.get("protected_quantity", 0.0)
+
+        print(f"\n[전략 {idx}] {s['strategy_name']} ({market})")
+        print(f" • 시장 국면: {reg_str} | 현재 모드: {mode_str}")
+        print(f" • 200 MA: {reg_info.get('ma200', 0):,.0f}원 ({reg_info.get('distance_ma200_pct', 0):+.2f}%) | 바스켓 익절선: {bot_avg*s['profit_margin']:,.0f}원 (+{(s['profit_margin']-1)*100:.2f}%)")
+        print(f" • 배정 원금: {s['initial_capital']:,.0f}원 | 1Unit: {s['unit_krw']:,.0f}원 | 봇 전략 수익률: {ret_s} (순손익: {pnl_s})")
+        print(f" • 🤖 봇 운용 포지션: {bot_q:.6f} {ticker} (평단: {bot_avg:,.0f}원 | 평가액: {bot_eval:,.0f}원 | 미실현: {bot_pnl:+,.0f}원, {bot_pnl_pct:+.2f}%)")
+        print(f" • 🔒 기존 보유 자산 (안전 보호 중): {prot_q:.6f} {ticker} (계좌 총 잔고: {s.get('account_total_coin_balance', s['coin_balance']):.6f} {ticker})")
+
+        open_orders = s["open_orders"]
+        if open_orders:
+            print(f" • 미체결 주문 ({len(open_orders)}건 등록 중):")
+            for o in open_orders:
+                side_str = "🎯 [익절매도]" if o.get("side") == "ask" else "💧 [물타기매수]"
                 p = o.get("price", 0.0)
                 v = o.get("volume", 0.0)
-                diff_pct = ((p - cur_price) / cur_price * 100.0) if cur_price > 0 else 0.0
-                print(f"      - {side_str} {p:,.0f}원 ({diff_pct:+.2f}%) | 수량: {v:.6f} | 금액: {p*v:,.0f}원")
+                cur_p = s["current_price"]
+                diff_pct = ((p - cur_p) / cur_p * 100.0) if cur_p > 0 else 0.0
+                print(f"    - {side_str} {p:,.0f}원 ({diff_pct:+.2f}%) | 수량: {v:.6f} | 금액: {p*v:,.0f}원")
         else:
-            print("   📋 미체결 주문: 없음")
+            print(" • 미체결 주문: 없음")
 
-    # 최근 체결 내역 (DB)
+    # 3. 최근 실거래 체결 내역
     print("\n" + "-" * 70)
-    print("⚡ 최근 체결 거래 내역 (최근 10건)")
+    print("⚡ [최근 실전 체결 내역 (최근 5건)]")
     print("-" * 70)
     if os.path.exists(DB_FILE):
         try:
             conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT timestamp, market, action, price, volume, cost_or_revenue, pnl, cycle
-                FROM paper_trades
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT timestamp, ticker, side, price, volume, cost_or_revenue, pnl, action
+                FROM trades
                 ORDER BY id DESC
-                LIMIT 10
+                LIMIT 5
             """)
-            rows = cursor.fetchall()
+            rows = cur.fetchall()
             conn.close()
 
             if rows:
-                print(f"{'체결일시':<20} | {'종목':<8} | {'구분':<16} | {'체결단가':>12} | {'체결금액':>12} | {'실현손익':>10}")
-                print("-" * 88)
                 for r in rows:
-                    t_str, mkt, act, prc, vol, cost, pnl_val, cyc = r
-                    prc_str = f"{prc:,.0f}원"
-                    cost_str = f"{cost:,.0f}원"
-                    pnl_disp = f"{pnl_val:+,.0f}원" if pnl_val != 0 else "-"
-                    print(f"{t_str:<20} | {mkt:<8} | {act:<16} | {prc_str:>12} | {cost_str:>12} | {pnl_disp:>10}")
+                    side_s = "매도(ASK)" if r[2] == "ask" else "매수(BID)"
+                    pnl_s = f"손익 {r[6]:+,.0f}원" if r[6] else ""
+                    print(f" • [{r[0]}] {r[1]} {side_s} {r[7] or ''} - 단가 {r[3]:,.0f}원 | 수량 {r[4]:.6f} | 총액 {r[5]:,.0f}원 {pnl_s}")
             else:
-                print("기록된 체결 거래 내역이 없습니다.")
+                print(" • 아직 실전 체결 거래 기록이 없습니다.")
         except Exception as e:
-            print(f"거래 내역 조회 중 오류: {e}")
-    else:
-        print("거래 DB 파일이 아직 생성되지 않았습니다.")
+            print(f" • 체결 내역 조회 오류: {e}")
 
     print("=" * 70 + "\n")
 

@@ -1,0 +1,13 @@
+{
+  "market": "KRW-ETH",
+  "current_regime": "BULL",
+  "active_mode": "TREND",
+  "bot_quantity": 0.00272627999999997,
+  "bot_avg_price": 3667000.0,
+  "protected_quantity": 0.40756151,
+  "initial_entry_done": true,
+  "trend_peak_price": 3667000.0,
+  "trailing_stop_active": false,
+  "tranches": [],
+  "completed_cycles": 0
+}

@@ -394,7 +394,8 @@ else:
         regime_badge = f'<span style="background:{regime_color}22; color:{regime_color}; border:1px solid {regime_color}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "국면 분석 중")}</span>'
         mode_desc = "🚀 5/20 MA 추세추종 & 트레일링 스탑" if is_bull else "🛡️ 마틴-매직스플릿 방어 (개별+3% OR 바스켓 이중익절)"
 
-        basket_target_p = avg_p * strat["profit_margin"] if avg_p > 0 else 0.0
+        target_base_p = strat.get("bot_avg_price", 0.0) if strat.get("bot_avg_price", 0.0) > 0 else avg_p
+        basket_target_p = target_base_p * strat["profit_margin"] if target_base_p > 0 else 0.0
 
         dist_pct = regime_info.get("distance_ma200_pct", 0.0)
         dist_color = "#00c087" if dist_pct >= 0 else "#ff3b69"
@@ -521,15 +522,23 @@ else:
         p_col1, p_col2 = st.columns([1.1, 1.9])
 
         with p_col1:
-            st.markdown(f"##### 💼 {ticker} 현재 포지션")
-            u_color = "text-green" if unrealized_pnl >= 0 else "text-red"
+            st.markdown(f"##### 💼 {ticker} 포지션 현황 (봇 운용 & 기존 자산 보호)")
+            bot_q = strat.get("bot_quantity", 0.0)
+            bot_avg = strat.get("bot_avg_price", 0.0)
+            bot_eval = strat.get("bot_eval", 0.0)
+            bot_pnl = strat.get("bot_unrealized_pnl", 0.0)
+            bot_pnl_pct = strat.get("bot_pnl_pct", 0.0)
+            prot_q = strat.get("protected_quantity", 0.0)
+            tot_coin = strat.get("account_total_coin_balance", coin_bal)
+
             pos_data = [
                 {"항목": "현재 시세", "값": f"{cur_p:,.0f} 원"},
-                {"항목": "보유 수량", "값": f"{coin_bal:.6f} {ticker}"},
-                {"항목": "매수 평균단가", "값": f"{avg_p:,.0f} 원" if avg_p > 0 else "-"},
-                {"항목": "총 매수원가", "값": f"{strat['cost_amount']:,.0f} 원"},
-                {"항목": "현재 평가금액", "값": f"{eval_amt:,.0f} 원"},
-                {"항목": "미실현 손익", "값": f"{unrealized_pnl:+,.0f} 원 ({strat['unrealized_pnl_pct']:+.2f}%)"}
+                {"항목": "🤖 봇 운용 수량", "값": f"{bot_q:.6f} {ticker}"},
+                {"항목": "🤖 봇 매수평단", "값": f"{bot_avg:,.0f} 원" if bot_avg > 0 else "미보유 (대기)"},
+                {"항목": "🤖 봇 평가금액", "값": f"{bot_eval:,.0f} 원"},
+                {"항목": "🤖 봇 미실현손익", "값": f"{bot_pnl:+,.0f} 원 ({bot_pnl_pct:+.2f}%)" if bot_avg > 0 else "-"},
+                {"항목": "🔒 기존 자산 (보호중)", "값": f"{prot_q:.6f} {ticker}"},
+                {"항목": "🏛️ 계좌 전체 총수량", "값": f"{tot_coin:.6f} {ticker}"}
             ]
             st.dataframe(pd.DataFrame(pos_data), hide_index=True, use_container_width=True)
 

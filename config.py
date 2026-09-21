@@ -27,17 +27,24 @@ BASE_URL = "https://api.upbit.com"
 MIN_ORDER_KRW = 5000          # 업비트 최소 주문 금액 (5,000원)
 STOP_LOSS_PERCENT = -0.10     # -10.0% 손절선 (평단가 대비)
 FEE_RATE = 0.0005             # 0.05% 수수료율
+MIN_KRW_ALERT_THRESHOLD = 100_000  # 예수금 10만원 이하 알림 기준 (100,000원)
 
-# 가상매매 (모의투자/Paper Trading) 모드 여부 (.env에서 변경 가능, 기본 True)
-IS_PAPER_TRADING = os.getenv("IS_PAPER_TRADING", "true").lower() in ("true", "1", "yes")
-
-# 전략 맞대결 (실제 코인모으기 vs 100만원 하이브리드 가상매매) 2~4주 실전 검증 시작 기준 시각
-SHOWDOWN_START_TIME = "2026-09-20 20:45:00"
+# 기존 보유 자산 보호 설정 (봇이 절대 매도/청산하지 않는 기준 수량)
+PROTECTED_BALANCES = {
+    "KRW-SOL": 6.66887531,  # 기존 보유 솔라나 전량 보호
+    "KRW-ETH": 0.40756151,  # 기존 보유 이더리움 전량 보호
+    "KRW-BTC": 0.03724281,  # 기존 보유 비트코인 전량 보호
+}
 
 # 하이브리드 상승장(BULL) 다이나믹 트레일링 스탑 설정 (Freqtrade Supertrend/Bandtastic 방식)
 USE_TRAILING_STOP = True          # 트레일링 스탑 사용 여부
 TRAILING_STOP_TRIGGER = 0.10      # 진입가 대비 +10.0% 도달 시 트레일링 스탑 가동
 TRAILING_STOP_DROP = 0.03         # 포지션 최고가 대비 -3.0% 하락 시 조기 익절 청산
+
+# 하이브리드 하락장(BEAR) 마틴게일 매직스플릿 방어 설정 (Dual Exit: 바스켓 +0.5% OR 개별 +3%)
+USE_MAGIC_SPLIT_DEFENSE = True       # 매직스플릿 개별 익절 병행 방어 모드
+MAGIC_SPLIT_TRANCHE_PROFIT = 0.03   # 개별 차수 반등 시 단독 익절 목표 마진 (+3.0%)
+MAGIC_SPLIT_DOWN_PCT = 0.04         # 추가 차수 물타기 간격 (-4.0%)
 
 # 종목별 맞춤 익절 마진 (1단계 추천 적용: SOL 0.5%, ETH 0.8%)
 PROFIT_MARGINS = {
@@ -102,6 +109,6 @@ if __name__ == "__main__":
         margin = (get_profit_margin(market) - 1) * 100
         print(f"  - {market}: 총 투자금={info['total']:,}원, 1Unit={info['unit']:,}원, 익절=+{margin:.2f}%")
     print(f"  - 최소 주문 금액: {MIN_ORDER_KRW:,}원")
-    print(f"  - 손절 기준: {STOP_LOSS_PERCENT * 100:.2f}%")
-    print(f"  - 가상매매(Paper Trading) 모드: {IS_PAPER_TRADING}")
+    print(f"  - 예수금 경고 기준: {MIN_KRW_ALERT_THRESHOLD:,}원 이하")
+    print(f"  - 매매 모드: 실전매매 (Real Trading)")
     print("=" * 50)
