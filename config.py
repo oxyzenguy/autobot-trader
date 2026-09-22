@@ -51,6 +51,7 @@ USE_BULL_CLOSING_BUY = True       # 당일 불타기 미체결 시 일봉(08:50 
 USE_MAGIC_SPLIT_DEFENSE = True       # 매직스플릿 개별 익절 병행 방어 모드
 MAGIC_SPLIT_TRANCHE_PROFIT = 0.03   # 개별 차수 반등 시 단독 익절 목표 마진 (+3.0%)
 MAGIC_SPLIT_DOWN_PCT = 0.04         # 추가 차수 물타기 간격 (-4.0%)
+MARTINGALE_MULTIPLIERS = [1, 1, 2, 4]  # 마틴게일 투입 스케줄: 1차(1U), 2차(1U), 3차(2U), 4차(4U) - 총 8 Units (8만 원)
 
 # 종목별 맞춤 익절 마진 (1단계 추천 적용: SOL 0.5%, ETH 0.8%)
 PROFIT_MARGINS = {

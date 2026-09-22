@@ -449,7 +449,7 @@ else:
         is_bull = regime_info.get("is_bull", False)
         regime_color = "#00c087" if is_bull else "#ff3b69"
         regime_badge = f'<span style="background:{regime_color}22; color:{regime_color}; border:1px solid {regime_color}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "국면 분석 중")}</span>'
-        mode_desc = "🚀 5/20 MA 추세추종 & 트레일링 스탑" if is_bull else "🛡️ 마틴-매직스플릿 방어 (개별+3% OR 바스켓 이중익절)"
+        mode_desc = "🚀 5/20 MA 추세추종 & 트레일링 스탑" if is_bull else "🛡️ 마틴-매직스플릿 방어 (1-1-2-4 배수 / 최대 8U)"
 
         target_base_p = strat.get("bot_avg_price", 0.0) if strat.get("bot_avg_price", 0.0) > 0 else avg_p
         basket_target_p = target_base_p * strat["profit_margin"] if target_base_p > 0 else 0.0
@@ -490,9 +490,9 @@ else:
                         <span style="color:#8c96a5; font-size:0.74rem;">(평단가 대비 +{(strat['profit_margin']-1)*100:.2f}%)</span>
                     </div>
                     <div>
-                        <span style="color:#8c96a5;">💧 개별 차수 매직스플릿 익절선:</span>
-                        <b style="color:#ffb300; margin-left:4px;">각 차수 매수가 대비 +3.0% 반등</b>
-                        <span style="color:#8c96a5; font-size:0.74rem;">(차수 단독 청산)</span>
+                        <span style="color:#8c96a5;">💧 마틴게일 & 매직스플릿:</span>
+                        <b style="color:#ffb300; margin-left:4px;">1-1-2-4 배수 (최대 8U / 8만 원)</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(개별 +3% OR 바스켓 익절)</span>
                     </div>
             """
 

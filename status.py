@@ -70,7 +70,7 @@ def print_status():
             mode_str = "🚀 상승장 5/20 추세모드 (피라미딩 불타기 + 일봉 종가매매 결합)"
             pyramid_info = f" • 📈 피라미딩(불타기): {curr_steps}/{MAX_PYRAMID_STEPS}회차 | 직전매수가: {last_p:,.0f}원 -> 다음 불타기 기준가: {next_p:,.0f}원 (+{PYRAMID_STEP_PCT*100:.1f}%) | 🌅 종가매수: 08:50 KST 양봉 시 1U | 트레일링: {ts_status}"
         else:
-            mode_str = "🛡️ 하락장 마틴-매직스플릿 방어 (개별+3% OR 바스켓 익절)"
+            mode_str = "🛡️ 하락장 마틴-매직스플릿 방어 (1-1-2-4 배수, 최대 8 Units / 개별+3% OR 바스켓 익절)"
             pyramid_info = ""
 
         print(f"\n[전략 {idx}] {s['strategy_name']} ({market})")

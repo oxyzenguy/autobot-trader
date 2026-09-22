@@ -2,20 +2,14 @@
   "market": "KRW-ETH",
   "current_regime": "BULL",
   "active_mode": "TREND",
-  "bot_quantity": 0.00272627999999997,
-  "bot_avg_price": 3667000.0,
+  "bot_quantity": 0.0,
+  "bot_avg_price": 0.0,
   "protected_quantity": 0.40756151,
   "initial_entry_done": true,
-  "trend_peak_price": 3667000.0,
+  "trend_peak_price": 0.0,
   "trailing_stop_active": false,
-  "tranches": [
-    {
-      "step": 0,
-      "units": 1,
-      "buy_price": 3667000.0,
-      "volume": 0.00272627999999997,
-      "time": "2026-09-21 20:43:55"
-    }
-  ],
-  "completed_cycles": 0
+  "tranches": [],
+  "completed_cycles": 1,
+  "last_buy_date": "2026-09-22",
+  "last_closing_buy_date": "2026-09-22"
 }

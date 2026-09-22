@@ -178,6 +178,14 @@ def log_real_trade(
     conn.commit()
     conn.close()
 
+    # 체결 즉시 비동기로 최신 스냅샷 클라우드 동기화 트리거
+    try:
+        import threading
+        from utils.sync_manager import push_snapshot_to_cloud
+        threading.Thread(target=push_snapshot_to_cloud, daemon=True).start()
+    except Exception:
+        pass
+
 
 def log_trade(ticker, side, volume, price, strategy):
     """레거시 호환용 거래 기록 함수"""

@@ -23,7 +23,8 @@ from config import (
     USE_BULL_CLOSING_BUY,
     USE_MAGIC_SPLIT_DEFENSE,
     MAGIC_SPLIT_TRANCHE_PROFIT,
-    MAGIC_SPLIT_DOWN_PCT
+    MAGIC_SPLIT_DOWN_PCT,
+    MARTINGALE_MULTIPLIERS
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 from strategy.hybrid_regime import get_hybrid_regime_and_signals, check_magic_split_exits, check_daily_closing_buy_condition
@@ -438,8 +439,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 print(f"[{market}] ℹ️ [매직스플릿] 매도 대상 금액({tot_sell_krw:,.0f}원)이 최소주문금액(5,000원) 미만이므로 바스켓 익절 대기.")
 
                 # A-2. 마틴게일 상태 머신 (주문 등록 및 물타기)
-                # Case 1 & 2: 정상 대기 상태 (매도 1건, 매수 3건)
-                if num_sell == 1 and num_buy == 3:
+                # 정상 대기 상태: 매도 1건 등록되어 있고, 미체결 매수 주문 수가 현재 차수 기준 기대치와 일치할 때
+                expected_open_buys = max(0, len(MARTINGALE_MULTIPLIERS) - len(state.get("tranches", [])))
+                if num_sell == 1 and num_buy == expected_open_buys:
                     time.sleep(5)
                     continue
 
@@ -492,7 +494,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         state["tranches"] = [{
                             "step": 0,
-                            "units": 1,
+                            "units": MARTINGALE_MULTIPLIERS[0],
                             "buy_price": avg_price,
                             "volume": quantity,
                             "time": now_str
@@ -509,9 +511,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     print(f"[{market}]   - 바스켓 익절 매도 주문: {sell_price:,.0f}원, 수량 {quantity}")
                     time.sleep(0.2)
 
-                    # 마틴게일 3단계 매수 주문 계획 (-4% 2배, -8% 3배, -12% 6배)
+                    # 마틴게일 3단계 매수 주문 계획 (-4% 1배, -8% 2배, -12% 4배 - 총 8 Units)
                     new_orders = calculate_new_buy_prices(avg_buy_price=avg_price, existing_orders=None)
-                    print(f"[{market}]   - 신규 마틴게일 매수 주문 계획 (3개): {new_orders}")
+                    print(f"[{market}]   - 신규 마틴게일 매수 주문 계획 ({len(new_orders)}개): {new_orders}")
 
                     for order in new_orders:
                         p = order['price']
@@ -527,11 +529,11 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         f"진입가: {avg_price:,.0f}원 | 수량: {quantity:.6f}\n"
                         f"바스켓 익절가: {sell_price:,.0f}원 (+{(sell_profit_margin - 1) * 100:.2f}%)\n"
                         f"개별 차수 목표: 매수가 대비 +{MAGIC_SPLIT_TRANCHE_PROFIT*100:.1f}%\n"
-                        f"마틴게일 물타기 3단계(2x, 3x, 6x) 예약 완료"
+                        f"마틴게일 물타기 3단계(1x, 2x, 4x / 총 8U) 예약 완료"
                     )
 
                 # Case 4: 물타기 매수 체결 감지
-                elif num_sell == 1 and num_buy <= 2:
+                elif num_sell == 1 and num_buy < expected_open_buys:
                     print(f"\n[{time.strftime('%H:%M:%S')}] [{market}] [하락장 방어] Case 4: 물타기 매수 체결 감지. 포지션 재조정.")
 
                     for order in sell_orders:
@@ -567,21 +569,27 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                     # 추가 차수 등록 (체결된 해당 차수의 순수 매수 수량 기록)
                     step_idx = len(state.get("tranches", []))
+                    assigned_units = MARTINGALE_MULTIPLIERS[min(step_idx, len(MARTINGALE_MULTIPLIERS) - 1)]
                     state.setdefault("tranches", []).append({
                         "step": step_idx,
-                        "units": 2 if step_idx == 1 else (3 if step_idx == 2 else 6),
+                        "units": assigned_units,
                         "buy_price": current_price,
                         "volume": bought_step_vol,
                         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     })
                     save_strategy_state(market, state)
 
-                    # 추가 매수 주문 계획
-                    buy_order_details = [{'price': float(o['price']), 'units': 1} for o in buy_orders]
-                    additional_orders = calculate_new_buy_prices(
-                        avg_buy_price=avg_price,
-                        existing_orders=buy_order_details
-                    )
+                    # 추가 매수 주문 계획 (최대 4차수 / 총 8 Units 제한)
+                    current_total_steps = len(state.get("tranches", [])) + len(buy_orders)
+                    if current_total_steps >= len(MARTINGALE_MULTIPLIERS):
+                        print(f"[{market}]   - 마틴게일 최대 차수({len(MARTINGALE_MULTIPLIERS)}차수 / 총 {sum(MARTINGALE_MULTIPLIERS)} Units) 도달: 추가 물타기 매수 생략.")
+                        additional_orders = []
+                    else:
+                        buy_order_details = [{'price': float(o['price']), 'units': 1} for o in buy_orders]
+                        additional_orders = calculate_new_buy_prices(
+                            avg_buy_price=avg_price,
+                            existing_orders=buy_order_details
+                        )
 
                     krw_balance = check_krw_balance_alert(upbit, context=f"{market} 추가 물타기 매수")
                     for order in additional_orders:
@@ -601,7 +609,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         f"💧 <b>[물타기 체결 후 포지션 재조정]</b> {market}\n"
                         f"새 평단가: {avg_price:,.0f}원 | 총 보유수량: {quantity:.6f}\n"
                         f"새 바스켓 익절가: {sell_price:,.0f}원\n"
-                        f"누적 차수: {len(state['tranches'])}개 | 추가 매수 {len(additional_orders)}건 등록"
+                        f"누적 차수: {len(state['tranches'])}/{len(MARTINGALE_MULTIPLIERS)}개 | 추가 매수 {len(additional_orders)}건 등록"
                     )
 
             # =========================================================================
@@ -982,6 +990,13 @@ if __name__ == "__main__":
         margin = (get_profit_margin(m) - 1) * 100
         print(f"   • {m}: 투자배정 {info.get('total', 0):,}원 | 1Unit {info.get('unit', 0):,}원 | 익절 목표 +{margin:.2f}%")
     print("=" * 65)
+
+    # 웹 대시보드(Streamlit Cloud)용 암호화 스냅샷 자동 동기화 스레드 가동
+    try:
+        from utils.sync_manager import start_background_sync_thread
+        start_background_sync_thread(interval_sec=30)
+    except Exception as e:
+        print(f"[WARN] 클라우드 동기화 스레드 초기화 실패: {e}")
 
     if len(target_markets) == 1:
         start_bot(target_markets[0])

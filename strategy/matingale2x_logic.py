@@ -1,10 +1,11 @@
 """
 전략 로직 모듈
-마틴게일 배수 전략: 1 → 2 → 3 → 6 Unit
+마틴게일 배수 전략: 1 → 1 → 2 → 4 Unit (총 8 Unit = 80,000 KRW)
 """
 from typing import List, Dict, Optional, Any
 import math
 import pyupbit
+from config import MARTINGALE_MULTIPLIERS
 
 
 def adjust_price_to_tick(price: float, method: str = "floor") -> float:
@@ -53,11 +54,11 @@ def calculate_new_buy_prices(
     """
     매수 가격 및 수량(Unit 배수)을 계산합니다.
     
-    마틴게일 배수 물타기:
+    마틴게일 배수 물타기 (1-1-2-4 스케줄, 총 8 Units = 80,000 KRW):
     - 1차: 1 Unit (초기 진입)
-    - 2차: 2 Unit (평단가 -4%)
-    - 3차: 3 Unit (2차 가격 -4%)
-    - 4차: 6 Unit (3차 가격 -4%)
+    - 2차: 1 Unit (평단가 -4%)
+    - 3차: 2 Unit (2차 가격 -4% = 평단가 대비 -7.84%)
+    - 4차: 4 Unit (3차 가격 -4% = 평단가 대비 -11.53%)
     
     Args:
         avg_buy_price: 현재 평균 매수가 (키워드 avg_price 도 호환 지원)
@@ -83,20 +84,21 @@ def calculate_new_buy_prices(
             elif isinstance(item, (int, float)):
                 normalized_orders.append({'price': float(item), 'units': 1})
 
-    # Case3: 매도 완료 후 신규/재진입 (평단가 기준)
+    # Case3: 매도 완료 후 신규/재진입 (평단가 기준 3단계 예약)
+    # 1차(1 Unit)는 이미 매수 완료된 상태이므로 2차(1U), 3차(2U), 4차(4U)를 순차 예약
     if not normalized_orders:
         orders = [
             {
-                'price': adjust_price_to_tick(avg_buy_price * 0.96, method="floor"),       # -4%
-                'units': 2  # 2 Unit
+                'price': adjust_price_to_tick(avg_buy_price * 0.96, method="floor"),       # -4% (2차: 1 Unit)
+                'units': MARTINGALE_MULTIPLIERS[1] if len(MARTINGALE_MULTIPLIERS) > 1 else 1
             },
             {
-                'price': adjust_price_to_tick(avg_buy_price * 0.9216, method="floor"),     # -4% -4% = -7.84%
-                'units': 3  # 3 Unit
+                'price': adjust_price_to_tick(avg_buy_price * 0.9216, method="floor"),     # -4% -4% = -7.84% (3차: 2 Unit)
+                'units': MARTINGALE_MULTIPLIERS[2] if len(MARTINGALE_MULTIPLIERS) > 2 else 2
             },
             {
-                'price': adjust_price_to_tick(avg_buy_price * 0.8847, method="floor"),     # -4% -4% -4% = -11.53%
-                'units': 6  # 6 Unit
+                'price': adjust_price_to_tick(avg_buy_price * 0.8847, method="floor"),     # -4% -4% -4% = -11.53% (4차: 4 Unit)
+                'units': MARTINGALE_MULTIPLIERS[3] if len(MARTINGALE_MULTIPLIERS) > 3 else 4
             },
         ]
         return orders
@@ -110,15 +112,13 @@ def calculate_new_buy_prices(
         lowest_price = lowest_order['price']
         current_units = lowest_order.get('units', 1)
 
-        # 배수 진행: 1 → 2 → 3 → 6 → 6 (최대 6 Unit 유지)
+        # 배수 진행: 1 → 1 → 2 → 4 (최대 4 Unit 유지)
         if current_units == 1:
             next_units = 2
         elif current_units == 2:
-            next_units = 3
-        elif current_units == 3:
-            next_units = 6
+            next_units = 4
         else:
-            next_units = 6
+            next_units = 4
 
         orders = [
             {
@@ -135,13 +135,11 @@ def calculate_new_buy_prices(
         current_units = base_order.get('units', 1)
 
         if current_units == 1:
-            next_units_1, next_units_2 = 2, 3
+            next_units_1, next_units_2 = 2, 4
         elif current_units == 2:
-            next_units_1, next_units_2 = 3, 6
-        elif current_units == 3:
-            next_units_1, next_units_2 = 6, 6
+            next_units_1, next_units_2 = 4, 4
         else:
-            next_units_1, next_units_2 = 6, 6
+            next_units_1, next_units_2 = 4, 4
 
         orders = [
             {
@@ -156,4 +154,4 @@ def calculate_new_buy_prices(
         return orders
 
     # 예외 상황 fallback
-    return [{'price': adjust_price_to_tick(avg_buy_price * 0.96, method="floor"), 'units': 2}]
+    return [{'price': adjust_price_to_tick(avg_buy_price * 0.96, method="floor"), 'units': 1}]
