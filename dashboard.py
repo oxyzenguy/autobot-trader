@@ -24,6 +24,7 @@ from utils.db_logger import (
     archive_strategy,
     save_or_update_strategy
 )
+from utils.sync_manager import fetch_snapshot_from_cloud, load_local_snapshot
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -205,72 +206,128 @@ st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
 
 # =============================================================================
-# 데이터 로드 (실시간 업비트 전체 계좌 및 활성 전략)
+# 데이터 로드 (실시간 업비트 API 또는 암호화 스냅샷 동기화)
 # =============================================================================
 account_data = get_total_account_summary()
 active_strategies = get_all_active_strategies()
 
+data_source_mode = "DIRECT_API"  # "DIRECT_API", "CLOUD_SYNC", "LOCAL_SNAPSHOT"
+snapshot_time_str = None
+sync_status_note = ""
 
-# =============================================================================
-# [🔑 Streamlit Cloud Secrets 설정 안내 배너 (API 키 미설정 시)]
-# =============================================================================
+# 업비트 API 키가 없거나 IP 제한 오류 등으로 계좌 조회가 불가능한 경우 (Streamlit Cloud 환경 등)
 if account_data.get("is_api_key_missing"):
-    api_err = account_data.get("api_error_message", "")
-    api_err_lower = api_err.lower()
-    is_ip_error = (
-        ("no_authorization_ip" in api_err_lower) or
-        ("unregistered ip" in api_err_lower) or
-        ("허용되지 않은 ip" in api_err_lower) or
-        ("unregistered" in api_err_lower and "ip" in api_err_lower)
-    )
+    snapshot, status_msg = fetch_snapshot_from_cloud()
+    if snapshot and "account_data" in snapshot:
+        account_data = snapshot["account_data"]
+        # 전략 목록 및 DataFrame 복원
+        raw_strategies = snapshot.get("active_strategies", [])
+        active_strategies = []
+        for s in raw_strategies:
+            s_copy = dict(s)
+            trades_list = s_copy.get("trades_list", [])
+            s_copy["trades_df"] = pd.DataFrame(trades_list) if trades_list else pd.DataFrame()
+            active_strategies.append(s_copy)
 
-    if is_ip_error:
-        ip_match = re.search(r'([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})', api_err)
-        detected_ip = ip_match.group(1) if ip_match else "35.230.127.150"
-        
-        st.error(f"""
-        ### 🚨 [업비트 IP 제한] 등록되지 않은 IP 주소입니다!
-        **업비트 에러 메시지**: `{api_err}`
-        
-        업비트 Open API는 보안 정책상 **IP 주소 등록이 필수**입니다.
-        현재 웹 대시보드(Streamlit Cloud)가 업비트에 접속할 때 사용한 서버 IP가 업비트 허용 목록에 등록되어 있지 않습니다.
-        """)
-        
-        st.markdown(f"#### 👉 **업비트 [Open API 관리]에 추가 등록할 IP 주소:**")
-        st.code(detected_ip, language="text")
-        
-        st.info(f"""
-        **📌 해결 방법 (1분 소요):**
-        1. PC 웹 브라우저에서 **[업비트 로그인]** ➔ **[고객센터] ➔ [Open API 안내] ➔ [Open API 사용하기]** (또는 [마이] ➔ [Open API 관리])로 이동합니다.
-        2. 방금 생성하신 API 키의 **[변경]** 버튼을 누릅니다. (또는 '자산조회' 권한으로 신규 발급)
-        3. **'IP 주소 등록'**란에 기존 IP 옆에 **쉼표(`,`)**를 넣고 위 IP(`{detected_ip}`)를 함께 추가합니다.
-           - *입력 예시*: `내_컴퓨터_IP, {detected_ip}`
-           *(업비트는 최대 5개까지 IP 등록을 지원합니다)*
-        4. 카카오페이 2채널 인증을 완료하고 저장하시면 **웹 대시보드가 즉시 정상 작동**합니다!
+        data_source_mode = "CLOUD_SYNC"
+        snapshot_time_str = snapshot.get("updated_at")
+        sync_status_note = status_msg
+    else:
+        # 로컬 스냅샷 폴백 확인
+        local_snap = load_local_snapshot()
+        if local_snap and "account_data" in local_snap:
+            account_data = local_snap["account_data"]
+            raw_strategies = local_snap.get("active_strategies", [])
+            active_strategies = []
+            for s in raw_strategies:
+                s_copy = dict(s)
+                trades_list = s_copy.get("trades_list", [])
+                s_copy["trades_df"] = pd.DataFrame(trades_list) if trades_list else pd.DataFrame()
+                active_strategies.append(s_copy)
+
+            data_source_mode = "LOCAL_SNAPSHOT"
+            snapshot_time_str = local_snap.get("updated_at")
+            sync_status_note = "로컬 백업 스냅샷"
+
+
+# =============================================================================
+# [동기화 상태 뱃지 또는 Secrets 설정 안내 배너]
+# =============================================================================
+if data_source_mode in ["CLOUD_SYNC", "LOCAL_SNAPSHOT"]:
+    elapsed_text = ""
+    is_stale = False
+    if snapshot_time_str:
+        try:
+            snap_dt = datetime.strptime(snapshot_time_str, "%Y-%m-%d %H:%M:%S")
+            diff_sec = int((datetime.now() - snap_dt).total_seconds())
+            if diff_sec < 60:
+                elapsed_text = f"{max(0, diff_sec)}초 전"
+            elif diff_sec < 3600:
+                elapsed_text = f"{diff_sec // 60}분 전"
+                if diff_sec >= 180:
+                    is_stale = True
+            else:
+                elapsed_text = f"{diff_sec // 3600}시간 전"
+                is_stale = True
+        except Exception:
+            elapsed_text = "-"
+
+    if not is_stale:
+        st.html(f"""
+        <div style="background:linear-gradient(90deg, #00c08718, #00c08708); border:1px solid #00c08755; border-radius:10px; padding:10px 16px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:1.3rem;">🟢</span>
+                <div>
+                    <span style="color:#00c087; font-weight:800; font-size:0.95rem;">로컬 봇 스냅샷 실시간 동기화 모드 (정상)</span>
+                    <div style="color:#8c96a5; font-size:0.8rem; margin-top:2px;">
+                        사용자 Mac 로컬 봇(main.py)의 암호화 스냅샷과 실시간 연동되어 있습니다. (IP 제한 에러 없음)
+                    </div>
+                </div>
+            </div>
+            <div style="text-align:right;">
+                <span style="background:#00c08722; color:#00c087; padding:3px 10px; border-radius:8px; font-weight:700; font-size:0.82rem; border:1px solid #00c08755;">
+                    동기화 시각: {snapshot_time_str} ({elapsed_text})
+                </span>
+            </div>
+        </div>
         """)
     else:
-        err_hint = f"\n\n**세부 응답/오류**: `{api_err}`" if api_err else ""
-        st.warning(f"""
-        ### ⚠️ 업비트 API 키 연동 필요 (Streamlit Cloud 환경){err_hint}
-        
-        웹 대시보드(Streamlit Cloud)는 보안상 로컬 `.env` 파일을 읽지 못하므로, **Streamlit Secrets**에 업비트 API 키를 등록해주셔야 실시간 계좌 및 매매 현황 조회가 가능합니다.
-        
-        **👉 설정 방법 (30초 완료):**
-        1. 화면 우측 하단의 **'Manage app'** 클릭 (또는 우측 상단 `⋮` 메뉴)
-        2. **Settings** ➔ **Secrets** 탭 선택
-        3. 아래 내용을 복사하여 본인의 API 키를 입력 후 **Save** 클릭:
-        ```toml
-        UPBIT_ACCESS_KEY = "발급받은_UPBIT_ACCESS_KEY"
-        UPBIT_SECRET_KEY = "발급받은_UPBIT_SECRET_KEY"
-        ```
-        4. 저장 즉시 페이지가 자동으로 새로고침되며 실시간 계좌 정보가 정상 연동됩니다!
+        st.html(f"""
+        <div style="background:linear-gradient(90deg, #f59e0b18, #f59e0b08); border:1px solid #f59e0b55; border-radius:10px; padding:10px 16px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:1.3rem;">🟡</span>
+                <div>
+                    <span style="color:#f59e0b; font-weight:800; font-size:0.95rem;">스냅샷 동기화 지연 ({elapsed_text})</span>
+                    <div style="color:#8c96a5; font-size:0.8rem; margin-top:2px;">
+                        마지막 갱신 시각: {snapshot_time_str}. 로컬 Mac에서 자동매매 봇(main.py)이 실행 중인지 확인하세요.
+                    </div>
+                </div>
+            </div>
+        </div>
         """)
+
+elif account_data.get("is_api_key_missing"):
+    st.warning("""
+    ### ⚠️ [웹 대시보드] 스냅샷 동기화 키(Secrets) 등록 필요
+    
+    웹 대시보드(Streamlit Cloud)에서 로컬 봇의 암호화 스냅샷 데이터를 복호화하기 위해 **Streamlit Secrets**에 키 등록이 필요합니다.
+    
+    **👉 설정 방법 (30초 완료):**
+    1. 화면 우측 하단의 **'Manage app'** 클릭 (또는 우측 상단 `⋮` 메뉴)
+    2. **Settings** ➔ **Secrets** 탭 선택
+    3. 아래 양식을 복사하여 입력 후 **Save** 클릭:
+    ```toml
+    SYNC_SECRET_KEY = "7jPg_VfAXEOqMyZ2XNlxKQnJHQEpCg5EsBORtUTnoWI="
+    GITHUB_TOKEN = "내_GITHUB_PERSONAL_ACCESS_TOKEN"
+    ```
+    4. 저장 즉시 페이지가 자동으로 새로고침되며 실시간 동기화 대시보드가 정상 연동됩니다!
+    """)
 
 
 # =============================================================================
 # [🚨 예수금 10만원 미만 긴급 경고 배너]
 # =============================================================================
-if account_data["is_krw_warning"]:
+if account_data.get("is_krw_warning", False):
     st.html(f"""
     <div class="krw-alert-box">
         <span style="font-size:2.2rem;">🚨</span>
