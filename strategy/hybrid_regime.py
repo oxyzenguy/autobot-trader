@@ -60,31 +60,36 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
                     df = candles.copy()
                     _CANDLE_CACHE[market] = {"df": df, "timestamp": now}
                 else:
-                    # 실패 시 캐시가 있으면 사용, 없으면 빈 딕셔너리 리턴
+                    # 실패 시 이전 캐시가 있으면 재사용, 전혀 없으면 HOLD 리턴
                     if market in _CANDLE_CACHE:
                         df = _CANDLE_CACHE[market]["df"]
                     else:
                         return {
                             "market": market,
-                            "regime": "BEAR",
-                            "regime_korean": "하락 국면 (Bear - 데이터 조회 지연)",
-                            "signal": "MARTINGALE_DEFENSE",
+                            "regime": "HOLD",
+                            "regime_korean": "데이터 수집 대기 (HOLD)",
+                            "is_bull": None,
+                            "signal": "HOLD",
                             "curr_price": 0.0,
                             "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
                             "distance_ma200_pct": 0.0,
-                            "reason": "시세 데이터 수집 지연으로 기본 방어 모드 유지"
+                            "reason": "시세 데이터 수집 지연으로 기존 상태 유지 및 관망 (HOLD)"
                         }
             except Exception as e:
-                return {
-                    "market": market,
-                    "regime": "BEAR",
-                    "regime_korean": "하락 국면 (Bear - 조회 예외)",
-                    "signal": "MARTINGALE_DEFENSE",
-                    "curr_price": 0.0,
-                    "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
-                    "distance_ma200_pct": 0.0,
-                    "reason": f"API 조회 오류({e})"
-                }
+                if market in _CANDLE_CACHE:
+                    df = _CANDLE_CACHE[market]["df"]
+                else:
+                    return {
+                        "market": market,
+                        "regime": "HOLD",
+                        "regime_korean": "조회 예외 대기 (HOLD)",
+                        "is_bull": None,
+                        "signal": "HOLD",
+                        "curr_price": 0.0,
+                        "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
+                        "distance_ma200_pct": 0.0,
+                        "reason": f"API 조회 오류({e}) - 관망 유지"
+                    }
     else:
         df = df.copy()
 

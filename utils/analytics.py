@@ -426,10 +426,10 @@ def get_all_active_strategies() -> List[Dict[str, Any]]:
     configured_markets = list(INVESTMENTS.keys()) if INVESTMENTS else ["KRW-SOL", "KRW-ETH"]
     active_list = []
 
-    # 전략별 맞춤 이름: 하이브리드 국면전환 (마틴-매직스플릿 이중익절)
+    # 전략별 맞춤 이름: 하이브리드 전략
     strat_names = {
-        "KRW-SOL": "솔라나(SOL) 하이브리드 (마틴-매직스플릿 이중익절)",
-        "KRW-ETH": "이더리움(ETH) 하이브리드 (마틴-매직스플릿 이중익절)",
+        "KRW-SOL": "솔라나(SOL) 하이브리드 전략",
+        "KRW-ETH": "이더리움(ETH) 하이브리드 전략",
         "KRW-BTC": "비트코인(BTC) 5/20 MA 추세추종",
         "KRW-XRP": "리플(XRP) 마틴게일 물타기"
     }

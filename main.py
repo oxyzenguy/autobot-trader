@@ -6,6 +6,7 @@ import math
 import threading
 import pyupbit
 from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 from config import (
     get_upbit_client,
     INVESTMENTS,
@@ -165,14 +166,31 @@ def check_krw_balance_alert(upbit_client, context: str = "정기 감시") -> flo
     return krw
 
 
+def safe_get_current_price(market: str, retries: int = 3, delay: float = 0.5) -> Optional[float]:
+    """현재가 안전 조회 (Upbit API 레이트리밋/일시 오류 시 KeyError(0) 방지 및 재시도)"""
+    for i in range(retries):
+        try:
+            p = pyupbit.get_current_price(market)
+            if p is not None and not isinstance(p, dict):
+                p_float = float(p)
+                if p_float > 0:
+                    return p_float
+        except Exception:
+            pass
+        if i < retries - 1:
+            time.sleep(delay)
+    return None
+
+
 def cancel_all_orders(upbit_client, market: str):
     """해당 마켓의 모든 미체결 주문(매수/매도)을 취소합니다."""
     try:
         open_orders = upbit_client.get_order(market, state="wait")
-        if open_orders:
+        if open_orders and isinstance(open_orders, list):
             for order in open_orders:
-                upbit_client.cancel_order(order['uuid'])
-                time.sleep(0.1)
+                if isinstance(order, dict) and 'uuid' in order:
+                    upbit_client.cancel_order(order['uuid'])
+                    time.sleep(0.1)
             print(f"[{time.strftime('%H:%M:%S')}] [{market}] [ACTION] 미체결 주문 {len(open_orders)}건 전체 취소 완료.")
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] [{market}] [ERROR] 미체결 주문 전체 취소 중 오류: {e}")
@@ -229,13 +247,19 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             check_krw_balance_alert(upbit, context=f"{market} 실시간 감시")
 
             # 2. 실시간 시세 및 국면 판별
-            current_price = pyupbit.get_current_price(market)
-            if current_price is None:
-                print(f"[{time.strftime('%H:%M:%S')}] [{ticker}] [WARN] 현재가 조회 실패. 5초 후 재시도.")
+            current_price = safe_get_current_price(market)
+            if current_price is None or current_price <= 0:
+                print(f"[{time.strftime('%H:%M:%S')}] [{ticker}] [WARN] 현재가 조회 실패 (API 응답 지연/제한). 5초 후 재시도.")
                 time.sleep(5)
                 continue
 
             regime_info = get_hybrid_regime_and_signals(market)
+            if regime_info.get("is_bull") is None:
+                # 캔들 데이터 수집 대기 중이므로 무리하게 매매하지 않고 안전 대기
+                print(f"[{time.strftime('%H:%M:%S')}] [{ticker}] [WARN] 국면 분석 데이터 수집 대기 중. 5초 후 재시도.")
+                time.sleep(5)
+                continue
+
             is_bull = regime_info.get("is_bull", False)
             signal = regime_info.get("signal", "HOLD")
             regime_str = regime_info.get("regime_korean", "국면 분석 중")
@@ -295,13 +319,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
             # 5. 미체결 주문 목록 조회
             open_orders = upbit.get_order(market, state="wait")
-            if open_orders is None:
-                print(f"[{time.strftime('%H:%M:%S')}] [{ticker}] [WARN] 미체결 주문 조회 실패. 5초 후 재시도.")
+            if open_orders is None or not isinstance(open_orders, list):
+                print(f"[{time.strftime('%H:%M:%S')}] [{ticker}] [WARN] 미체결 주문 조회 실패/지연 ({type(open_orders).__name__}). 5초 후 재시도.")
                 time.sleep(5)
                 continue
 
-            sell_orders = [o for o in open_orders if o['side'] == 'ask']
-            buy_orders = [o for o in open_orders if o['side'] == 'bid']
+            sell_orders = [o for o in open_orders if isinstance(o, dict) and o.get('side') == 'ask']
+            buy_orders = [o for o in open_orders if isinstance(o, dict) and o.get('side') == 'bid']
             num_sell, num_buy = len(sell_orders), len(buy_orders)
 
             # 6. 하트비트 로깅 (30분 주기)
@@ -1056,7 +1080,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             save_strategy_state(market, state)
 
         except Exception as e:
-            print(f"[{time.strftime('%H:%M:%S')}] [{market}] [CRITICAL] 메인 루프 에러: {e}")
+            import traceback
+            print(f"[{time.strftime('%H:%M:%S')}] [{market}] [CRITICAL] 메인 루프 에러: {repr(e)}\n{traceback.format_exc()}")
             time.sleep(10)
 
         time.sleep(5)
