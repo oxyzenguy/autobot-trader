@@ -42,16 +42,14 @@ USE_TRAILING_STOP = True          # 트레일링 스탑 사용 여부
 TRAILING_STOP_TRIGGER = 0.10      # 진입가 대비 +10.0% 도달 시 트레일링 스탑 가동
 TRAILING_STOP_DROP = 0.03         # 포지션 최고가 대비 -3.0% 하락 시 조기 익절 청산
 
-# 하이브리드 상승장(BULL) 12시간 정기 시간 분할 적립(Time-DCA) 설정
-USE_BULL_TIME_DCA = True             # 상승장 12시간 정기 분할 적립 매수 사용 여부
+# 하이브리드 상승장(BULL) 12시간 정기 시간 분할 적립(Time-DCA) 및 일봉 종가매수 설정
+USE_BULL_TIME_DCA = True             # 상승장 12시간 정기 분할 적립 매수 사용 (12h마다 1U)
 BULL_TIME_DCA_INTERVAL_HOURS = 12    # 정기 적립 간격 (12시간)
 MAX_BULL_DCA_STEPS = 20              # 최대 적립 차수 (20회 = 총 20만 원, 또는 예수금 한도)
-
-# 기존 가격 급등 불타기(+3%) 및 종가매수는 고점 매수 방지를 위해 OFF
-USE_BULL_PYRAMID = False             # 상승장 피라미딩(추가매수) OFF (고점 추격매수 방지)
+USE_BULL_CLOSING_BUY = True          # 당일 일봉 양봉 종가매매 (08:50 KST 양봉 & 5일선 지지 시 1U)
+USE_BULL_PYRAMID = False             # 상승장 가격 돌파 불타기 OFF (12h 적립 + 일봉 종가매수로 안정화)
 PYRAMID_STEP_PCT = 0.03              # 직전 매수가 대비 +3.0% 상승 시 추가매수
-MAX_PYRAMID_STEPS = 10               # 최대 추가매수 차수
-USE_BULL_CLOSING_BUY = False         # 당일 일봉 종가매매 OFF (12시간 정기 적립으로 일원화)
+MAX_PYRAMID_STEPS = 20               # 최대 누적 차수
 
 # 하이브리드 하락장(BEAR) 마틴게일 매직스플릿 방어 설정 (Dual Exit: 바스켓 +0.5% OR 개별 +3%)
 USE_MAGIC_SPLIT_DEFENSE = True       # 매직스플릿 개별 익절 병행 방어 모드

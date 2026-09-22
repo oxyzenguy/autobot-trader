@@ -874,22 +874,22 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                     time.sleep(5)
                                     continue
 
-                    # B-4. 상승장 일봉 양봉 종가매매 (08:50 ~ 09:00 KST, 당일 불타기 미체결 시)
+                    # B-4. 상승장 일봉 양봉 종가매매 (08:50 ~ 09:00 KST, 당일 일봉 양봉 & 5일선 지지 시 1U 추가 매수)
                     if USE_BULL_CLOSING_BUY and not state.get("trailing_stop_active", False):
                         current_steps = len(state.get("tranches", []))
-                        if current_steps < MAX_PYRAMID_STEPS:
+                        if current_steps < MAX_BULL_DCA_STEPS:
                             now_kst = datetime.utcnow() + timedelta(hours=9)
                             today_str = now_kst.strftime("%Y-%m-%d")
                             is_closing_window = (now_kst.hour == 8 and now_kst.minute >= 50)
 
-                            if is_closing_window and state.get("last_buy_date") != today_str:
+                            if is_closing_window and state.get("last_closing_buy_date") != today_str:
                                 closing_info = check_daily_closing_buy_condition(market, current_price)
                                 if closing_info.get("can_buy", False):
                                     krw_balance = check_krw_balance_alert(upbit, context=f"{market} 상승장 일봉 종가매수 {current_steps + 1}회차")
                                     if krw_balance >= unit_krw:
                                         next_step = current_steps + 1
                                         print(
-                                            f"\n[{market}] 🌅 [상승장 일봉 양봉 종가매수 {next_step}/{MAX_PYRAMID_STEPS}회차 매수]\n"
+                                            f"\n[{market}] 🌅 [상승장 일봉 양봉 종가매수 {next_step}/{MAX_BULL_DCA_STEPS}회차 매수]\n"
                                             f"사유: {closing_info.get('reason')} | 현재가: {current_price:,.0f}원"
                                         )
                                         prev_avail = float(upbit.get_balance(ticker) or 0.0)
@@ -912,6 +912,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)
                                         state["last_buy_date"] = today_str
                                         state["last_closing_buy_date"] = today_str
+                                        state["last_dca_buy_time"] = now_kst.strftime("%Y-%m-%d %H:%M:%S")
 
                                         state["tranches"].append({
                                             "step": current_steps,
@@ -937,7 +938,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                                         msg = (
                                             f"🌅 <b>[상승장 일봉 양봉 종가매수 체결]</b> {market}\n"
-                                            f"차수: {next_step}/{MAX_PYRAMID_STEPS}회차 (08:55 일봉 양봉 & 5일선 지지 확인)\n"
+                                            f"차수: {next_step}/{MAX_BULL_DCA_STEPS}회차 (08:55 일봉 양봉 & 5일선 지지 확인)\n"
                                             f"추가 매수액: {unit_krw:,.0f}원 (체결: {bought_vol:.6f} {ticker})\n"
                                             f"새 봇 평단가: {new_avg:,.0f}원 | 총 누적수량: {new_q:.6f} {ticker}\n"
                                             f"총 투입원금: {new_avg * new_q:,.0f}원\n"

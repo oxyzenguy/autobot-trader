@@ -66,8 +66,8 @@ def print_status():
             sl_price = bot_avg * (1.0 + BULL_STOP_LOSS_PCT) if bot_avg > 0 else 0.0
             ts_active = r_state.get("trailing_stop_active", False)
             ts_status = "🔥 고점 추적 가동 중" if ts_active else f"대기 (+{TRAILING_STOP_TRIGGER*100:.0f}% 도달 시)"
-            mode_str = "🚀 상승장 추세모드 (5/20 골든크로스 + 12h 정기적립 + 긴급손절-10%)"
-            pyramid_info = f" • 📈 적립/리스크: {curr_steps}/{MAX_BULL_DCA_STEPS}회차 | 12시간 정기적립 (1U) | 🛡️ 긴급손절: {sl_price:,.0f}원({BULL_STOP_LOSS_PCT*100:.1f}%) | 트레일링: {ts_status}"
+            mode_str = "🚀 상승장 추세모드 (5/20 골든크로스 + 12h 정기적립 + 일봉종가매수 + 손절-10%)"
+            pyramid_info = f" • 📈 적립/리스크: {curr_steps}/{MAX_BULL_DCA_STEPS}회차 | 12h 정기적립 + 🌅 종가매수(08:50 양봉 1U) | 🛡️ 긴급손절: {sl_price:,.0f}원({BULL_STOP_LOSS_PCT*100:.1f}%) | 트레일링: {ts_status}"
         else:
             mode_str = "🛡️ 하락장 마틴-매직스플릿 방어 (1-1-2-4 배수, 최대 8 Units / 개별+3% OR 바스켓 익절)"
             pyramid_info = ""

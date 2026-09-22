@@ -528,9 +528,9 @@ else:
 
             sub_info_html = f"""
                     <div>
-                        <span style="color:#8c96a5;">📈 12시간 정기적립:</span>
+                        <span style="color:#8c96a5;">📈 12h 적립 & 일봉종가매수:</span>
                         <b style="color:#ffb300; margin-left:4px;">{curr_steps} / {MAX_BULL_DCA_STEPS}회차</b>
-                        <span style="color:#8c96a5; font-size:0.74rem;">(12시간마다 1U / 트레일링: {ts_status})</span>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(12h마다 1U + 🌅 08:50 양봉 1U / 트레일링: {ts_status})</span>
                     </div>
                     <div>
                         <span style="color:#8c96a5;">🛡️ 긴급 재난 손절 (최후 방어선):</span>
