@@ -506,7 +506,7 @@ else:
         is_bull = regime_info.get("is_bull", False)
         regime_color = "#00c087" if is_bull else "#ff3b69"
         regime_badge = f'<span style="background:{regime_color}22; color:{regime_color}; border:1px solid {regime_color}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "국면 분석 중")}</span>'
-        mode_desc = "🚀 5/20 MA 추세추종 & 트레일링 스탑" if is_bull else "🛡️ 마틴-매직스플릿 방어 (1-1-2-4 배수 / 최대 8U)"
+        mode_desc = "🚀 5/20 MA 추세추종 (12h 정기적립 + 20선 이탈/손절-3%)" if is_bull else "🛡️ 마틴-매직스플릿 방어 (1-1-2-4 배수 / 최대 8U)"
 
         target_base_p = strat.get("bot_avg_price", 0.0) if strat.get("bot_avg_price", 0.0) > 0 else avg_p
         basket_target_p = target_base_p * strat["profit_margin"] if target_base_p > 0 else 0.0
@@ -520,23 +520,23 @@ else:
         if is_bull:
             r_state = strat.get("runtime_state", {})
             tranches = r_state.get("tranches", [])
-            from config import MAX_PYRAMID_STEPS, PYRAMID_STEP_PCT, TRAILING_STOP_TRIGGER
+            from config import BULL_TIME_DCA_INTERVAL_HOURS, MAX_BULL_DCA_STEPS, TRAILING_STOP_TRIGGER, BULL_STOP_LOSS_PCT, BULL_MA20_BREAK_PCT
             curr_steps = len(tranches) if tranches else (1 if strat.get("bot_quantity", 0) > 0 else 0)
-            last_p = tranches[-1].get("buy_price", target_base_p) if tranches else target_base_p
-            next_p = last_p * (1.0 + PYRAMID_STEP_PCT) if last_p > 0 else 0.0
+            ma20 = regime_info.get("ma20", 0.0)
+            ma20_supp = ma20 * (1.0 + BULL_MA20_BREAK_PCT)
+            sl_price = target_base_p * (1.0 + BULL_STOP_LOSS_PCT) if target_base_p > 0 else 0.0
             ts_active = r_state.get("trailing_stop_active", False)
             ts_status = "🔥 고점 추적 가동 중" if ts_active else f"대기 (+{TRAILING_STOP_TRIGGER*100:.0f}% 도달 시)"
 
             sub_info_html = f"""
                     <div>
-                        <span style="color:#8c96a5;">📈 불타기 & 종가매수:</span>
-                        <b style="color:#ffb300; margin-left:4px;">{curr_steps} / {MAX_PYRAMID_STEPS}회차</b>
-                        <span style="color:#8c96a5; font-size:0.74rem;">(다음 불타기: {next_p:,.0f}원 / 🌅 08:50 양봉 시 1U)</span>
+                        <span style="color:#8c96a5;">📈 12시간 정기적립:</span>
+                        <b style="color:#ffb300; margin-left:4px;">{curr_steps} / {MAX_BULL_DCA_STEPS}회차</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(12시간마다 1U / 트레일링: {ts_status})</span>
                     </div>
                     <div>
-                        <span style="color:#8c96a5;">🎯 다이나믹 트레일링 스탑:</span>
-                        <b style="color:#00c087; margin-left:4px;">{ts_status}</b>
-                        <span style="color:#8c96a5; font-size:0.74rem;">(+10% 도달 후 고점대비 -3% 익절)</span>
+                        <span style="color:#8c96a5;">🛡️ 리스크 관리 (손절/지지선):</span>
+                        <b style="color:#ff5252; margin-left:4px;">20선 지지: {ma20_supp:,.0f}원(-1.5%) / 손절: {sl_price:,.0f}원(-3.0%)</b>
                     </div>
             """
         else:
@@ -711,6 +711,8 @@ else:
                     "MARTINGALE_BUY_INITIAL": "마틴게일 1차 매수",
                     "TRAILING_STOP_EXIT": "트레일링스탑 익절",
                     "TREND_DEAD_CROSS_SELL": "5/20 데드크로스 청산",
+                    "TREND_MA20_BREAK_SELL": "20선 지지 이탈 청산",
+                    "BULL_STOP_LOSS_3PCT": "상승장 -3% 손절",
                     "BASKET_TAKE_PROFIT": "바스켓 전량 익절",
                     "STOP_LOSS": "STOP-LOSS 손절"
                 }

@@ -2,13 +2,21 @@
   "market": "KRW-SOL",
   "current_regime": "BULL",
   "active_mode": "TREND",
-  "bot_quantity": 0.0,
-  "bot_avg_price": 0.0,
+  "bot_quantity": 0.12626262000000033,
+  "bot_avg_price": 158400.0,
   "protected_quantity": 6.66887531,
   "initial_entry_done": true,
-  "trend_peak_price": 0.0,
+  "trend_peak_price": 158400.0,
   "trailing_stop_active": false,
-  "tranches": [],
+  "tranches": [
+    {
+      "step": 0,
+      "units": 1,
+      "buy_price": 158400.0,
+      "volume": 0.12626262000000033,
+      "time": "2026-09-23 02:00:54"
+    }
+  ],
   "completed_cycles": 1,
   "last_buy_date": "2026-09-22"
 }

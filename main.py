@@ -27,7 +27,9 @@ from config import (
     USE_MAGIC_SPLIT_DEFENSE,
     MAGIC_SPLIT_TRANCHE_PROFIT,
     MAGIC_SPLIT_DOWN_PCT,
-    MARTINGALE_MULTIPLIERS
+    MARTINGALE_MULTIPLIERS,
+    BULL_STOP_LOSS_PCT,
+    BULL_MA20_BREAK_PCT
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 from strategy.hybrid_regime import get_hybrid_regime_and_signals, check_magic_split_exits, check_daily_closing_buy_condition
@@ -247,14 +249,15 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
             # 4. 리스크 관리: Stop-Loss (손절) 감지
             # 하락장(BEAR) 국면은 매직스플릿 방어 모듈(손절 없이 반등 시 +3% 익절 및 바스켓 탈출)을 적용하므로 손절 제외
+            # 상승장(BULL) 국면은 평단가 대비 BULL_STOP_LOSS_PCT(-3.0%) 도달 시 손절
             if is_bull and total_value >= MIN_ORDER_KRW and avg_price > 0:
                 pnl_rate = (current_price - avg_price) / avg_price
-                if pnl_rate <= STOP_LOSS_PERCENT:
+                if pnl_rate <= BULL_STOP_LOSS_PCT:
                     loss_krw = (current_price - avg_price) * quantity
                     msg = (
-                        f"🚨 <b>[STOP-LOSS 긴급 손절 발동]</b> {market}\n"
+                        f"🚨 <b>[상승장 -3.0% 손절 발동]</b> {market}\n"
                         f"현재가: {current_price:,.0f}원 | 봇 평단가: {avg_price:,.0f}원\n"
-                        f"수익률: {pnl_rate * 100:.2f}% (기준: {STOP_LOSS_PERCENT * 100:.2f}% 이하)\n"
+                        f"수익률: {pnl_rate * 100:.2f}% (기준: {BULL_STOP_LOSS_PCT * 100:.1f}% 이하)\n"
                         f"봇 보유 수량 {quantity:.6f} 전량 시장가 매도 진행. (기존 보유 자산은 안전 보호)"
                     )
                     print(f"\n[{market}] {msg}")
@@ -269,12 +272,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         market=market,
                         ticker=ticker,
                         side="ask",
-                        action="STOP_LOSS",
+                        action="BULL_STOP_LOSS_3PCT",
                         price=current_price,
                         volume=quantity,
                         cost_or_revenue=quantity * current_price,
                         pnl=loss_krw,
-                        strategy="HYBRID_MARTINGALE_MAGIC_SPLIT"
+                        strategy="HYBRID_TREND"
                     )
 
                     state["bot_quantity"] = 0.0
@@ -282,6 +285,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     state["tranches"] = []
                     state["trend_peak_price"] = 0.0
                     state["trailing_stop_active"] = False
+                    state["last_dca_buy_time"] = None
                     state["initial_entry_done"] = True
                     save_strategy_state(market, state)
 
@@ -687,14 +691,16 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             time.sleep(10)
                             continue
 
-                    # B-2. 5/20 MA 데드크로스 신호 발생 시 추세 매도
+                    # B-2. 20선 지지선(-1.5%) 이탈 신호 발생 시 추세 청산
                     if signal == "SELL":
+                        curr_ma20 = float(regime_info.get("ma20", 0.0))
+                        ma20_supp = curr_ma20 * (1.0 + BULL_MA20_BREAK_PCT)
                         real_pnl = (current_price - avg_price) * quantity
                         msg = (
-                            f"🛑 <b>[5/20 MA 데드크로스 추세 청산]</b> {market}\n"
-                            f"현재가: {current_price:,.0f}원 | 봇 평단가: {avg_price:,.0f}원\n"
-                            f"수익률: {profit_rate*100:+.2f}% | 실현손익: {real_pnl:+,.0f}원\n"
-                            f"봇 수량 {quantity:.6f} 매도 (기존 자산은 안전 보호)"
+                            f"🛑 <b>[20선 지지 이탈(-1.5%) 추세 청산]</b> {market}\n"
+                            f"현재가: {current_price:,.0f}원 | 20선 지지선(98.5%): {ma20_supp:,.0f}원\n"
+                            f"봇 평단가: {avg_price:,.0f}원 | 수익률: {profit_rate*100:+.2f}% | 실현손익: {real_pnl:+,.0f}원\n"
+                            f"봇 수량 {quantity:.6f} 전량 매도 (기존 자산은 안전 보호)"
                         )
                         print(f"\n[{market}] {msg}")
                         send_telegram_alert(msg)
@@ -707,7 +713,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             market=market,
                             ticker=ticker,
                             side="ask",
-                            action="TREND_DEAD_CROSS_SELL",
+                            action="TREND_MA20_BREAK_SELL",
                             price=current_price,
                             volume=quantity,
                             cost_or_revenue=quantity * current_price,

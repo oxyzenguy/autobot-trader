@@ -9,9 +9,9 @@
 
 2. 상승 국면 (BULL) 매매 로직:
    - 5/20 MA 골든크로스 & 현재가 > 5선: 1차수 매수 (10,000원)
-   - 피라미딩(불타기) 추가매수: 직전 매수가 대비 +3% 상승 & 5선 상회 시 10,000원씩 추가 매수 (최대 10회)
+   - 12시간 정기 분할 적립(Time-DCA): 12시간 경과 시마다 10,000원씩 정기 적립 매수 (최대 20회)
    - 다이나믹 트레일링 스탑: 평단가 대비 +10% 도달 시 고점 추적 -> 최고점 대비 -3% 하락 시 일괄 익절
-   - 5/20 MA 데드크로스 & 현재가 < 5선: 전량 매도 (SELL)
+   - 20선 지지 이탈(-1.5%) 또는 평단가 대비 -3.0% 손절 시: 전량 청산 매도 (SELL / Stop-Loss)
    - 그 외: 보유 또는 관망 (HOLD)
 
 3. 하락 국면 (BEAR) 매매 로직:
@@ -135,19 +135,21 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
 
     # 4. 신호 판별
     if is_bull:
-        # 상승장 5/20 MA 추세 신호
+        from config import BULL_MA20_BREAK_PCT
+        # 상승장 추세 신호 (5/20 골든크로스 매수 & 20선 지지선(-1.5%) 이탈 청산)
+        ma20_support_price = curr_ma20 * (1.0 + BULL_MA20_BREAK_PCT)
         is_golden_cross = (prev_ma5 <= prev_ma20 and curr_ma5 > curr_ma20 and curr_price > curr_ma5)
-        is_dead_cross = (prev_ma5 >= prev_ma20 and curr_ma5 < curr_ma20 and curr_price < curr_ma5)
+        is_ma20_break = (curr_price < ma20_support_price)
         
         if is_golden_cross:
             signal = "BUY"
             reason = f"200 MA 상회 중 5/20 MA 골든크로스 발생 (5선 {curr_ma5:,.0f}원 > 20선 {curr_ma20:,.0f}원)"
-        elif is_dead_cross:
+        elif is_ma20_break:
             signal = "SELL"
-            reason = f"5/20 MA 데드크로스 발생으로 추세 청산 (5선 {curr_ma5:,.0f}원 < 20선 {curr_ma20:,.0f}원)"
+            reason = f"20선 지지선(-1.5%) 이탈 발생으로 추세 청산 (현재가 {curr_price:,.0f}원 < 지지선 {ma20_support_price:,.0f}원)"
         else:
             signal = "HOLD"
-            reason = f"200 MA 상회 중 추세 유지 (5선 {curr_ma5:,.0f}원, 20선 {curr_ma20:,.0f}원)"
+            reason = f"200 MA 상회 및 20선 지지 유지 중 (현재가 {curr_price:,.0f}원 >= 지지선 {ma20_support_price:,.0f}원)"
     else:
         # 하락장 방어 모듈: 마틴게일 배수 진입 + 하이브리드 매직스플릿 이중익절 (개별 +3% OR 바스켓 익절)
         if is_cluc_dip:
