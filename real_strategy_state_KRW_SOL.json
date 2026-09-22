@@ -18,5 +18,6 @@
     }
   ],
   "completed_cycles": 1,
-  "last_buy_date": "2026-09-22"
+  "last_buy_date": "2026-09-22",
+  "active_ts_trigger": 0.1
 }

@@ -18,6 +18,7 @@ from config import (
     USE_TRAILING_STOP,
     TRAILING_STOP_TRIGGER,
     TRAILING_STOP_DROP,
+    get_bull_trailing_stop_trigger,
     USE_BULL_TIME_DCA,
     BULL_TIME_DCA_INTERVAL_HOURS,
     MAX_BULL_DCA_STEPS,
@@ -663,12 +664,22 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         }]
                         save_strategy_state(market, state)
 
-                    # B-1. 트레일링 스탑 가동 조건 (진입가 대비 +10% 도달)
-                    if USE_TRAILING_STOP and profit_rate >= TRAILING_STOP_TRIGGER:
+                    # B-1. 트레일링 스탑 가동 조건 (동적 목표가: 1~3회차 +10%, 4~6회차 +7%, 7~20회차 +5%)
+                    current_steps = len(state.get("tranches", []))
+                    active_ts_trigger = get_bull_trailing_stop_trigger(current_steps)
+                    state["active_ts_trigger"] = active_ts_trigger
+
+                    if USE_TRAILING_STOP and profit_rate >= active_ts_trigger:
                         if not state.get("trailing_stop_active", False):
                             state["trailing_stop_active"] = True
                             state["trend_peak_price"] = current_price
-                            send_telegram_alert(f"🎯 <b>[트레일링 스탑 가동]</b> {market} 수익률 {profit_rate*100:+.2f}% 도달! 고점 추적을 시작합니다.")
+                            msg = (
+                                f"🎯 <b>[동적 트레일링 스탑 가동]</b> {market}\n"
+                                f"현재 물량: {current_steps}/{MAX_BULL_DCA_STEPS}회차 ({current_steps * unit_krw:,.0f}원 투입)\n"
+                                f"수익률 {profit_rate*100:+.2f}% 도달 (동적 목표: +{active_ts_trigger*100:.1f}%)! 고점 추적을 시작합니다."
+                            )
+                            print(f"\n[{market}] {msg}")
+                            send_telegram_alert(msg)
 
                     if state.get("trailing_stop_active", False):
                         state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)

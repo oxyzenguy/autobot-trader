@@ -520,17 +520,18 @@ else:
         if is_bull:
             r_state = strat.get("runtime_state", {})
             tranches = r_state.get("tranches", [])
-            from config import BULL_TIME_DCA_INTERVAL_HOURS, MAX_BULL_DCA_STEPS, TRAILING_STOP_TRIGGER, BULL_STOP_LOSS_PCT
+            from config import BULL_TIME_DCA_INTERVAL_HOURS, MAX_BULL_DCA_STEPS, get_bull_trailing_stop_trigger, BULL_STOP_LOSS_PCT
             curr_steps = len(tranches) if tranches else (1 if strat.get("bot_quantity", 0) > 0 else 0)
             sl_price = target_base_p * (1.0 + BULL_STOP_LOSS_PCT) if target_base_p > 0 else 0.0
             ts_active = r_state.get("trailing_stop_active", False)
-            ts_status = "🔥 고점 추적 가동 중" if ts_active else f"대기 (+{TRAILING_STOP_TRIGGER*100:.0f}% 도달 시)"
+            active_ts_trigger = get_bull_trailing_stop_trigger(curr_steps)
+            ts_status = "🔥 고점 추적 가동 중" if ts_active else f"대기 (+{active_ts_trigger*100:.0f}% 도달 시)"
 
             sub_info_html = f"""
                     <div>
-                        <span style="color:#8c96a5;">📈 12h 적립 & 일봉종가매수:</span>
-                        <b style="color:#ffb300; margin-left:4px;">{curr_steps} / {MAX_BULL_DCA_STEPS}회차</b>
-                        <span style="color:#8c96a5; font-size:0.74rem;">(12h마다 1U + 🌅 08:50 양봉 1U / 트레일링: {ts_status})</span>
+                        <span style="color:#8c96a5;">📈 20U 동적 스쿼드:</span>
+                        <b style="color:#ffb300; margin-left:4px;">{curr_steps} / {MAX_BULL_DCA_STEPS}회차 ({curr_steps * 10000:,.0f}원)</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(동적익절 +{active_ts_trigger*100:.0f}% / 트레일링: {ts_status})</span>
                     </div>
                     <div>
                         <span style="color:#8c96a5;">🛡️ 긴급 재난 손절 (최후 방어선):</span>

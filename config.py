@@ -37,10 +37,32 @@ PROTECTED_BALANCES = {
     "KRW-BTC": 0.03724281,  # 기존 보유 비트코인 전량 보호
 }
 
-# 하이브리드 상승장(BULL) 다이나믹 트레일링 스탑 설정 (Freqtrade Supertrend/Bandtastic 방식)
+# 하이브리드 상승장(BULL) 다이나믹 트레일링 스탑 설정 (물량 축적 규모에 따른 동적 목표가 적용)
 USE_TRAILING_STOP = True          # 트레일링 스탑 사용 여부
-TRAILING_STOP_TRIGGER = 0.10      # 진입가 대비 +10.0% 도달 시 트레일링 스탑 가동
+TRAILING_STOP_TRIGGER = 0.10      # 기본 트레일링 스탑 트리거 (+10.0%)
 TRAILING_STOP_DROP = 0.03         # 포지션 최고가 대비 -3.0% 하락 시 조기 익절 청산
+
+# 상승장 물량 증가에 따른 동적 익절 목표가 (골대 후퇴 방지 및 90% 승률 달성)
+# 1~3회차 (1~3만원): +10.0% (초기 가벼운 상태에서 대세 랠리 추종)
+# 4~6회차 (4~6만원): +7.0% (물량 누적 시 평단가 상승 방어)
+# 7~20회차 (7~20만원): +5.0% (대규모 물량 신속 현금화 및 리셋)
+USE_DYNAMIC_TRAILING_STOP = True
+DYNAMIC_TS_LEVELS = [
+    (3, 0.10),   # 누적 1~3회차: +10.0%
+    (6, 0.07),   # 누적 4~6회차: +7.0%
+    (20, 0.05),  # 누적 7~20회차: +5.0%
+]
+
+def get_bull_trailing_stop_trigger(step_count: int) -> float:
+    """현재 적립 차수에 따른 동적 트레일링 스탑 트리거 퍼센트 반환"""
+    if not USE_DYNAMIC_TRAILING_STOP:
+        return TRAILING_STOP_TRIGGER
+    # 0회차는 1회차와 동일 취급
+    effective_steps = max(1, step_count)
+    for max_step, trig in DYNAMIC_TS_LEVELS:
+        if effective_steps <= max_step:
+            return trig
+    return 0.05
 
 # 하이브리드 상승장(BULL) 12시간 정기 시간 분할 적립(Time-DCA) 및 일봉 종가매수 설정
 USE_BULL_TIME_DCA = True             # 상승장 12시간 정기 분할 적립 매수 사용 (12h마다 1U)
