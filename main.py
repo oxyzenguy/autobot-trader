@@ -29,8 +29,7 @@ from config import (
     MAGIC_SPLIT_TRANCHE_PROFIT,
     MAGIC_SPLIT_DOWN_PCT,
     MARTINGALE_MULTIPLIERS,
-    BULL_STOP_LOSS_PCT,
-    BULL_MA20_BREAK_PCT
+    BULL_STOP_LOSS_PCT
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 from strategy.hybrid_regime import get_hybrid_regime_and_signals, check_magic_split_exits, check_daily_closing_buy_condition
@@ -271,15 +270,15 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
             total_value = quantity * current_price
 
-            # 4. 리스크 관리: Stop-Loss (손절) 감지
+            # 4. 리스크 관리: Stop-Loss (긴급 손절) 감지
             # 하락장(BEAR) 국면은 매직스플릿 방어 모듈(손절 없이 반등 시 +3% 익절 및 바스켓 탈출)을 적용하므로 손절 제외
-            # 상승장(BULL) 국면은 평단가 대비 BULL_STOP_LOSS_PCT(-3.0%) 도달 시 손절
+            # 상승장(BULL) 국면은 평단가 대비 BULL_STOP_LOSS_PCT(-10.0%) 도달 시에만 긴급 손절 (잔파동 털림 방지)
             if is_bull and total_value >= MIN_ORDER_KRW and avg_price > 0:
                 pnl_rate = (current_price - avg_price) / avg_price
                 if pnl_rate <= BULL_STOP_LOSS_PCT:
                     loss_krw = (current_price - avg_price) * quantity
                     msg = (
-                        f"🚨 <b>[상승장 -3.0% 손절 발동]</b> {market}\n"
+                        f"🚨 <b>[상승장 -10.0% 긴급 손절 발동]</b> {market}\n"
                         f"현재가: {current_price:,.0f}원 | 봇 평단가: {avg_price:,.0f}원\n"
                         f"수익률: {pnl_rate * 100:.2f}% (기준: {BULL_STOP_LOSS_PCT * 100:.1f}% 이하)\n"
                         f"봇 보유 수량 {quantity:.6f} 전량 시장가 매도 진행. (기존 보유 자산은 안전 보호)"
@@ -296,7 +295,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         market=market,
                         ticker=ticker,
                         side="ask",
-                        action="BULL_STOP_LOSS_3PCT",
+                        action="BULL_STOP_LOSS_10PCT",
                         price=current_price,
                         volume=quantity,
                         cost_or_revenue=quantity * current_price,
@@ -715,47 +714,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             time.sleep(10)
                             continue
 
-                    # B-2. 20선 지지선(-1.5%) 이탈 신호 발생 시 추세 청산
-                    if signal == "SELL":
-                        curr_ma20 = float(regime_info.get("ma20", 0.0))
-                        ma20_supp = curr_ma20 * (1.0 + BULL_MA20_BREAK_PCT)
-                        real_pnl = (current_price - avg_price) * quantity
-                        msg = (
-                            f"🛑 <b>[20선 지지 이탈(-1.5%) 추세 청산]</b> {market}\n"
-                            f"현재가: {current_price:,.0f}원 | 20선 지지선(98.5%): {ma20_supp:,.0f}원\n"
-                            f"봇 평단가: {avg_price:,.0f}원 | 수익률: {profit_rate*100:+.2f}% | 실현손익: {real_pnl:+,.0f}원\n"
-                            f"봇 수량 {quantity:.6f} 전량 매도 (기존 자산은 안전 보호)"
-                        )
-                        print(f"\n[{market}] {msg}")
-                        send_telegram_alert(msg)
-
-                        cancel_all_orders(upbit, market)
-                        time.sleep(0.5)
-                        upbit.sell_market_order(market, quantity)
-
-                        log_real_trade(
-                            market=market,
-                            ticker=ticker,
-                            side="ask",
-                            action="TREND_MA20_BREAK_SELL",
-                            price=current_price,
-                            volume=quantity,
-                            cost_or_revenue=quantity * current_price,
-                            pnl=real_pnl,
-                            strategy="HYBRID_TREND"
-                        )
-
-                        state["bot_quantity"] = 0.0
-                        state["bot_avg_price"] = 0.0
-                        state["tranches"] = []
-                        state["trailing_stop_active"] = False
-                        state["trend_peak_price"] = 0.0
-                        state["last_dca_buy_time"] = None
-                        state["initial_entry_done"] = True
-                        state["completed_cycles"] = state.get("completed_cycles", 0) + 1
-                        save_strategy_state(market, state)
-                        time.sleep(10)
-                        continue
+                    # (1차 이평선 추세청산 제거: 잔파동 털림을 방지하고 12시간 정기적립으로 물량을 모으며, +10% 트레일링 익절 및 -10% 긴급손절로만 관리)
 
                     # B-3. 상승장 12시간 정기 시간 분할 적립 (Time-DCA)
                     if USE_BULL_TIME_DCA and not state.get("trailing_stop_active", False):

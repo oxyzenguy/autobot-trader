@@ -140,21 +140,15 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
 
     # 4. 신호 판별
     if is_bull:
-        from config import BULL_MA20_BREAK_PCT
-        # 상승장 추세 신호 (5/20 골든크로스 매수 & 20선 지지선(-1.5%) 이탈 청산)
-        ma20_support_price = curr_ma20 * (1.0 + BULL_MA20_BREAK_PCT)
+        # 상승장 추세 신호: 5/20 MA 골든크로스 신규 진입 (추세 청산 없이 12h 정기적립 & -10% 긴급손절 및 트레일링 익절만 적용)
         is_golden_cross = (prev_ma5 <= prev_ma20 and curr_ma5 > curr_ma20 and curr_price > curr_ma5)
-        is_ma20_break = (curr_price < ma20_support_price)
         
         if is_golden_cross:
             signal = "BUY"
             reason = f"200 MA 상회 중 5/20 MA 골든크로스 발생 (5선 {curr_ma5:,.0f}원 > 20선 {curr_ma20:,.0f}원)"
-        elif is_ma20_break:
-            signal = "SELL"
-            reason = f"20선 지지선(-1.5%) 이탈 발생으로 추세 청산 (현재가 {curr_price:,.0f}원 < 지지선 {ma20_support_price:,.0f}원)"
         else:
             signal = "HOLD"
-            reason = f"200 MA 상회 및 20선 지지 유지 중 (현재가 {curr_price:,.0f}원 >= 지지선 {ma20_support_price:,.0f}원)"
+            reason = f"200 MA 상회 상승 국면 유지 (12h 정기적립 & -10% 긴급손절 감시)"
     else:
         # 하락장 방어 모듈: 마틴게일 배수 진입 + 하이브리드 매직스플릿 이중익절 (개별 +3% OR 바스켓 익절)
         if is_cluc_dip:

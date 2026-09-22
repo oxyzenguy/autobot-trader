@@ -61,16 +61,13 @@ def print_status():
         r_state = s.get("runtime_state", {})
         tranches = r_state.get("tranches", [])
         if is_bull:
-            from config import BULL_TIME_DCA_INTERVAL_HOURS, MAX_BULL_DCA_STEPS, TRAILING_STOP_TRIGGER, BULL_STOP_LOSS_PCT, BULL_MA20_BREAK_PCT
+            from config import BULL_TIME_DCA_INTERVAL_HOURS, MAX_BULL_DCA_STEPS, TRAILING_STOP_TRIGGER, BULL_STOP_LOSS_PCT
             curr_steps = len(tranches) if tranches else (1 if bot_q > 0 else 0)
-            last_p = tranches[-1].get("buy_price", bot_avg) if tranches else bot_avg
-            ma20 = reg_info.get("ma20", 0.0)
-            ma20_supp = ma20 * (1.0 + BULL_MA20_BREAK_PCT)
             sl_price = bot_avg * (1.0 + BULL_STOP_LOSS_PCT) if bot_avg > 0 else 0.0
             ts_active = r_state.get("trailing_stop_active", False)
             ts_status = "🔥 고점 추적 가동 중" if ts_active else f"대기 (+{TRAILING_STOP_TRIGGER*100:.0f}% 도달 시)"
-            mode_str = "🚀 상승장 추세모드 (5/20 골든크로스 + 12h 정기적립 + 20선 지지이탈/손절-3%)"
-            pyramid_info = f" • 📈 적립/리스크: {curr_steps}/{MAX_BULL_DCA_STEPS}회차 | 12시간 정기적립 (1U) | 🛡️ 20선 지지선: {ma20_supp:,.0f}원(-1.5%) | 손절선: {sl_price:,.0f}원(-3.0%) | 트레일링: {ts_status}"
+            mode_str = "🚀 상승장 추세모드 (5/20 골든크로스 + 12h 정기적립 + 긴급손절-10%)"
+            pyramid_info = f" • 📈 적립/리스크: {curr_steps}/{MAX_BULL_DCA_STEPS}회차 | 12시간 정기적립 (1U) | 🛡️ 긴급손절: {sl_price:,.0f}원({BULL_STOP_LOSS_PCT*100:.1f}%) | 트레일링: {ts_status}"
         else:
             mode_str = "🛡️ 하락장 마틴-매직스플릿 방어 (1-1-2-4 배수, 최대 8 Units / 개별+3% OR 바스켓 익절)"
             pyramid_info = ""

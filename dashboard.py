@@ -520,10 +520,8 @@ else:
         if is_bull:
             r_state = strat.get("runtime_state", {})
             tranches = r_state.get("tranches", [])
-            from config import BULL_TIME_DCA_INTERVAL_HOURS, MAX_BULL_DCA_STEPS, TRAILING_STOP_TRIGGER, BULL_STOP_LOSS_PCT, BULL_MA20_BREAK_PCT
+            from config import BULL_TIME_DCA_INTERVAL_HOURS, MAX_BULL_DCA_STEPS, TRAILING_STOP_TRIGGER, BULL_STOP_LOSS_PCT
             curr_steps = len(tranches) if tranches else (1 if strat.get("bot_quantity", 0) > 0 else 0)
-            ma20 = regime_info.get("ma20", 0.0)
-            ma20_supp = ma20 * (1.0 + BULL_MA20_BREAK_PCT)
             sl_price = target_base_p * (1.0 + BULL_STOP_LOSS_PCT) if target_base_p > 0 else 0.0
             ts_active = r_state.get("trailing_stop_active", False)
             ts_status = "🔥 고점 추적 가동 중" if ts_active else f"대기 (+{TRAILING_STOP_TRIGGER*100:.0f}% 도달 시)"
@@ -535,8 +533,8 @@ else:
                         <span style="color:#8c96a5; font-size:0.74rem;">(12시간마다 1U / 트레일링: {ts_status})</span>
                     </div>
                     <div>
-                        <span style="color:#8c96a5;">🛡️ 리스크 관리 (손절/지지선):</span>
-                        <b style="color:#ff5252; margin-left:4px;">20선 지지: {ma20_supp:,.0f}원(-1.5%) / 손절: {sl_price:,.0f}원(-3.0%)</b>
+                        <span style="color:#8c96a5;">🛡️ 긴급 재난 손절 (최후 방어선):</span>
+                        <b style="color:#ff5252; margin-left:4px;">손절 기준가: {sl_price:,.0f}원 ({BULL_STOP_LOSS_PCT*100:.1f}%)</b>
                     </div>
             """
         else:
@@ -713,6 +711,7 @@ else:
                     "TREND_DEAD_CROSS_SELL": "5/20 데드크로스 청산",
                     "TREND_MA20_BREAK_SELL": "20선 지지 이탈 청산",
                     "BULL_STOP_LOSS_3PCT": "상승장 -3% 손절",
+                    "BULL_STOP_LOSS_10PCT": "상승장 -10% 긴급손절",
                     "BASKET_TAKE_PROFIT": "바스켓 전량 익절",
                     "STOP_LOSS": "STOP-LOSS 손절"
                 }

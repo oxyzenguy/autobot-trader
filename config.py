@@ -25,9 +25,8 @@ BASE_URL = "https://api.upbit.com"
 
 # 3. 매매 및 리스크 관리 기본 설정
 MIN_ORDER_KRW = 5000          # 업비트 최소 주문 금액 (5,000원)
-STOP_LOSS_PERCENT = -0.03     # 평단가 대비 -3.0% 손절선
-BULL_STOP_LOSS_PCT = -0.03    # 상승장 평단가 대비 -3.0% 손절선
-BULL_MA20_BREAK_PCT = -0.015  # 상승장 20선 지지 이탈 기준 (20 MA 대비 -1.5% 하향 이탈 시 추세 이탈 청산)
+STOP_LOSS_PERCENT = -0.10     # 평단가 대비 -10.0% 손절선
+BULL_STOP_LOSS_PCT = -0.10    # 상승장 평단가 대비 -10.0% 긴급 손절선 (추세 청산 없이 -10% 최후 방어)
 FEE_RATE = 0.0005             # 0.05% 수수료율
 MIN_KRW_ALERT_THRESHOLD = 100_000  # 예수금 10만원 이하 알림 기준 (100,000원)
 
