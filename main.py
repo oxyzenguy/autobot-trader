@@ -17,6 +17,9 @@ from config import (
     USE_TRAILING_STOP,
     TRAILING_STOP_TRIGGER,
     TRAILING_STOP_DROP,
+    USE_BULL_TIME_DCA,
+    BULL_TIME_DCA_INTERVAL_HOURS,
+    MAX_BULL_DCA_STEPS,
     USE_BULL_PYRAMID,
     PYRAMID_STEP_PCT,
     MAX_PYRAMID_STEPS,
@@ -677,6 +680,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             state["tranches"] = []
                             state["trailing_stop_active"] = False
                             state["trend_peak_price"] = 0.0
+                            state["last_dca_buy_time"] = None
                             state["initial_entry_done"] = True
                             state["completed_cycles"] = state.get("completed_cycles", 0) + 1
                             save_strategy_state(market, state)
@@ -716,13 +720,100 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         state["tranches"] = []
                         state["trailing_stop_active"] = False
                         state["trend_peak_price"] = 0.0
+                        state["last_dca_buy_time"] = None
                         state["initial_entry_done"] = True
                         state["completed_cycles"] = state.get("completed_cycles", 0) + 1
                         save_strategy_state(market, state)
                         time.sleep(10)
                         continue
 
-                    # B-3. 상승장 피라미딩(불타기) 분할 추가매수 (Option 2)
+                    # B-3. 상승장 12시간 정기 시간 분할 적립 (Time-DCA)
+                    if USE_BULL_TIME_DCA and not state.get("trailing_stop_active", False):
+                        current_steps = len(state.get("tranches", []))
+                        if current_steps < MAX_BULL_DCA_STEPS:
+                            last_buy_time_str = state.get("last_dca_buy_time")
+                            if not last_buy_time_str and state.get("tranches"):
+                                last_buy_time_str = state["tranches"][-1].get("time")
+
+                            should_dca_buy = False
+                            hours_elapsed = 0.0
+                            now_dt = datetime.now()
+
+                            if last_buy_time_str:
+                                try:
+                                    last_dt = datetime.strptime(str(last_buy_time_str)[:19], "%Y-%m-%d %H:%M:%S")
+                                    hours_elapsed = (now_dt - last_dt).total_seconds() / 3600.0
+                                    if hours_elapsed >= BULL_TIME_DCA_INTERVAL_HOURS:
+                                        should_dca_buy = True
+                                except Exception:
+                                    should_dca_buy = False
+                            else:
+                                state["last_dca_buy_time"] = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+                                save_strategy_state(market, state)
+
+                            if should_dca_buy:
+                                krw_balance = check_krw_balance_alert(upbit, context=f"{market} 상승장 {BULL_TIME_DCA_INTERVAL_HOURS}시간 정기적립 {current_steps + 1}회차")
+                                if krw_balance >= unit_krw:
+                                    next_step = current_steps + 1
+                                    print(
+                                        f"\n[{market}] ⏰ [상승장 {BULL_TIME_DCA_INTERVAL_HOURS}시간 정기 분할적립 {next_step}/{MAX_BULL_DCA_STEPS}회차 매수]\n"
+                                        f"직전 매수 후 {hours_elapsed:.1f}시간 경과 (기준: {BULL_TIME_DCA_INTERVAL_HOURS}시간) | 현재가: {current_price:,.0f}원"
+                                    )
+                                    prev_avail = float(upbit.get_balance(ticker) or 0.0)
+                                    upbit.buy_market_order(market, unit_krw)
+                                    time.sleep(1.5)
+
+                                    new_avail = float(upbit.get_balance(ticker) or 0.0)
+                                    bought_vol = max(0.0, new_avail - prev_avail)
+                                    if bought_vol <= 0:
+                                        bought_vol = round(unit_krw / current_price, 8)
+
+                                    old_q = quantity
+                                    old_avg = avg_price
+                                    new_q = old_q + bought_vol
+                                    new_avg = ((old_avg * old_q) + (current_price * bought_vol)) / new_q if new_q > 0 else current_price
+
+                                    state["bot_quantity"] = new_q
+                                    state["bot_avg_price"] = new_avg
+                                    state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)
+                                    state["last_dca_buy_time"] = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+                                    state["tranches"].append({
+                                        "step": current_steps,
+                                        "units": 1,
+                                        "buy_price": current_price,
+                                        "volume": bought_vol,
+                                        "time": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                                        "type": "TIME_DCA"
+                                    })
+                                    save_strategy_state(market, state)
+
+                                    log_real_trade(
+                                        market=market,
+                                        ticker=ticker,
+                                        side="bid",
+                                        action=f"BULL_TIME_DCA_STEP_{next_step}",
+                                        price=current_price,
+                                        volume=bought_vol,
+                                        cost_or_revenue=unit_krw,
+                                        pnl=0.0,
+                                        strategy="HYBRID_TREND"
+                                    )
+
+                                    msg = (
+                                        f"⏰ <b>[상승장 {BULL_TIME_DCA_INTERVAL_HOURS}시간 정기 분할적립 체결]</b> {market}\n"
+                                        f"차수: {next_step}/{MAX_BULL_DCA_STEPS}회차 ({hours_elapsed:.1f}시간 경과 분할 매수)\n"
+                                        f"추가 매수액: {unit_krw:,.0f}원 (체결: {bought_vol:.6f} {ticker})\n"
+                                        f"새 봇 평단가: {new_avg:,.0f}원 | 총 누적수량: {new_q:.6f} {ticker}\n"
+                                        f"총 투입원금: {new_avg * new_q:,.0f}원\n"
+                                        f"수익률: {((current_price - new_avg)/new_avg)*100:+.2f}%"
+                                    )
+                                    print(f"[{market}] {msg}")
+                                    send_telegram_alert(msg)
+                                    time.sleep(5)
+                                    continue
+
+                    # B-4. 상승장 피라미딩(불타기) 분할 추가매수 (Option 2 - 설정 시 동작)
                     if USE_BULL_PYRAMID and not state.get("trailing_stop_active", False):
                         current_steps = len(state.get("tranches", []))
                         if current_steps < MAX_PYRAMID_STEPS:
@@ -932,6 +1023,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 "volume": q,
                                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             }]
+                            state["last_dca_buy_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             save_strategy_state(market, state)
 
                             log_real_trade(
@@ -983,7 +1075,7 @@ if __name__ == "__main__":
     print(f"🚀 AutoBot Trader 하이브리드 실전 매매 시스템 가동")
     print(f" - 실행 대상 마켓: {', '.join(target_markets)}")
     print(f" - 하락장 방어: 마틴게일 배수 진입 + 매직스플릿 이중익절(개별+3%/바스켓)")
-    print(f" - 상승장 추세: 5/20 MA 추세추종 & 트레일링 스탑")
+    print(f" - 상승장 추세: 5/20 MA 추세추종 & 12시간 정기 분할적립(Time-DCA)")
     print(f" - 예수금 10만원 미만 경고 기준: {MIN_KRW_ALERT_THRESHOLD:,}원")
     for m in target_markets:
         info = INVESTMENTS.get(m, {})

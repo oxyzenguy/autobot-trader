@@ -718,6 +718,13 @@ else:
                     raw_action = str(t.get("action", ""))
                     if raw_action.startswith("TRANCHE_TAKE_PROFIT"):
                         action_kr = "매직스플릿 차수 익절"
+                    elif raw_action.startswith("BULL_TIME_DCA_STEP_"):
+                        step_num = raw_action.replace("BULL_TIME_DCA_STEP_", "")
+                        action_kr = f"12시간 정기적립 ({step_num}회차)"
+                    elif raw_action.startswith("BULL_PYRAMID_STEP_"):
+                        action_kr = f"상승 불타기 ({raw_action.replace('BULL_PYRAMID_STEP_', '')}회차)"
+                    elif raw_action.startswith("BULL_CLOSING_BUY_STEP_"):
+                        action_kr = f"일봉 종가매수 ({raw_action.replace('BULL_CLOSING_BUY_STEP_', '')}회차)"
                     else:
                         action_kr = action_map.get(raw_action, raw_action or "실전 체결")
 
