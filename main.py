@@ -30,7 +30,9 @@ from config import (
     MAGIC_SPLIT_TRANCHE_PROFIT,
     MAGIC_SPLIT_DOWN_PCT,
     MARTINGALE_MULTIPLIERS,
-    BULL_STOP_LOSS_PCT
+    BULL_STOP_LOSS_PCT,
+    REGIME_SWITCH_LIQUIDATION_PCT,
+    MARTINGALE_SCHEDULE
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 from strategy.hybrid_regime import get_hybrid_regime_and_signals, check_magic_split_exits, check_daily_closing_buy_condition
@@ -265,7 +267,120 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             regime_str = regime_info.get("regime_korean", "국면 분석 중")
             curr_ma5 = float(regime_info.get("ma5", 0.0))
 
-            state["current_regime"] = "BULL" if is_bull else "BEAR"
+            curr_regime = "BULL" if is_bull else "BEAR"
+            prev_regime = state.get("current_regime", curr_regime)
+
+            # 국면 전환 감지 (BULL ➔ BEAR 또는 BEAR ➔ BULL)
+            if prev_regime == "BULL" and curr_regime == "BEAR":
+                print(f"\n[{market}] ⚠️ [국면 전환 감지] 200 MA 하향 이탈: 상승장(BULL) ➔ 하락장(BEAR)")
+                cancel_all_orders(upbit, market)
+                time.sleep(0.5)
+
+                avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
+                total_value = quantity * current_price
+
+                if total_value >= MIN_ORDER_KRW and avg_price > 0:
+                    liq_pct = REGIME_SWITCH_LIQUIDATION_PCT.get(market, 0.50)
+                    sell_qty = round(quantity * liq_pct, 8)
+                    sell_krw = sell_qty * current_price
+
+                    # 업비트 최소주문금액(5,000원) 체크 및 보정
+                    if sell_krw < MIN_ORDER_KRW:
+                        if total_value >= MIN_ORDER_KRW:
+                            min_qty = round((MIN_ORDER_KRW + 50) / current_price, 8)
+                            if min_qty <= quantity:
+                                sell_qty = min_qty
+                            else:
+                                sell_qty = quantity
+
+                    if sell_qty > 0 and (sell_qty * current_price) >= MIN_ORDER_KRW:
+                        pnl_krw = (current_price - avg_price) * sell_qty
+                        pnl_rate = (current_price - avg_price) / avg_price
+                        action_name = f"REGIME_SWITCH_PARTIAL_CUT_{int(liq_pct * 100)}PCT"
+
+                        sell_res = upbit.sell_market_order(market, sell_qty)
+                        print(f"[{time.strftime('%H:%M:%S')}] [{market}] [국면전환 부분손절] {int(liq_pct * 100)}% 매도 결과: {sell_res}")
+                        time.sleep(1.0)
+
+                        log_real_trade(
+                            market=market,
+                            ticker=ticker,
+                            side="ask",
+                            action=action_name,
+                            price=current_price,
+                            volume=sell_qty,
+                            cost_or_revenue=sell_qty * current_price,
+                            pnl=pnl_krw,
+                            strategy="HYBRID_REGIME_SWITCH"
+                        )
+
+                        actual_avail = float(upbit.get_balance(ticker) or 0.0)
+                        prot_qty = float(PROTECTED_BALANCES.get(market, 0.0))
+                        rem_qty = max(0.0, actual_avail - prot_qty)
+
+                        msg = (
+                            f"⚠️ <b>[국면 전환 {int(liq_pct * 100)}% 부분 손절 체결]</b> {market}\n"
+                            f"200 MA 하향 돌파 (BULL ➔ BEAR 국면 전환)\n"
+                            f"체결단가: {current_price:,.0f}원 | 평단가: {avg_price:,.0f}원 ({pnl_rate * 100:+.2f}%)\n"
+                            f"손절수량: {sell_qty:.6f} ({sell_qty * current_price:,.0f}원, 실현손익: {pnl_krw:+,.0f}원)\n"
+                            f"남은 물량({rem_qty:.6f})은 하락장 마틴-매직스플릿 방어 모드로 인계합니다."
+                        )
+                        print(f"[{market}] {msg}")
+                        send_telegram_alert(msg)
+
+                        state["bot_quantity"] = rem_qty
+                        state["bot_avg_price"] = avg_price
+                        if rem_qty * current_price >= MIN_ORDER_KRW:
+                            state["tranches"] = [{
+                                "step": 0,
+                                "units": 1,
+                                "buy_price": avg_price,
+                                "volume": rem_qty,
+                                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "source": "REGIME_HANDOVER"
+                            }]
+                        else:
+                            state["tranches"] = []
+                    else:
+                        print(f"[{market}] [INFO] 포지션 금액 부족으로 부분손절 생략 후 전량 하락장 모드로 인계.")
+                else:
+                    state["tranches"] = []
+
+                state["trend_peak_price"] = 0.0
+                state["trailing_stop_active"] = False
+                state["last_dca_buy_time"] = None
+                state["current_regime"] = "BEAR"
+                state["active_mode"] = "MARTINGALE_MAGIC_SPLIT"
+                save_strategy_state(market, state)
+                time.sleep(2)
+                continue
+
+            elif prev_regime == "BEAR" and curr_regime == "BULL":
+                print(f"\n[{market}] 🐂 [국면 전환 감지] 200 MA 상향 돌파: 하락장(BEAR) ➔ 상승장(BULL)")
+                cancel_all_orders(upbit, market)
+                time.sleep(0.5)
+
+                avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
+                msg = (
+                    f"🐂 <b>[상승 국면 전환 감지]</b> {market}\n"
+                    f"200 MA 상향 돌파 (BEAR ➔ BULL 전환)\n"
+                    f"현재가: {current_price:,.0f}원 | 평단가: {avg_price:,.0f}원 | 보유수량: {quantity:.6f}\n"
+                    f"기존 하락장 미체결 주문을 취소하고 5/20 MA 추세추종 및 트레일링 스탑 모드로 전환합니다."
+                )
+                print(f"[{market}] {msg}")
+                send_telegram_alert(msg)
+
+                state["trend_peak_price"] = current_price
+                state["trailing_stop_active"] = False
+                state["last_dca_buy_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                state["current_regime"] = "BULL"
+                state["active_mode"] = "TREND"
+                save_strategy_state(market, state)
+                time.sleep(2)
+                continue
+
+            state["current_regime"] = curr_regime
+
 
             # 3. 봇 전용 잔고 조회 (기존 자산 완전 격리/보호)
             avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
@@ -470,9 +585,28 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 print(f"[{market}] ℹ️ [매직스플릿] 매도 대상 금액({tot_sell_krw:,.0f}원)이 최소주문금액(5,000원) 미만이므로 바스켓 익절 대기.")
 
                 # A-2. 마틴게일 상태 머신 (주문 등록 및 물타기)
-                # 정상 대기 상태: 매도 1건 등록되어 있고, 미체결 매수 주문 수가 현재 차수 기준 기대치와 일치할 때
-                expected_open_buys = max(0, len(MARTINGALE_MULTIPLIERS) - len(state.get("tranches", [])))
+                martingale_sched = MARTINGALE_SCHEDULE.get(market, MARTINGALE_MULTIPLIERS)
+                max_steps = len(martingale_sched)
+                current_steps = len(state.get("tranches", []))
+                expected_open_buys = max(0, max_steps - current_steps)
+
+                # SOL 4회차 등 최대 차수 도달 시 잔여 매수 주문 자동 취소 및 홀딩 관리
+                if current_steps >= max_steps and num_buy > 0:
+                    print(f"[{market}] 🛑 마틴게일 최대 차수({max_steps}차수 / {sum(martingale_sched)}U) 도달로 잔여 매수 주문 {num_buy}건 취소.")
+                    for order in buy_orders:
+                        upbit.cancel_order(order['uuid'])
+                        time.sleep(0.1)
+                    buy_orders = []
+                    num_buy = 0
+
+                # 정상 대기 상태:
+                # 1) 매도 1건 등록되어 있고 매수 주문 수가 기대치와 일치할 때
+                # 2) 또는 매수 주문 기대치가 0(최대 차수 도달 홀딩)이고 매도 주문 1건 등록되어 있을 때
                 if num_sell == 1 and num_buy == expected_open_buys:
+                    time.sleep(5)
+                    continue
+                elif num_sell == 0 and num_buy == expected_open_buys and num_buy > 0:
+                    # 매도 주문 금액이 5,000원 미만이라 매도 등록 대기 중이고 매수 주문만 대기 중일 때
                     time.sleep(5)
                     continue
 
@@ -525,7 +659,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         state["tranches"] = [{
                             "step": 0,
-                            "units": MARTINGALE_MULTIPLIERS[0],
+                            "units": martingale_sched[0],
                             "buy_price": avg_price,
                             "volume": quantity,
                             "time": now_str
@@ -538,12 +672,21 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                     # 바스켓 익절 주문
                     sell_price = adjust_price_to_tick(avg_price * sell_profit_margin, method="ceil")
-                    upbit.sell_limit_order(market, sell_price, quantity)
-                    print(f"[{market}]   - 바스켓 익절 매도 주문: {sell_price:,.0f}원, 수량 {quantity}")
+                    if (quantity * sell_price) >= MIN_ORDER_KRW:
+                        upbit.sell_limit_order(market, sell_price, quantity)
+                        print(f"[{market}]   - 바스켓 익절 매도 주문: {sell_price:,.0f}원, 수량 {quantity}")
+                    else:
+                        print(f"[{market}]   - [INFO] 바스켓 매도 평가액({quantity * sell_price:,.0f}원)이 최소주문(5,000원) 미만이므로 추가 물타기 체결 후 등록합니다.")
                     time.sleep(0.2)
 
-                    # 마틴게일 3단계 매수 주문 계획 (-4% 1배, -8% 2배, -12% 4배 - 총 8 Units)
-                    new_orders = calculate_new_buy_prices(avg_buy_price=avg_price, existing_orders=None)
+                    # 마틴게일 매수 주문 계획
+                    new_orders = calculate_new_buy_prices(
+                        avg_buy_price=avg_price,
+                        existing_orders=None,
+                        max_steps=max_steps,
+                        current_step=len(state.get("tranches", [])),
+                        multipliers=martingale_sched
+                    )
                     print(f"[{market}]   - 신규 마틴게일 매수 주문 계획 ({len(new_orders)}개): {new_orders}")
 
                     for order in new_orders:
@@ -555,12 +698,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         print(f"[{market}]     - 지정가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
                         time.sleep(0.2)
 
+                    sched_label = f"최대 {max_steps}차수 총 {sum(martingale_sched)}U" + (" (4차 캡 후 홀딩)" if market == "KRW-SOL" else " (무한 매직스플릿)")
                     send_telegram_alert(
                         f"🛡️ <b>[하락장 마틴-매직스플릿 방어 시작]</b> {market}\n"
                         f"진입가: {avg_price:,.0f}원 | 수량: {quantity:.6f}\n"
                         f"바스켓 익절가: {sell_price:,.0f}원 (+{(sell_profit_margin - 1) * 100:.2f}%)\n"
                         f"개별 차수 목표: 매수가 대비 +{MAGIC_SPLIT_TRANCHE_PROFIT*100:.1f}%\n"
-                        f"마틴게일 물타기 3단계(1x, 2x, 4x / 총 8U) 예약 완료"
+                        f"마틴게일 물타기 ({len(new_orders)}단계 예약 / {sched_label})"
                     )
 
                 # Case 4: 물타기 매수 체결 감지
@@ -594,13 +738,14 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                     # 새 바스켓 익절 매도 등록 (봇 수량만 등록)
                     sell_price = adjust_price_to_tick(avg_price * sell_profit_margin, method="ceil")
-                    upbit.sell_limit_order(market, sell_price, quantity)
-                    print(f"[{market}]   - 새 바스켓 익절 매도: {sell_price:,.0f}원, 전량 {quantity:.6f}")
+                    if (quantity * sell_price) >= MIN_ORDER_KRW:
+                        upbit.sell_limit_order(market, sell_price, quantity)
+                        print(f"[{market}]   - 새 바스켓 익절 매도: {sell_price:,.0f}원, 전량 {quantity:.6f}")
                     time.sleep(0.2)
 
                     # 추가 차수 등록 (체결된 해당 차수의 순수 매수 수량 기록)
                     step_idx = len(state.get("tranches", []))
-                    assigned_units = MARTINGALE_MULTIPLIERS[min(step_idx, len(MARTINGALE_MULTIPLIERS) - 1)]
+                    assigned_units = martingale_sched[min(step_idx, len(martingale_sched) - 1)]
                     state.setdefault("tranches", []).append({
                         "step": step_idx,
                         "units": assigned_units,
@@ -610,16 +755,19 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     })
                     save_strategy_state(market, state)
 
-                    # 추가 매수 주문 계획 (최대 4차수 / 총 8 Units 제한)
+                    # 추가 매수 주문 계획 (최대 max_steps 차수 / 총 sum(martingale_sched) Units 제한)
                     current_total_steps = len(state.get("tranches", [])) + len(buy_orders)
-                    if current_total_steps >= len(MARTINGALE_MULTIPLIERS):
-                        print(f"[{market}]   - 마틴게일 최대 차수({len(MARTINGALE_MULTIPLIERS)}차수 / 총 {sum(MARTINGALE_MULTIPLIERS)} Units) 도달: 추가 물타기 매수 생략.")
+                    if current_total_steps >= max_steps:
+                        print(f"[{market}]   - 마틴게일 최대 차수({max_steps}차수 / 총 {sum(martingale_sched)} Units) 도달: 추가 물타기 매수 생략.")
                         additional_orders = []
                     else:
                         buy_order_details = [{'price': float(o['price']), 'units': 1} for o in buy_orders]
                         additional_orders = calculate_new_buy_prices(
                             avg_buy_price=avg_price,
-                            existing_orders=buy_order_details
+                            existing_orders=buy_order_details,
+                            max_steps=max_steps,
+                            current_step=len(state.get("tranches", [])),
+                            multipliers=martingale_sched
                         )
 
                     krw_balance = check_krw_balance_alert(upbit, context=f"{market} 추가 물타기 매수")
@@ -640,7 +788,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         f"💧 <b>[물타기 체결 후 포지션 재조정]</b> {market}\n"
                         f"새 평단가: {avg_price:,.0f}원 | 총 보유수량: {quantity:.6f}\n"
                         f"새 바스켓 익절가: {sell_price:,.0f}원\n"
-                        f"누적 차수: {len(state['tranches'])}/{len(MARTINGALE_MULTIPLIERS)}개 | 추가 매수 {len(additional_orders)}건 등록"
+                        f"누적 차수: {len(state['tranches'])}/{max_steps}개 | 추가 매수 {len(additional_orders)}건 등록"
                     )
 
             # =========================================================================

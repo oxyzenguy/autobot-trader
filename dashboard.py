@@ -506,7 +506,13 @@ else:
         is_bull = regime_info.get("is_bull", False)
         regime_color = "#00c087" if is_bull else "#ff3b69"
         regime_badge = f'<span style="background:{regime_color}22; color:{regime_color}; border:1px solid {regime_color}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "국면 분석 중")}</span>'
-        mode_desc = "🚀 5/20 MA 추세추종 (12h 정기적립 + 20선 이탈/손절-3%)" if is_bull else "🛡️ 마틴-매직스플릿 방어 (1-1-2-4 배수 / 최대 8U)"
+        if is_bull:
+            mode_desc = "🚀 5/20 MA 추세추종 (12h 정기적립 + 동적 트레일링 익절)"
+        else:
+            if market == "KRW-SOL":
+                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (70% 손절 인계 / 최대 4차(8U) 캡 홀딩)"
+            else:
+                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (50% 손절 인계 / 무한 매직스플릿 32U)"
 
         target_base_p = strat.get("bot_avg_price", 0.0) if strat.get("bot_avg_price", 0.0) > 0 else avg_p
         basket_target_p = target_base_p * strat["profit_margin"] if target_base_p > 0 else 0.0
@@ -539,6 +545,13 @@ else:
                     </div>
             """
         else:
+            if market == "KRW-SOL":
+                martingale_desc = "1-1-2-4 배수 (최대 4차수 / 8U 홀딩 캡)"
+                regime_handover_desc = "200 MA 하향 돌파 시 70% 손절 후 30% 방어 인계"
+            else:
+                martingale_desc = "1-1-2-4-4... 배수 (최대 10차수 / 32U 무한 확장)"
+                regime_handover_desc = "200 MA 하향 돌파 시 50% 손절 후 50% 방어 인계"
+
             sub_info_html = f"""
                     <div>
                         <span style="color:#8c96a5;">🎯 바스켓 익절 목표가:</span>
@@ -547,8 +560,12 @@ else:
                     </div>
                     <div>
                         <span style="color:#8c96a5;">💧 마틴게일 & 매직스플릿:</span>
-                        <b style="color:#ffb300; margin-left:4px;">1-1-2-4 배수 (최대 8U / 8만 원)</b>
+                        <b style="color:#ffb300; margin-left:4px;">{martingale_desc}</b>
                         <span style="color:#8c96a5; font-size:0.74rem;">(개별 +3% OR 바스켓 익절)</span>
+                    </div>
+                    <div>
+                        <span style="color:#8c96a5;">🛡️ 국면 전환 규칙:</span>
+                        <b style="color:#ff5252; margin-left:4px;">{regime_handover_desc}</b>
                     </div>
             """
 
@@ -713,12 +730,17 @@ else:
                     "TREND_MA20_BREAK_SELL": "20선 지지 이탈 청산",
                     "BULL_STOP_LOSS_3PCT": "상승장 -3% 손절",
                     "BULL_STOP_LOSS_10PCT": "상승장 -10% 긴급손절",
+                    "REGIME_SWITCH_PARTIAL_CUT_50PCT": "국면전환 50% 부분손절",
+                    "REGIME_SWITCH_PARTIAL_CUT_70PCT": "국면전환 70% 부분손절",
                     "BASKET_TAKE_PROFIT": "바스켓 전량 익절",
                     "STOP_LOSS": "STOP-LOSS 손절"
                 }
                 for _, t in trades_df.head(15).iterrows():
                     raw_action = str(t.get("action", ""))
-                    if raw_action.startswith("TRANCHE_TAKE_PROFIT"):
+                    if raw_action.startswith("REGIME_SWITCH_PARTIAL_CUT_"):
+                        pct_s = raw_action.replace("REGIME_SWITCH_PARTIAL_CUT_", "").replace("PCT", "")
+                        action_kr = f"국면전환 {pct_s}% 부분손절"
+                    elif raw_action.startswith("TRANCHE_TAKE_PROFIT"):
                         action_kr = "매직스플릿 차수 익절"
                     elif raw_action.startswith("BULL_TIME_DCA_STEP_"):
                         step_num = raw_action.replace("BULL_TIME_DCA_STEP_", "")

@@ -77,7 +77,23 @@ MAX_PYRAMID_STEPS = 20               # 최대 누적 차수
 USE_MAGIC_SPLIT_DEFENSE = True       # 매직스플릿 개별 익절 병행 방어 모드
 MAGIC_SPLIT_TRANCHE_PROFIT = 0.03   # 개별 차수 반등 시 단독 익절 목표 마진 (+3.0%)
 MAGIC_SPLIT_DOWN_PCT = 0.04         # 추가 차수 물타기 간격 (-4.0%)
-MARTINGALE_MULTIPLIERS = [1, 1, 2, 4]  # 마틴게일 투입 스케줄: 1차(1U), 2차(1U), 3차(2U), 4차(4U) - 총 8 Units (8만 원)
+MARTINGALE_MULTIPLIERS = [1, 1, 2, 4]  # 기본 마틴게일 투입 스케줄 (1-1-2-4)
+
+# 국면 전환 (BULL ➔ BEAR: 200 MA 하향 돌파 시) 부분 손절 비율
+# ETH: 50% 부분 손절 후 남은 50%는 마틴게일로 인계하여 물타기 탈출
+# SOL: 70% 부분 손절 후 남은 30%만 마틴게일로 인계하여 폭락 리스크 차단
+REGIME_SWITCH_LIQUIDATION_PCT = {
+    "KRW-ETH": 0.50,  # 이더리움: 50% 손절
+    "KRW-SOL": 0.70,  # 솔라나: 70% 손절
+}
+
+# 하락장(BEAR) 마틴게일 투입 스케줄 (종목별 차별화)
+# SOL: 1-1-2-4 (최대 4회차 = 총 8 Units / 8만 원 투입 후 홀딩, 추가 매수 중단)
+# ETH: 1-1-2-4-4-4-4-4-4-4 (무한 매직스플릿: 예수금 허용 한도 내 최대 10회차 지속 물타기 및 탈출)
+MARTINGALE_SCHEDULE = {
+    "KRW-SOL": [1, 1, 2, 4],  # 최대 4회차 투입 후 추가 매수 락 (홀딩)
+    "KRW-ETH": [1, 1, 2, 4, 4, 4, 4, 4, 4, 4],  # 최대 10회차(32 Units) 무한 확장
+}
 
 # 종목별 맞춤 익절 마진 (1단계 추천 적용: SOL 0.5%, ETH 0.8%)
 PROFIT_MARGINS = {

@@ -70,8 +70,12 @@ def print_status():
             mode_str = "🚀 상승장 20U 동적 스쿼드 (5/20골든크로스 + 12h적립 + 일봉종가 + 동적익절 10%->7%->5%)"
             pyramid_info = f" • 📈 스쿼드/리스크: {curr_steps}/{MAX_BULL_DCA_STEPS}회차 ({curr_steps*10000:,.0f}원) | 목표: +{active_ts_trigger*100:.0f}% ({ts_status}) | 🛡️ 긴급손절: {sl_price:,.0f}원({BULL_STOP_LOSS_PCT*100:.1f}%)"
         else:
-            mode_str = "🛡️ 하락장 마틴-매직스플릿 방어 (1-1-2-4 배수, 최대 8 Units / 개별+3% OR 바스켓 익절)"
-            pyramid_info = ""
+            if market == "KRW-SOL":
+                mode_str = "🛡️ 하락장 마틴-매직스플릿 방어 (70% 손절 인계 / 최대 4회차(8U) 홀딩 / 개별+3% OR 바스켓 익절)"
+            else:
+                mode_str = "🛡️ 하락장 마틴-매직스플릿 방어 (50% 손절 인계 / 무한 매직스플릿(최대 10회차 32U) / 개별+3% OR 바스켓 익절)"
+            curr_steps = len(tranches)
+            pyramid_info = f" • 💧 방어 차수 진행: {curr_steps}회차 누적 보유 중"
 
         print(f"\n[전략 {idx}] {s['strategy_name']} ({market})")
         print(f" • 시장 국면: {reg_str} | 현재 모드: {mode_str}")
