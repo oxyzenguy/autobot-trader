@@ -33,7 +33,8 @@ from config import (
     BULL_STOP_LOSS_PCT,
     REGIME_SWITCH_LIQUIDATION_PCT,
     MARTINGALE_SCHEDULE,
-    MARTINGALE_MAX_STEPS
+    MARTINGALE_MAX_STEPS,
+    STOP_LOSS_COOLDOWN_HOURS
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 from strategy.hybrid_regime import get_hybrid_regime_and_signals, check_magic_split_exits, check_daily_closing_buy_condition
@@ -43,6 +44,15 @@ from utils.db_logger import log_real_trade, init_db
 LAST_KRW_ALERT_TIME = 0
 KRW_ALERT_COOLDOWN_SEC = 3600  # 1시간 쿨다운 (도배 방지)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def trigger_instant_account_snapshot():
+    """매매 체결(매수/매도/손절/익절) 직후 계좌 평가액 스냅샷을 실시간 기록하여 장중 급락 누락 방지"""
+    try:
+        from utils.analytics import get_total_account_summary
+        threading.Thread(target=get_total_account_summary, daemon=True).start()
+    except Exception:
+        pass
 
 
 # --- 텔레그램 알림 헬퍼 ---
@@ -388,11 +398,16 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 pnl_rate = (current_price - avg_price) / avg_price
                 if pnl_rate <= BULL_STOP_LOSS_PCT:
                     loss_krw = (current_price - avg_price) * quantity
+                    cooldown_sec = STOP_LOSS_COOLDOWN_HOURS * 3600
+                    cooldown_until_ts = time.time() + cooldown_sec
+                    cooldown_str = datetime.fromtimestamp(cooldown_until_ts).strftime("%H:%M:%S")
+
                     msg = (
                         f"🔴 <b>[손절 체결]</b> {market} (상승장 -10% 긴급손절)\n"
                         f"• 체결가: {current_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
                         f"• 손실률: {pnl_rate * 100:.2f}%\n"
-                        f"• 실현손익: <b>{loss_krw:+,.0f}원</b>"
+                        f"• 실현손익: <b>{loss_krw:+,.0f}원</b>\n"
+                        f"🛡️ <b>[재진입 차단]</b> 추가 급락 및 뇌동매매 방지를 위해 <b>{STOP_LOSS_COOLDOWN_HOURS}시간({cooldown_str}까지) 신규 진입을 전면 차단</b>합니다."
                     )
                     print(f"\n[{market}] {msg}")
                     send_telegram_alert(msg)
@@ -413,6 +428,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         pnl=loss_krw,
                         strategy="HYBRID_TREND"
                     )
+                    trigger_instant_account_snapshot()
 
                     state["bot_quantity"] = 0.0
                     state["bot_avg_price"] = 0.0
@@ -421,9 +437,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     state["trailing_stop_active"] = False
                     state["last_dca_buy_time"] = None
                     state["initial_entry_done"] = True
+                    state["stop_loss_cooldown_until"] = cooldown_until_ts
                     save_strategy_state(market, state)
 
-                    print(f"[{market}] [INFO] 손절 완료 후 5분간 휴식 대기...")
+                    print(f"[{market}] [INFO] 손절 완료. {STOP_LOSS_COOLDOWN_HOURS}시간({cooldown_str}까지) 신규 진입 쿨다운 가동.")
                     time.sleep(300)
                     continue
 
@@ -606,21 +623,35 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                 # Case 3: 매도 완료 (또는 신규 진입) → 매도 주문 0건
                 elif num_sell == 0:
-                    print(f"\n[{time.strftime('%H:%M:%S')}] [{market}] [하락장 방어] Case 3: 매도 주문 없음 감지. 사이클 시작/재진입.")
-
                     for order in buy_orders:
                         upbit.cancel_order(order['uuid'])
                         time.sleep(0.1)
 
                     avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
                     if (quantity * current_price) < MIN_ORDER_KRW:
+                        # 1. 손절 재진입 쿨다운 검사
+                        cooldown_until = float(state.get("stop_loss_cooldown_until", 0.0))
+                        now_ts = time.time()
+                        if now_ts < cooldown_until:
+                            rem_min = int((cooldown_until - now_ts) / 60)
+                            print(f"[{market}] ⏳ [하락장 방어] 손절 후 쿨다운 대기 중 ({rem_min}분 남음). 신규 진입 차단.")
+                            time.sleep(10)
+                            continue
+
+                        # 2. 하락장 최초 1차 진입 조건: ClucMay 과매도 낙주(is_cluc_dip) 발생 시에만 진입 허용!
+                        # 과매도 신호가 없으면 100% 현금 보존 관망 (하락장 속 떨어지는 칼날 묻지마 매수 원천 차단)
+                        if signal != "MARTINGALE_BUY_DIP":
+                            print(f"[{market}] 🛡️ [하락장 관망] 현재가 200 MA 하회 중. ClucMay 과매도 낙주 신호 대기 (100% 현금 보존 관망).")
+                            time.sleep(10)
+                            continue
+
                         krw_balance = check_krw_balance_alert(upbit, context=f"{market} 1차 진입 전")
                         if krw_balance < unit_krw:
                             print(f"[{market}] [WARN] 원화 잔고 부족 ({krw_balance:,.0f}원 < 필요: {unit_krw:,.0f}원). 10초 대기.")
                             time.sleep(10)
                             continue
 
-                        print(f"[{market}]   - 1 Unit 시장가 매수 실행: {unit_krw:,} KRW")
+                        print(f"\n[{market}] 💧 [하락장 과매도 포착] ClucMay 투매 신호 감지! 1 Unit 시장가 매수 실행: {unit_krw:,} KRW")
                         prev_avail = float(upbit.get_balance(ticker) or 0.0)
                         upbit.buy_market_order(market, unit_krw)
                         time.sleep(1.5)
@@ -1100,6 +1131,16 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                 # 포지션 미보유 시: 최초 가동 즉시 10,000원 진입 또는 5/20 MA 골든크로스 신호 감시
                 else:
+                    # 1. 손절 재진입 쿨다운 검사
+                    cooldown_until = float(state.get("stop_loss_cooldown_until", 0.0))
+                    now_ts = time.time()
+                    if now_ts < cooldown_until:
+                        rem_min = int((cooldown_until - now_ts) / 60)
+                        if now_sec - last_heartbeat_time >= 1800:
+                            print(f"[{market}] ⏳ [상승 국면] 손절 후 쿨다운 대기 중 ({rem_min}분 남음). 신규 진입 차단.")
+                        time.sleep(10)
+                        continue
+
                     should_buy = False
                     buy_action = ""
                     buy_reason = ""

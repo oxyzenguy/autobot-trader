@@ -707,7 +707,10 @@ def run_backtest(df: pd.DataFrame):
         for order in new_buy_orders:
             price = order['price']
             units = order['units']
-            buy_volume_for_order = (UNIT_KRW * units) / price
+            order_cost = UNIT_KRW * units
+            if MAX_POSITION_SIZE > 0 and (current_cycle['total_cost'] + order_cost) > (config.initial_capital * MAX_POSITION_SIZE):
+                continue
+            buy_volume_for_order = order_cost / price
             simulated_open_buy_orders.append({
                 'price': price,
                 'volume': buy_volume_for_order,
@@ -720,9 +723,102 @@ def run_backtest(df: pd.DataFrame):
         cash_values.append(krw_balance)
 
     # 메인 루프
+    cooldown_candles = 0
     for index, candle in df.iloc[1:].iterrows():
         current_time = index
         high_price, low_price, close_price = candle['high'], candle['low'], candle['close']
+
+        if cooldown_candles > 0:
+            cooldown_candles -= 1
+
+        # Case 0: 손절 체크 (STOP_LOSS_PERCENT 적용: 예 -15%)
+        if current_cycle and current_cycle['total_volume'] > 0 and STOP_LOSS_PERCENT < 0:
+            avg_buy_price = current_cycle['total_cost'] / current_cycle['total_volume']
+            stop_loss_price = adjust_price_to_tick(avg_buy_price * (1 + STOP_LOSS_PERCENT))
+            if low_price <= stop_loss_price:
+                exit_price = min(candle['open'], stop_loss_price)
+                sell_volume = coin_balance
+                sell_revenue = (exit_price * sell_volume) * (1 - TRADING_FEE_RATE)
+                pnl = sell_revenue - current_cycle['total_cost']
+                pnl_percent = (pnl / current_cycle['total_cost']) * 100 if current_cycle['total_cost'] > 0 else 0
+
+                current_cycle['exit'] = {'price': exit_price, 'revenue': sell_revenue, 'time': current_time, 'reason': 'STOP_LOSS'}
+                current_cycle['pnl'] = pnl
+                current_cycle['pnl_percent'] = pnl_percent
+                current_cycle['is_win'] = False
+                completed_cycles.append(current_cycle)
+
+                krw_balance += sell_revenue
+                coin_balance = 0
+                total_actions += 1
+
+                current_cycle = None
+                simulated_open_sell_orders.clear()
+                simulated_open_buy_orders.clear()
+                cooldown_candles = 2  # 2시간(2캔들) 재진입 쿨다운
+
+                current_equity = krw_balance + (coin_balance * close_price)
+                equity_times.append(current_time)
+                equity_values.append(current_equity)
+                cash_times.append(current_time)
+                cash_values.append(krw_balance)
+                continue
+
+        # 포지션이 없고 쿨다운 만료 시 신규 사이클 시작
+        if current_cycle is None:
+            if cooldown_candles == 0 and krw_balance >= 5000:
+                buy_funds = UNIT_KRW
+                buy_cost_needed = buy_funds * (1 + TRADING_FEE_RATE)
+                if krw_balance < buy_cost_needed:
+                    buy_funds = krw_balance / (1 + TRADING_FEE_RATE)
+                if buy_funds >= 5000:
+                    buy_price = close_price
+                    buy_volume = buy_funds / buy_price
+                    buy_cost = buy_funds * (1 + TRADING_FEE_RATE)
+
+                    krw_balance -= buy_cost
+                    coin_balance += buy_volume
+
+                    current_cycle = {
+                        'id': len(completed_cycles) + 1,
+                        'entries': [{
+                            'type': 'market_buy_reentry',
+                            'price': buy_price,
+                            'volume': buy_volume,
+                            'cost': buy_cost,
+                            'time': current_time,
+                            'units': 1
+                        }],
+                        'total_cost': buy_cost,
+                        'total_volume': buy_volume,
+                        'start_time': current_time
+                    }
+                    total_actions += 1
+
+                    avg_buy_price = current_cycle['total_cost'] / current_cycle['total_volume']
+                    sell_price = adjust_price_to_tick(avg_buy_price * SELL_PROFIT_MARGIN)
+                    simulated_open_sell_orders = [{'price': sell_price, 'volume': coin_balance}]
+
+                    new_buy_orders = calculate_new_buy_prices(avg_buy_price, existing_orders=None)
+                    simulated_open_buy_orders = []
+                    for order in new_buy_orders:
+                        price = order['price']
+                        units = order['units']
+                        order_cost = UNIT_KRW * units
+                        if MAX_POSITION_SIZE > 0 and (current_cycle['total_cost'] + order_cost) > (config.initial_capital * MAX_POSITION_SIZE):
+                            continue
+                        buy_volume_for_order = order_cost / price
+                        simulated_open_buy_orders.append({
+                            'price': price,
+                            'volume': buy_volume_for_order,
+                            'units': units
+                        })
+            current_equity = krw_balance + (coin_balance * close_price)
+            equity_times.append(current_time)
+            equity_values.append(current_equity)
+            cash_times.append(current_time)
+            cash_values.append(krw_balance)
+            continue
 
         # Case3: 매도 체결
         if current_cycle and simulated_open_sell_orders and high_price >= simulated_open_sell_orders[0]['price']:
@@ -798,7 +894,10 @@ def run_backtest(df: pd.DataFrame):
             for order in new_buy_orders:
                 price = order['price']
                 units = order['units']
-                buy_volume_for_order = (UNIT_KRW * units) / price
+                order_cost = UNIT_KRW * units
+                if MAX_POSITION_SIZE > 0 and (current_cycle['total_cost'] + order_cost) > (config.initial_capital * MAX_POSITION_SIZE):
+                    continue
+                buy_volume_for_order = order_cost / price
                 simulated_open_buy_orders.append({
                     'price': price,
                     'volume': buy_volume_for_order,
@@ -816,6 +915,10 @@ def run_backtest(df: pd.DataFrame):
                 buy_volume = order['volume']
                 units = order['units']
                 buy_cost = (buy_price * buy_volume) * (1 + TRADING_FEE_RATE)
+
+                # MAX_POSITION_SIZE 초과 방지
+                if MAX_POSITION_SIZE > 0 and (current_cycle['total_cost'] + buy_cost) > (config.initial_capital * MAX_POSITION_SIZE):
+                    continue
 
                 if krw_balance < buy_cost:
                     continue
@@ -849,7 +952,10 @@ def run_backtest(df: pd.DataFrame):
                 for order in new_buy_orders:
                     price = order['price']
                     units = order['units']
-                    buy_volume_for_order = (UNIT_KRW * units) / price
+                    order_cost = UNIT_KRW * units
+                    if MAX_POSITION_SIZE > 0 and (current_cycle['total_cost'] + order_cost) > (config.initial_capital * MAX_POSITION_SIZE):
+                        continue
+                    buy_volume_for_order = order_cost / price
                     simulated_open_buy_orders.append({
                         'price': price,
                         'volume': buy_volume_for_order,

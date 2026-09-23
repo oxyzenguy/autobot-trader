@@ -27,6 +27,7 @@ BASE_URL = "https://api.upbit.com"
 MIN_ORDER_KRW = 5000          # 업비트 최소 주문 금액 (5,000원)
 STOP_LOSS_PERCENT = -0.10     # 평단가 대비 -10.0% 손절선
 BULL_STOP_LOSS_PCT = -0.10    # 상승장 평단가 대비 -10.0% 긴급 손절선 (추세 청산 없이 -10% 최후 방어)
+STOP_LOSS_COOLDOWN_HOURS = 2  # 손절 후 재진입 방지 쿨다운 시간 (2시간 동안 신규 진입 전면 차단)
 FEE_RATE = 0.0005             # 0.05% 수수료율
 MIN_KRW_ALERT_THRESHOLD = 100_000  # 예수금 10만원 이하 알림 기준 (100,000원)
 

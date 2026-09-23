@@ -178,10 +178,12 @@ def log_real_trade(
     conn.commit()
     conn.close()
 
-    # 체결 즉시 비동기로 최신 스냅샷 클라우드 동기화 트리거
+    # 체결 즉시 비동기로 계좌 스냅샷 기록 및 클라우드 동기화 트리거 (장중 급락 누락 방지)
     try:
         import threading
+        from utils.analytics import get_total_account_summary
         from utils.sync_manager import push_snapshot_to_cloud
+        threading.Thread(target=get_total_account_summary, daemon=True).start()
         threading.Thread(target=push_snapshot_to_cloud, daemon=True).start()
     except Exception:
         pass
