@@ -32,8 +32,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 def get_latest_trade_signature() -> str:
     """
     매매 체결 및 주문 상태 변경을 초경량으로 감지하기 위한 시그니처 생성
-    1) trade_history.db의 trades 테이블 레코드 수 및 최신 ID
-    2) real_strategy_state_{market}.json 파일들의 최종 수정 시각
+    1) trade_history.db의 trades 테이블 레코드 수 및 최신 ID (실제 체결 여부)
+    2) real_strategy_state_{market}.json 핵심 상태(수량, 평단, 차수 수, 사이클 수)
+       - 파일 수정 시각(mtime) 대신 실제 데이터 변경 여부만 확인하여 허위 알림 방지
     """
     db_sig = "0_0"
     try:
@@ -53,8 +54,14 @@ def get_latest_trade_signature() -> str:
         s_file = os.path.join(BASE_DIR, f"real_strategy_state_{m.replace('-', '_')}.json")
         if os.path.exists(s_file):
             try:
-                mtime = os.path.getmtime(s_file)
-                state_sig.append(f"{m}:{mtime:.1f}")
+                with open(s_file, "r", encoding="utf-8") as f:
+                    s_data = json.load(f)
+                    bot_q = s_data.get("bot_quantity", 0.0)
+                    bot_avg = s_data.get("bot_avg_price", 0.0)
+                    num_tranches = len(s_data.get("tranches", []))
+                    cycles = s_data.get("completed_cycles", 0)
+                    mode = s_data.get("active_mode", "")
+                    state_sig.append(f"{m}:{bot_q:.6f}_{bot_avg:.0f}_{num_tranches}_{cycles}_{mode}")
             except Exception:
                 pass
 

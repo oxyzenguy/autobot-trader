@@ -88,12 +88,18 @@ def load_strategy_state(market: str) -> dict:
     }
 
 
+_last_saved_state_strings = {}
+
 def save_strategy_state(market: str, state: dict):
-    """실전 매매 상태 영속 저장"""
+    """실전 매매 상태 영속 저장 (내용이 실제로 변경되었을 때만 디스크 쓰기)"""
     path = get_state_file_path(market)
     try:
+        new_content = json.dumps(state, indent=2, ensure_ascii=False)
+        if _last_saved_state_strings.get(market) == new_content:
+            return
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2, ensure_ascii=False)
+            f.write(new_content)
+        _last_saved_state_strings[market] = new_content
     except Exception as e:
         print(f"[{market}] 상태 파일 저장 실패: {e}")
 
