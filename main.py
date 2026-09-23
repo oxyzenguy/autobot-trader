@@ -1273,6 +1273,56 @@ def telegram_hourly_briefing_worker():
         time.sleep(30)
 
 
+def telegram_command_listener_worker():
+    """
+    사용자가 텔레그램 채팅창에서 '/status', '/상태', '상태', '/현황' 등을 입력했을 때
+    실시간으로 현재 상태 브리핑을 즉시 답장해주는 양방향 리스너 워커
+    """
+    import requests
+    from utils.bot import TOKEN, CHAT_ID
+    if not TOKEN or not CHAT_ID:
+        return
+
+    print("[INFO] 텔레그램 수동 명령어 리스너 가동 (/status, /상태, /현황, /잔고 등 지원)")
+    offset = None
+
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+            params = {"timeout": 15}
+            if offset is not None:
+                params["offset"] = offset
+
+            resp = requests.get(url, params=params, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+                        msg = update.get("message", {})
+                        from_chat_id = str(msg.get("chat", {}).get("id", ""))
+                        text = msg.get("text", "").strip()
+
+                        # 보안: 지정된 CHAT_ID에서 온 메시지만 처리
+                        if from_chat_id != str(CHAT_ID):
+                            continue
+
+                        cmd = text.lower()
+                        if cmd in ["/status", "/상태", "상태", "/현황", "현황", "/잔고", "잔고", "/check"]:
+                            send_telegram_status_briefing()
+                        elif cmd in ["/start", "/help", "도움말"]:
+                            help_msg = (
+                                "🤖 <b>[AutoBot 수동 확인 명령어]</b>\n\n"
+                                "• <code>/상태</code> 또는 <code>/status</code>: 실시간 전체 계좌 및 코인별 봇 상태 즉시 확인\n"
+                                "• 정기 브리핑: 오전 8시 ~ 오후 8시 매시 1시간 간격 자동 발송 중"
+                            )
+                            send_telegram_alert(help_msg)
+        except Exception as e:
+            time.sleep(3)
+
+        time.sleep(1)
+
+
 # --- 봇 단일 실행 핸들러 ---
 def start_bot(market: str):
     """실전 매매 봇 실행"""
@@ -1313,6 +1363,13 @@ if __name__ == "__main__":
         t_brief.start()
     except Exception as e:
         print(f"[WARN] 텔레그램 정기 브리핑 스레드 초기화 실패: {e}")
+
+    # 텔레그램 수동 명령어 리스너 스레드 가동 (/상태, /status 등 실시간 응답)
+    try:
+        t_cmd = threading.Thread(target=telegram_command_listener_worker, daemon=True, name="TelegramCommandThread")
+        t_cmd.start()
+    except Exception as e:
+        print(f"[WARN] 텔레그램 명령어 리스너 스레드 초기화 실패: {e}")
 
     if len(target_markets) == 1:
         start_bot(target_markets[0])
