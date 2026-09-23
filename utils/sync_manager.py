@@ -22,6 +22,8 @@ SYNC_ISSUE_TITLE = "[AutoBot] Realtime Data Sync"
 # 캐시된 Issue 번호 (매번 목록 검색 방지)
 _CACHED_ISSUE_NUMBER = None
 _BG_THREAD_STARTED = False
+_SYNC_LOCK = threading.Lock()
+_SYNC_EVENT = threading.Event()
 
 
 def get_sync_credentials() -> Tuple[Optional[str], Optional[str], str]:
@@ -93,11 +95,13 @@ def decrypt_payload(ciphertext_str: str, secret_key: Optional[str] = None) -> Di
     return json.loads(decrypted_bytes.decode("utf-8"))
 
 
-def create_dashboard_snapshot() -> Dict[str, Any]:
+def create_dashboard_snapshot(account_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     현재 계좌 요약과 모든 전략의 실시간 성과를 직렬화 가능한 스냅샷으로 생성합니다.
+    account_data가 제공되면 중복 조회를 방지하기 위해 이를 재사용합니다.
     """
-    account_data = get_total_account_summary()
+    if account_data is None:
+        account_data = get_total_account_summary()
     active_strategies = get_all_active_strategies()
 
     # DataFrame을 직렬화 가능한 dict 리스트로 변환
@@ -185,48 +189,49 @@ def _get_or_create_sync_issue(repo: str, token: str) -> Optional[int]:
     return None
 
 
-def push_snapshot_to_cloud(snapshot: Optional[Dict[str, Any]] = None) -> bool:
+def push_snapshot_to_cloud(snapshot: Optional[Dict[str, Any]] = None, account_data: Optional[Dict[str, Any]] = None) -> bool:
     """
     현재 스냅샷을 생성하여 로컬 파일에 저장하고, GitHub Issue에 암호화하여 푸시합니다.
     """
-    try:
-        if snapshot is None:
-            snapshot = create_dashboard_snapshot()
+    with _SYNC_LOCK:
+        try:
+            if snapshot is None:
+                snapshot = create_dashboard_snapshot(account_data=account_data)
 
-        # 1. 로컬 저장 (백업 및 로컬 오프라인 뷰어용)
-        save_local_snapshot(snapshot)
+            # 1. 로컬 저장 (백업 및 로컬 오프라인 뷰어용)
+            save_local_snapshot(snapshot)
 
-        # 2. 자격증명 확인
-        secret_key, gh_token, gh_repo = get_sync_credentials()
-        if not secret_key or not gh_token:
-            print("[SYNC] SYNC_SECRET_KEY 또는 GITHUB_TOKEN 부재로 클라우드 푸시를 건너뜁니다.")
+            # 2. 자격증명 확인
+            secret_key, gh_token, gh_repo = get_sync_credentials()
+            if not secret_key or not gh_token:
+                print("[SYNC] SYNC_SECRET_KEY 또는 GITHUB_TOKEN 부재로 클라우드 푸시를 건너뜁니다.")
+                return False
+
+            # 3. 페이로드 암호화
+            encrypted_token = encrypt_payload(snapshot, secret_key)
+
+            # 4. GitHub Issue 조회/생성
+            issue_num = _get_or_create_sync_issue(gh_repo, gh_token)
+            if not issue_num:
+                return False
+
+            # 5. Issue 본문 덮어쓰기 (PATCH) - 커밋 미생성
+            headers = {
+                "Authorization": f"token {gh_token}",
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "AutoBot-Sync"
+            }
+            patch_url = f"https://api.github.com/repos/{gh_repo}/issues/{issue_num}"
+            patch_resp = requests.patch(patch_url, headers=headers, json={"body": encrypted_token}, timeout=10)
+
+            if patch_resp.status_code == 200:
+                return True
+            else:
+                print(f"[WARN] 클라우드 동기화 실패 ({patch_resp.status_code}): {patch_resp.text[:200]}")
+                return False
+        except Exception as e:
+            print(f"[WARN] push_snapshot_to_cloud 예외 발생: {e}")
             return False
-
-        # 3. 페이로드 암호화
-        encrypted_token = encrypt_payload(snapshot, secret_key)
-
-        # 4. GitHub Issue 조회/생성
-        issue_num = _get_or_create_sync_issue(gh_repo, gh_token)
-        if not issue_num:
-            return False
-
-        # 5. Issue 본문 덮어쓰기 (PATCH) - 커밋 미생성
-        headers = {
-            "Authorization": f"token {gh_token}",
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "AutoBot-Sync"
-        }
-        patch_url = f"https://api.github.com/repos/{gh_repo}/issues/{issue_num}"
-        patch_resp = requests.patch(patch_url, headers=headers, json={"body": encrypted_token}, timeout=10)
-
-        if patch_resp.status_code == 200:
-            return True
-        else:
-            print(f"[WARN] 클라우드 동기화 실패 ({patch_resp.status_code}): {patch_resp.text[:200]}")
-            return False
-    except Exception as e:
-        print(f"[WARN] push_snapshot_to_cloud 예외 발생: {e}")
-        return False
 
 
 def fetch_snapshot_from_cloud() -> Tuple[Optional[Dict[str, Any]], str]:
@@ -287,9 +292,28 @@ def fetch_snapshot_from_cloud() -> Tuple[Optional[Dict[str, Any]], str]:
         return None, f"동기화 데이터 복호화 실패: {e}"
 
 
+def trigger_snapshot_sync():
+    """
+    실거래 체결(매수/매도/손절/익절) 이벤트 발생 시 즉시 계좌 스냅샷 및 클라우드 동기화를 트리거합니다.
+    백그라운드 스레드가 가동 중이면 이벤트를 신호(_SYNC_EVENT)로 전달하여,
+    체결이 몰릴 때 발생하는 중복 스레드 생성과 API 과다 호출을 단일 루프로 병합(coalesce) 처리합니다.
+    """
+    global _BG_THREAD_STARTED
+    if _BG_THREAD_STARTED:
+        _SYNC_EVENT.set()
+    else:
+        # 백그라운드 스레드가 없는 환경(단독 테스트 등) 안전 폴백
+        def _fallback():
+            if _SYNC_LOCK.locked():
+                return
+            push_snapshot_to_cloud()
+        threading.Thread(target=_fallback, daemon=True).start()
+
+
 def start_background_sync_thread(interval_sec: int = 30):
     """
     자동매매 봇 내부에서 백그라운드 스레드로 주기적 스냅샷 동기화를 실행합니다.
+    실거래 이벤트 수신 시 즉시 깨어나며 연쇄 체결은 1초 디바운스로 병합 처리합니다.
     """
     global _BG_THREAD_STARTED
     if _BG_THREAD_STARTED:
@@ -304,7 +328,13 @@ def start_background_sync_thread(interval_sec: int = 30):
 
         while True:
             try:
-                time.sleep(interval_sec)
+                # interval_sec 동안 대기하되, 실거래 체결 이벤트(_SYNC_EVENT) 수신 시 즉시 깨어남
+                triggered = _SYNC_EVENT.wait(timeout=interval_sec)
+                if triggered:
+                    # 연쇄 거래 발생 시 API 호출 폭주 방지용 1초 디바운스 병합
+                    time.sleep(1.0)
+                    _SYNC_EVENT.clear()
+
                 push_snapshot_to_cloud()
             except Exception as e:
                 print(f"[WARN] 동기화 루프 오류: {e}")

@@ -47,10 +47,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def trigger_instant_account_snapshot():
-    """매매 체결(매수/매도/손절/익절) 직후 계좌 평가액 스냅샷을 실시간 기록하여 장중 급락 누락 방지"""
+    """매매 체결(매수/매도/손절/익절) 직후 계좌 평가액 스냅샷 및 동기화 트리거 (호환용)"""
     try:
-        from utils.analytics import get_total_account_summary
-        threading.Thread(target=get_total_account_summary, daemon=True).start()
+        from utils.sync_manager import trigger_snapshot_sync
+        trigger_snapshot_sync()
     except Exception:
         pass
 
@@ -470,7 +470,6 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         pnl=loss_krw,
                         strategy="HYBRID_TREND"
                     )
-                    trigger_instant_account_snapshot()
 
                     state["bot_quantity"] = 0.0
                     state["bot_avg_price"] = 0.0

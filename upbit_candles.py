@@ -89,9 +89,131 @@ def collect_multiple_months(market='KRW-BTC', start_year=2024, start_month=1,
             temp = date(temp.year, temp.month + 1, 1)
     
     print(f"\n{'='*60}")
-    print(f"총 {len(months)}개월 수집 시작")
+    print(f"총 {len(months)}개월 수집 시작 ({market})")
     print(f"{'='*60}\n")
     
     for idx, (year, month) in enumerate(months, 1):
         print(f"[{idx}/{len(months)}] {year}년 {month}월")
-        print("-
+        print("-" * 60)
+        
+        df = collect_monthly_minute_candles(market, year, month)
+        
+        yyyymm = f"{year}{month:02d}"
+        results[yyyymm] = df
+        
+        if not df.empty:
+            filename = f"{yyyymm}_{market.replace('-', '_')}_1min.csv"
+            
+            # CSV 저장 시 인덱스(시간) 포함
+            df_save = df.reset_index()
+            df_save.rename(columns={'index': 'candle_date_time_kst'}, inplace=True)
+            df_save.to_csv(filename, index=False, encoding='utf-8-sig')
+            
+            print(f"💾 {filename}\n")
+        
+        if idx < len(months):
+            print("⏳ 다음 월까지 3초 대기...\n")
+            time.sleep(3)
+    
+    return results
+
+
+def merge_monthly_files(market='KRW-BTC', start_year=2024, start_month=1,
+                       end_year=2025, end_month=9):
+    """월별 파일 병합"""
+    all_dfs = []
+    current = date(start_year, start_month, 1)
+    end_date = date(end_year, end_month, 1)
+    
+    print("\n" + "="*60)
+    print(f"🔗 월별 파일 병합 ({market})")
+    print("="*60)
+    
+    while current <= end_date:
+        yyyymm = f"{current.year}{current.month:02d}"
+        filename = f"{yyyymm}_{market.replace('-', '_')}_1min.csv"
+        
+        try:
+            df = pd.read_csv(filename)
+            all_dfs.append(df)
+            print(f"✓ {filename}: {len(df):,}개")
+        except Exception:
+            print(f"✗ {filename}: 파일 없음")
+        
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+    
+    if all_dfs:
+        merged = pd.concat(all_dfs, ignore_index=True)
+        merged = merged.drop_duplicates(subset=['candle_date_time_kst'], keep='first')
+        merged = merged.sort_values('candle_date_time_kst').reset_index(drop=True)
+        print(f"\n✓ 병합 완료: {len(merged):,}개")
+        return merged
+    
+    return pd.DataFrame()
+
+
+if __name__ == '__main__':
+    # pyupbit 설치 확인
+    try:
+        import pyupbit
+        print("✓ pyupbit 라이브러리 로드 성공\n")
+    except ImportError:
+        print("❌ pyupbit 라이브러리가 설치되지 않았습니다.")
+        print("설치 명령: pip install pyupbit\n")
+        exit(1)
+
+    parser = argparse.ArgumentParser(description="업비트 분봉 데이터 수집기")
+    parser.add_argument("--market", type=str, default="KRW-BTC", help="대상 마켓 (기본값: KRW-BTC, 예: KRW-ETH, KRW-SOL)")
+    parser.add_argument("--start-year", type=int, default=2024, help="시작 연도 (기본값: 2024)")
+    parser.add_argument("--start-month", type=int, default=1, help="시작 월 (기본값: 1)")
+    parser.add_argument("--end-year", type=int, default=2025, help="종료 연도 (기본값: 2025)")
+    parser.add_argument("--end-month", type=int, default=9, help="종료 월 (기본값: 9)")
+    args = parser.parse_args()
+
+    market = args.market
+    start_year = args.start_year
+    start_month = args.start_month
+    end_year = args.end_year
+    end_month = args.end_month
+
+    # 수집 시작
+    results = collect_multiple_months(
+        market=market,
+        start_year=start_year,
+        start_month=start_month,
+        end_year=end_year,
+        end_month=end_month
+    )
+    
+    # 통계
+    print("\n" + "="*60)
+    print("📊 수집 통계")
+    print("="*60)
+    total = 0
+    for ym, df in results.items():
+        cnt = len(df)
+        total += cnt
+        print(f"{ym}: {cnt:,}개" if cnt > 0 else f"{ym}: 없음")
+    print(f"\n총계: {total:,}개")
+    
+    # 병합
+    if total > 0:
+        merged = merge_monthly_files(market, start_year, start_month, end_year, end_month)
+        
+        if not merged.empty:
+            start_str = f"{start_year}{start_month:02d}"
+            end_str = f"{end_year}{end_month:02d}"
+            filename = f"{start_str}_{end_str}_{market.replace('-', '_')}_merged.csv"
+            merged.to_csv(filename, index=False, encoding='utf-8-sig')
+            print(f"\n💾 최종 파일: {filename}")
+            
+            first = merged.iloc[0]['candle_date_time_kst']
+            last = merged.iloc[-1]['candle_date_time_kst']
+            print(f"📅 기간: {first} ~ {last}")
+    
+    print("\n" + "="*60)
+    print("✅ 모든 작업 완료")
+    print("="*60)
