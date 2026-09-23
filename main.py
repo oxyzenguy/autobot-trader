@@ -32,7 +32,8 @@ from config import (
     MARTINGALE_MULTIPLIERS,
     BULL_STOP_LOSS_PCT,
     REGIME_SWITCH_LIQUIDATION_PCT,
-    MARTINGALE_SCHEDULE
+    MARTINGALE_SCHEDULE,
+    MARTINGALE_MAX_STEPS
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 from strategy.hybrid_regime import get_hybrid_regime_and_signals, check_magic_split_exits, check_daily_closing_buy_condition
@@ -586,13 +587,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                 # A-2. 마틴게일 상태 머신 (주문 등록 및 물타기)
                 martingale_sched = MARTINGALE_SCHEDULE.get(market, MARTINGALE_MULTIPLIERS)
-                max_steps = len(martingale_sched)
+                max_steps = MARTINGALE_MAX_STEPS.get(market, 16 if market == "KRW-SOL" else 9999)
                 current_steps = len(state.get("tranches", []))
-                expected_open_buys = max(0, max_steps - current_steps)
+                expected_open_buys = max(0, min(3, max_steps - current_steps))
 
-                # SOL 4회차 등 최대 차수 도달 시 잔여 매수 주문 자동 취소 및 홀딩 관리
+                # SOL 4개 스쿼드(16차수) 등 최대 차수 도달 시 잔여 매수 주문 자동 취소 및 홀딩 관리
                 if current_steps >= max_steps and num_buy > 0:
-                    print(f"[{market}] 🛑 마틴게일 최대 차수({max_steps}차수 / {sum(martingale_sched)}U) 도달로 잔여 매수 주문 {num_buy}건 취소.")
+                    print(f"[{market}] 🛑 마틴게일 최대 차수({max_steps}차수 / 4개 스쿼드 32U) 도달로 잔여 매수 주문 {num_buy}건 취소.")
                     for order in buy_orders:
                         upbit.cancel_order(order['uuid'])
                         time.sleep(0.1)
@@ -698,13 +699,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         print(f"[{market}]     - 지정가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
                         time.sleep(0.2)
 
-                    sched_label = f"최대 {max_steps}차수 총 {sum(martingale_sched)}U" + (" (4차 캡 후 홀딩)" if market == "KRW-SOL" else " (무한 매직스플릿)")
+                    sched_label = "4개 스쿼드 (16차수 / 32U 캡 후 홀딩)" if market == "KRW-SOL" else "1-1-2-4 무제한 순환 스쿼드"
                     send_telegram_alert(
                         f"🛡️ <b>[하락장 마틴-매직스플릿 방어 시작]</b> {market}\n"
                         f"진입가: {avg_price:,.0f}원 | 수량: {quantity:.6f}\n"
                         f"바스켓 익절가: {sell_price:,.0f}원 (+{(sell_profit_margin - 1) * 100:.2f}%)\n"
                         f"개별 차수 목표: 매수가 대비 +{MAGIC_SPLIT_TRANCHE_PROFIT*100:.1f}%\n"
-                        f"마틴게일 물타기 ({len(new_orders)}단계 예약 / {sched_label})"
+                        f"스쿼드 물타기 ({len(new_orders)}단계 예약 / {sched_label})"
                     )
 
                 # Case 4: 물타기 매수 체결 감지
@@ -745,7 +746,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                     # 추가 차수 등록 (체결된 해당 차수의 순수 매수 수량 기록)
                     step_idx = len(state.get("tranches", []))
-                    assigned_units = martingale_sched[min(step_idx, len(martingale_sched) - 1)]
+                    assigned_units = martingale_sched[step_idx % len(martingale_sched)]
                     state.setdefault("tranches", []).append({
                         "step": step_idx,
                         "units": assigned_units,
@@ -755,10 +756,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     })
                     save_strategy_state(market, state)
 
-                    # 추가 매수 주문 계획 (최대 max_steps 차수 / 총 sum(martingale_sched) Units 제한)
+                    # 추가 매수 주문 계획 (최대 max_steps 차수 제한)
                     current_total_steps = len(state.get("tranches", [])) + len(buy_orders)
                     if current_total_steps >= max_steps:
-                        print(f"[{market}]   - 마틴게일 최대 차수({max_steps}차수 / 총 {sum(martingale_sched)} Units) 도달: 추가 물타기 매수 생략.")
+                        print(f"[{market}]   - 마틴게일 최대 차수({max_steps}차수) 도달: 추가 물타기 매수 생략.")
                         additional_orders = []
                     else:
                         buy_order_details = [{'price': float(o['price']), 'units': 1} for o in buy_orders]
@@ -784,11 +785,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         print(f"[{market}]     - 추가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
                         time.sleep(0.2)
 
+                    max_steps_str = f"{max_steps}차수" if max_steps < 900 else "무제한"
                     send_telegram_alert(
                         f"💧 <b>[물타기 체결 후 포지션 재조정]</b> {market}\n"
                         f"새 평단가: {avg_price:,.0f}원 | 총 보유수량: {quantity:.6f}\n"
                         f"새 바스켓 익절가: {sell_price:,.0f}원\n"
-                        f"누적 차수: {len(state['tranches'])}/{max_steps}개 | 추가 매수 {len(additional_orders)}건 등록"
+                        f"누적 차수: {len(state['tranches'])}/{max_steps_str} | 추가 매수 {len(additional_orders)}건 등록"
                     )
 
             # =========================================================================

@@ -92,7 +92,7 @@ def calculate_new_buy_prices(
             cum_factor *= down_factor
             target_p = adjust_price_to_tick(avg_buy_price * cum_factor, method="floor")
             step_idx = start_step + s - 1
-            unit_mult = multipliers[step_idx] if step_idx < len(multipliers) else multipliers[-1]
+            unit_mult = multipliers[step_idx % len(multipliers)]
             orders.append({
                 'price': target_p,
                 'units': unit_mult
@@ -112,7 +112,7 @@ def calculate_new_buy_prices(
         current_units = lowest_order.get('units', 1)
 
         next_idx = current_step + num_existing
-        next_units = multipliers[next_idx] if next_idx < len(multipliers) else multipliers[-1]
+        next_units = multipliers[next_idx % len(multipliers)]
 
         orders = [
             {
@@ -128,9 +128,9 @@ def calculate_new_buy_prices(
         base_price = base_order['price']
 
         next_idx_1 = current_step + num_existing
-        next_units_1 = multipliers[next_idx_1] if next_idx_1 < len(multipliers) else multipliers[-1]
+        next_units_1 = multipliers[next_idx_1 % len(multipliers)]
         next_idx_2 = next_idx_1 + 1
-        next_units_2 = multipliers[next_idx_2] if next_idx_2 < len(multipliers) else multipliers[-1]
+        next_units_2 = multipliers[next_idx_2 % len(multipliers)]
 
         orders = [
             {
@@ -146,6 +146,6 @@ def calculate_new_buy_prices(
 
     # 예외 상황 fallback
     next_idx = current_step + num_existing
-    fallback_units = multipliers[next_idx] if next_idx < len(multipliers) else multipliers[-1]
+    fallback_units = multipliers[next_idx % len(multipliers)]
     return [{'price': adjust_price_to_tick(avg_buy_price * 0.96, method="floor"), 'units': fallback_units}][:allowed_new]
 

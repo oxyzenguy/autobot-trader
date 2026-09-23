@@ -510,9 +510,9 @@ else:
             mode_desc = "🚀 5/20 MA 추세추종 (12h 정기적립 + 동적 트레일링 익절)"
         else:
             if market == "KRW-SOL":
-                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (70% 손절 인계 / 최대 4차(8U) 캡 홀딩)"
+                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (70% 손절 인계 / 4개 스쿼드(16차 32U) 캡 홀딩)"
             else:
-                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (50% 손절 인계 / 무한 매직스플릿 32U)"
+                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (50% 손절 인계 / 1-1-2-4 무제한 순환 스쿼드)"
 
         target_base_p = strat.get("bot_avg_price", 0.0) if strat.get("bot_avg_price", 0.0) > 0 else avg_p
         basket_target_p = target_base_p * strat["profit_margin"] if target_base_p > 0 else 0.0
@@ -546,10 +546,10 @@ else:
             """
         else:
             if market == "KRW-SOL":
-                martingale_desc = "1-1-2-4 배수 (최대 4차수 / 8U 홀딩 캡)"
+                martingale_desc = "1-1-2-4 배수 x 4 (최대 16차수 / 32U 홀딩 캡)"
                 regime_handover_desc = "200 MA 하향 돌파 시 70% 손절 후 30% 방어 인계"
             else:
-                martingale_desc = "1-1-2-4-4... 배수 (최대 10차수 / 32U 무한 확장)"
+                martingale_desc = "1-1-2-4 배수 무제한 순환 (예수금 한도 내 무한 확장)"
                 regime_handover_desc = "200 MA 하향 돌파 시 50% 손절 후 50% 방어 인계"
 
             sub_info_html = f"""
