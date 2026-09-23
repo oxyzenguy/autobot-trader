@@ -174,10 +174,11 @@ def get_total_account_summary() -> Dict[str, Any]:
     unrealized_pnl = total_coin_eval - total_coin_cost
     coin_pnl_pct = (unrealized_pnl / total_coin_cost * 100.0) if total_coin_cost > 0 else 0.0
 
-    # 비중(weight) 계산
+    # 비중(weight) 계산 및 정렬 (우선순위: 1. BTC, 2. ETH, 3. SOL)
     for c in coins_list:
         c["weight_pct"] = (c["eval_amount"] / total_equity * 100.0) if total_equity > 0 else 0.0
-    coins_list.sort(key=lambda x: x["eval_amount"], reverse=True)
+    priority_map = {"BTC": 1, "ETH": 2, "SOL": 3}
+    coins_list.sort(key=lambda x: (priority_map.get(x["currency"], 99), -x["eval_amount"]))
 
     # 2. 기준점(Base) 대비 계좌 순수익률
     base_data = init_or_load_account_base()
@@ -284,9 +285,6 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
             print(f"[{market}] 미체결 주문 조회 실패: {e}")
 
     # 2-1. 하이브리드 국면 및 런타임 상태 로드
-    from strategy.hybrid_regime import get_hybrid_regime_and_signals
-    regime_info = get_hybrid_regime_and_signals(market)
-
     state_file = os.path.join(BASE_DIR, f"real_strategy_state_{market.replace('-', '_')}.json")
     runtime_state = {}
     if os.path.exists(state_file):
@@ -296,16 +294,50 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
         except Exception:
             pass
 
-    # 2-2. 봇 전용 독립 포지션 계산 (기존 보유 자산 완전 격리/보호)
-    protected_quantity = float(PROTECTED_BALANCES.get(market, 0.0))
-    bot_quantity = float(runtime_state.get("bot_quantity", 0.0))
-    bot_avg_price = float(runtime_state.get("bot_avg_price", 0.0))
-    if current_price <= 0:
-        current_price = bot_avg_price if bot_avg_price > 0 else avg_price
-    bot_eval = bot_quantity * current_price
-    bot_cost = bot_quantity * bot_avg_price
-    bot_unrealized_pnl = bot_eval - bot_cost
-    bot_pnl_pct = (bot_unrealized_pnl / bot_cost * 100.0) if bot_cost > 0 else 0.0
+    if market == "KRW-BTC":
+        from strategy.btc_accumulator import check_btc_tiered_status
+        btc_stat = check_btc_tiered_status(upbit)
+        regime_info = {
+            "is_bull": (not btc_stat["is_below_ma200"]),
+            "regime": "BULL" if not btc_stat["is_below_ma200"] else "BEAR",
+            "regime_korean": "200일선 상회" if not btc_stat["is_below_ma200"] else "200일선 하회 (하락 세일)",
+            "ma200": btc_stat["ma200"],
+            "ma5": btc_stat["account_avg_price"],
+            "ma20": btc_stat["current_price"],
+            "distance_ma200_pct": btc_stat["dist_ma200_pct"],
+            "signal": btc_stat["tier_name"],
+            "reason": btc_stat["tier_reason"],
+            "tier": btc_stat["tier"],
+            "buy_krw": btc_stat["buy_krw"],
+            "today_status": runtime_state.get("today_status", "대기"),
+            "is_below_avg": btc_stat["is_below_avg"],
+            "is_below_ma200": btc_stat["is_below_ma200"],
+            "dist_avg_pct": btc_stat["dist_avg_pct"],
+            "upbit_dca_schedule": btc_stat["upbit_dca_schedule"],
+            "bot_dca_schedule": btc_stat["bot_dca_schedule"]
+        }
+        # BTC는 사용자 요청에 따라 '기존 잔고 포함' 전체 계좌 잔고를 기준으로 모니터링
+        protected_quantity = 0.0
+        bot_quantity = total_coin_balance
+        bot_avg_price = avg_price
+        bot_eval = eval_amount
+        bot_cost = cost_amount
+        bot_unrealized_pnl = unrealized_pnl
+        bot_pnl_pct = unrealized_pnl_pct
+    else:
+        from strategy.hybrid_regime import get_hybrid_regime_and_signals
+        regime_info = get_hybrid_regime_and_signals(market)
+
+        # 2-2. 봇 전용 독립 포지션 계산 (기존 보유 자산 완전 격리/보호)
+        protected_quantity = float(PROTECTED_BALANCES.get(market, 0.0))
+        bot_quantity = float(runtime_state.get("bot_quantity", 0.0))
+        bot_avg_price = float(runtime_state.get("bot_avg_price", 0.0))
+        if current_price <= 0:
+            current_price = bot_avg_price if bot_avg_price > 0 else avg_price
+        bot_eval = bot_quantity * current_price
+        bot_cost = bot_quantity * bot_avg_price
+        bot_unrealized_pnl = bot_eval - bot_cost
+        bot_pnl_pct = (bot_unrealized_pnl / bot_cost * 100.0) if bot_cost > 0 else 0.0
 
     # 3. 실거래 체결 이력 조회 (trades 테이블)
     trades_df = pd.DataFrame()
@@ -420,22 +452,27 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
 
 def get_all_active_strategies() -> List[Dict[str, Any]]:
     """
-    현재 적용된 2개 이상의 모든 전략 성과 정보를 반환합니다.
-    (기본 설정된 INVESTMENTS 종목들 및 추가된 전략)
+    현재 적용된 모든 전략 성과 정보를 반환합니다.
+    (순서: 1. 비트코인, 2. 이더리움, 3. 솔라나)
     """
-    configured_markets = list(INVESTMENTS.keys()) if INVESTMENTS else ["KRW-SOL", "KRW-ETH"]
+    configured_markets = list(INVESTMENTS.keys()) if INVESTMENTS else ["KRW-BTC", "KRW-ETH", "KRW-SOL"]
+    
+    # 표시 순서 엄격 보장 (1. BTC, 2. ETH, 3. SOL)
+    priority_map = {"KRW-BTC": 1, "KRW-ETH": 2, "KRW-SOL": 3}
+    configured_markets.sort(key=lambda m: priority_map.get(m, 99))
+
     active_list = []
 
-    # 전략별 맞춤 이름: 하이브리드 전략
+    # 전략별 맞춤 명칭
     strat_names = {
-        "KRW-SOL": "솔라나(SOL) 하이브리드 전략",
+        "KRW-BTC": "비트코인(BTC) 계층형 가중 적립",
         "KRW-ETH": "이더리움(ETH) 하이브리드 전략",
-        "KRW-BTC": "비트코인(BTC) 5/20 MA 추세추종",
+        "KRW-SOL": "솔라나(SOL) 하이브리드 전략",
         "KRW-XRP": "리플(XRP) 마틴게일 물타기"
     }
 
     for market in configured_markets:
-        name = strat_names.get(market, f"{market} 하이브리드 전략")
+        name = strat_names.get(market, f"{market} 전략")
         perf = get_strategy_performance(market, strategy_name=name)
         active_list.append(perf)
 

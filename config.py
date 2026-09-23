@@ -30,12 +30,19 @@ BULL_STOP_LOSS_PCT = -0.10    # 상승장 평단가 대비 -10.0% 긴급 손절�
 FEE_RATE = 0.0005             # 0.05% 수수료율
 MIN_KRW_ALERT_THRESHOLD = 100_000  # 예수금 10만원 이하 알림 기준 (100,000원)
 
-# 기존 보유 자산 보호 설정 (봇이 절대 매도/청산하지 않는 기준 수량)
+# 기존 보유 자산 보호 설정 (봇이 절대 매도/청산하지 않는 기준 수량) - 순서: BTC, ETH, SOL
 PROTECTED_BALANCES = {
-    "KRW-SOL": 6.66887531,  # 기존 보유 솔라나 전량 보호
+    "KRW-BTC": 0.03741469,  # 기존 보유 비트코인 전량 보호 (봇 매도 원천 배제)
     "KRW-ETH": 0.40756151,  # 기존 보유 이더리움 전량 보호
-    "KRW-BTC": 0.03724281,  # 기존 보유 비트코인 전량 보호
+    "KRW-SOL": 6.66887531,  # 기존 보유 솔라나 전량 보호
 }
+
+# 비트코인(KRW-BTC) 계층형 가중 적립 전략 설정 (무손절 Buy-Only)
+BTC_DCA_CLOSING_CHECK_HOUR = 8       # 일봉 종가 직전 체크 시각 (08시 KST)
+BTC_DCA_CLOSING_CHECK_MINUTE = 55    # 일봉 종가 직전 체크 분 (55분 KST)
+BTC_UNIT_KRW = 10_000                # 가중 매수 기본 단위 (10,000원)
+BTC_UPBIT_DCA_HOUR = 15              # 업비트 자체 모으기 시간 (15:05 KST)
+BTC_UPBIT_DCA_MINUTE = 5
 
 # 하이브리드 상승장(BULL) 다이나믹 트레일링 스탑 설정 (물량 축적 규모에 따른 동적 목표가 적용)
 USE_TRAILING_STOP = True          # 트레일링 스탑 사용 여부
@@ -216,14 +223,25 @@ def load_investments():
     except Exception:
         pass
 
-    # 3. .env 및 Secrets 모두 없을 경우 기본 fallback 설정 (SOL 100만원, ETH 100만원, XRP 없음)
+    # 3. .env 및 Secrets 모두 없을 경우 기본 fallback 설정 (순서: BTC, ETH, SOL)
     if not investments:
         investments = {
-            "KRW-SOL": {"total": 1_000_000, "unit": 10_000},
-            "KRW-ETH": {"total": 1_000_000, "unit": 10_000}
+            "KRW-BTC": {"total": 1_000_000, "unit": 10_000},
+            "KRW-ETH": {"total": 1_000_000, "unit": 10_000},
+            "KRW-SOL": {"total": 1_000_000, "unit": 10_000}
         }
 
-    return investments
+    # 종목 표시/실행 순서 엄격 확정: 1. 비트코인, 2. 이더리움, 3. 솔라나
+    market_priority = ["KRW-BTC", "KRW-ETH", "KRW-SOL"]
+    ordered_investments = {}
+    for m in market_priority:
+        if m in investments:
+            ordered_investments[m] = investments[m]
+    for m, v in investments.items():
+        if m not in ordered_investments:
+            ordered_investments[m] = v
+
+    return ordered_investments
 
 
 INVESTMENTS = load_investments()

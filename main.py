@@ -1215,7 +1215,33 @@ def send_telegram_status_briefing():
             ""
         ]
 
-        for m in INVESTMENTS.keys():
+        markets = list(INVESTMENTS.keys())
+        priority_map = {"KRW-BTC": 1, "KRW-ETH": 2, "KRW-SOL": 3}
+        markets.sort(key=lambda x: priority_map.get(x, 99))
+
+        for m in markets:
+            if m == "KRW-BTC":
+                try:
+                    from strategy.btc_accumulator import check_btc_tiered_status, load_btc_state
+                    btc_stat = check_btc_tiered_status(upbit_client=get_upbit_client())
+                    btc_state = load_btc_state()
+                    cur_p = btc_stat["current_price"]
+                    avg_p = btc_stat["account_avg_price"]
+                    tot_bal = btc_stat["account_btc_balance"]
+                    pnl_pct = btc_stat["dist_avg_pct"]
+                    ma200 = btc_stat["ma200"]
+                    today_status = btc_state.get("today_status", "대기")
+                    tier_label = btc_stat["tier_name"]
+
+                    lines.append(f"<b>[KRW-BTC]</b> 🟡 계층형 가중 모으기 ({cur_p:,.0f}원)")
+                    lines.append(f"• 총 보유: <b>{tot_bal:.6f} BTC</b> (계좌 평단 {avg_p:,.0f}원 | {pnl_pct:+.2f}%)")
+                    lines.append(f"• 200일선: {ma200:,.0f}원 ({btc_stat['dist_ma200_pct']:+.2f}%) | {tier_label}")
+                    lines.append(f"• 적립 상태: 15:05 업비트 1만 + 08:55 봇 ({today_status})")
+                    lines.append("")
+                except Exception as e_btc:
+                    print(f"[WARN] BTC 브리핑 생성 오류: {e_btc}")
+                continue
+
             ticker = m.split("-")[1]
             state = load_strategy_state(m)
             regime_info = get_hybrid_regime_and_signals(m)
@@ -1323,10 +1349,65 @@ def telegram_command_listener_worker():
         time.sleep(1)
 
 
+def run_btc_accumulator(market: str = "KRW-BTC"):
+    """
+    비트코인(KRW-BTC) 계층형 가중 적립 실전 봇 루프:
+    - 손절/매도 원천 배제 (영구 수량 축적 Buy-Only)
+    - 매일 오전 08:50 ~ 08:58 사이에 당일 1회 일봉 종가 조건 검사
+    - 200일선 및 내 계좌 평단가 비교하여 0원 / 1만 원 / 2만 원 자동 매수 집행
+    """
+    from strategy.btc_accumulator import execute_btc_tiered_buy_if_due, check_btc_tiered_status
+    print("=" * 65)
+    print(f"🟡 업비트 비트코인 계층형 가중 적립 실전 봇 가동: {market}")
+    print(f" 대상 마켓: {market} (기존 계좌 잔고 포함 모니터링)")
+    print(f" 정기 모으기: 업비트 자체 매일 15:05 (10,000원 적립)")
+    print(f" 스마트 적립: 봇 매일 08:55 일봉 종가 판정 (0원 / 1만 원 / 2만 원 추가 매수)")
+    print(f" 리스크 관리: 무손절 장기 축적 (매도/청산 원천 배제)")
+    print("=" * 65)
+
+    try:
+        upbit = get_upbit_client()
+    except Exception as e:
+        print(f"[{market}] [CRITICAL] 업비트 클라이언트 초기화 실패: {e}")
+        return
+
+    # 시작 시 현재 상태 점검 및 출력
+    try:
+        stat = check_btc_tiered_status(upbit)
+        print(f"[{market}] 현재가: {stat['current_price']:,.0f}원 | 200일선: {stat['ma200']:,.0f}원 | 계좌평단: {stat['account_avg_price']:,.0f}원")
+        print(f"[{market}] 현재 판정: {stat['tier_name']} ({stat['tier_reason']}) | 매수 예정액: {stat['buy_krw']:,}원")
+    except Exception as e:
+        print(f"[{market}] 초기 상태 조회 오류: {e}")
+
+    send_telegram_alert(f"🟡 <b>[비트코인 모으기 봇 가동]</b> {market}\n• 무손절 계층형 적립 (매일 08:55 봇 스마트 가중 + 15:05 업비트)")
+
+    last_heartbeat_hour = None
+
+    while True:
+        try:
+            # 1. 08:50~08:58 종가 매수 검사 및 실행
+            execute_btc_tiered_buy_if_due(upbit)
+
+            # 2. 정시 하트비트 상태 출력
+            kst_now = datetime.utcnow() + timedelta(hours=9)
+            if kst_now.minute == 0 and last_heartbeat_hour != kst_now.hour:
+                last_heartbeat_hour = kst_now.hour
+                stat = check_btc_tiered_status(upbit)
+                print(f"[{kst_now.strftime('%H:%M:%S')}] [{market}] 💓 하트비트 | 현재가: {stat['current_price']:,.0f}원 | {stat['tier_name']}")
+
+        except Exception as e:
+            print(f"[WARN] [{market}] 적립 루프 오류: {e}")
+
+        time.sleep(10)
+
+
 # --- 봇 단일 실행 핸들러 ---
 def start_bot(market: str):
-    """실전 매매 봇 실행"""
-    run_trading_strategy(market)
+    """실전 매매 봇 실행 (BTC는 전용 무손절 적립 엔진, 알트는 하이브리드 엔진)"""
+    if market == "KRW-BTC":
+        run_btc_accumulator(market)
+    else:
+        run_trading_strategy(market)
 
 
 # --- 엔트리포인트 (멀티 코인/전략 동시 실행 지원) ---

@@ -513,24 +513,25 @@ else:
         is_bull = regime_info.get("is_bull", False)
         regime_color = "#00c087" if is_bull else "#ff3b69"
         regime_badge = f'<span style="background:{regime_color}22; color:{regime_color}; border:1px solid {regime_color}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "국면 분석 중")}</span>'
-        if is_bull:
+        if market == "KRW-BTC":
+            mode_desc = "🟡 무손절 계층형 적립 (08:55 봇 스마트 가중 + 15:05 업비트 1만)"
+            regime_badge = f'<span style="background:#ffb30022; color:#ffb300; border:1px solid #ffb300; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "200일선 분석 중")}</span>'
+            sub_info_html = f"""
+                    <div>
+                        <span style="color:#8c96a5;">📱 업비트 정기 모으기:</span>
+                        <b style="color:#00c087; margin-left:4px;">매일 15:05 (10,000원 무조건 적립)</b>
+                    </div>
+                    <div>
+                        <span style="color:#8c96a5;">🤖 봇 스마트 종가 적립:</span>
+                        <b style="color:#ffb300; margin-left:4px;">매일 08:55 ({regime_info.get('signal', '0~2만 원')} 가중 추가)</b>
+                    </div>
+                    <div>
+                        <span style="color:#8c96a5;">🛡️ 리스크 관리:</span>
+                        <b style="color:#81d4fa; margin-left:4px;">무손절 영구 수량 축적 (매도/청산 원천 배제)</b>
+                    </div>
+            """
+        elif is_bull:
             mode_desc = "🚀 5/20 MA 추세추종 (12h 정기적립 + 동적 트레일링 익절)"
-        else:
-            if market == "KRW-SOL":
-                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (70% 손절 인계 / 4개 스쿼드(16차 32U) 캡 홀딩)"
-            else:
-                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (50% 손절 인계 / 1-1-2-4 무제한 순환 스쿼드)"
-
-        target_base_p = strat.get("bot_avg_price", 0.0) if strat.get("bot_avg_price", 0.0) > 0 else avg_p
-        basket_target_p = target_base_p * strat["profit_margin"] if target_base_p > 0 else 0.0
-
-        dist_pct = regime_info.get("distance_ma200_pct", 0.0)
-        dist_color = "#00c087" if dist_pct >= 0 else "#ff3b69"
-        sig_text = regime_info.get("signal", "HOLD")
-        reason_text = regime_info.get("reason", "분석 중")
-        short_reason = (reason_text[:35] + "...") if len(reason_text) > 35 else reason_text
-
-        if is_bull:
             r_state = strat.get("runtime_state", {})
             tranches = r_state.get("tranches", [])
             from config import BULL_TIME_DCA_INTERVAL_HOURS, MAX_BULL_DCA_STEPS, get_bull_trailing_stop_trigger, BULL_STOP_LOSS_PCT
@@ -553,9 +554,11 @@ else:
             """
         else:
             if market == "KRW-SOL":
+                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (70% 손절 인계 / 4개 스쿼드(16차 32U) 캡 홀딩)"
                 martingale_desc = "1-1-2-4 배수 x 4 (최대 16차수 / 32U 홀딩 캡)"
                 regime_handover_desc = "200 MA 하향 돌파 시 70% 손절 후 30% 방어 인계"
             else:
+                mode_desc = "🛡️ 하락장 마틴-매직스플릿 (50% 손절 인계 / 1-1-2-4 무제한 순환 스쿼드)"
                 martingale_desc = "1-1-2-4 배수 무제한 순환 (예수금 한도 내 무한 확장)"
                 regime_handover_desc = "200 MA 하향 돌파 시 50% 손절 후 50% 방어 인계"
 
@@ -576,37 +579,36 @@ else:
                     </div>
             """
 
-        # 전략 개별 카드 (st.html을 사용하여 코드 노출 원천 차단)
-        st.html(f"""
-        <div class="strategy-card">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid #2d3648; padding-bottom:10px;">
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                    <span style="font-size:1.4rem;">⚡</span>
-                    <span style="font-size:1.2rem; font-weight:800; color:#f0f3f6;">
-                        전략 {idx}. {strat_name}
-                    </span>
-                    <span style="{badge_style} padding:2px 10px; border-radius:12px; font-size:0.82rem; font-weight:700;">
-                        {market}
-                    </span>
-                </div>
-                <div style="font-size:0.85rem; color:#8c96a5;">
-                    전략 배정 원금: <b style="color:#f0f3f6;">{initial_cap:,.0f}원</b> | 1 Unit: <b style="color:#f0f3f6;">{unit_krw:,.0f}원</b>
-                </div>
-            </div>
-
-            <div style="background:linear-gradient(135deg, #181d27 0%, #1f2634 100%); border:1px solid #333d4e; border-radius:10px; padding:12px 16px; margin-bottom:14px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
-                    <div style="display:flex; align-items:center; gap:10px;">
-                        <span style="font-size:1.25rem;">🧭</span>
-                        <span style="font-size:0.95rem; font-weight:700; color:#f0f3f6;">실시간 시장 국면 & 하이브리드 엔진 상태</span>
-                        {regime_badge}
+        # 4-Grid 상태 표시 (BTC 전용 및 알트코인 전용)
+        if market == "KRW-BTC":
+            grid_html = f"""
+                <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; background:#12161f; padding:10px 14px; border-radius:8px; border:1px solid #232b3a;">
+                    <div>
+                        <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">현재 시세</div>
+                        <div style="font-size:1.05rem; font-weight:700; color:#f0f3f6;">{cur_p:,.0f}원</div>
                     </div>
                     <div>
-                        <span style="background:{regime_color}18; color:{regime_color}; border:1px solid {regime_color}44; padding:3px 10px; border-radius:8px; font-size:0.84rem; font-weight:700;">
-                            {mode_desc}
-                        </span>
+                        <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">200일 이동평균선 (시장 기준)</div>
+                        <div style="font-size:1.05rem; font-weight:700; color:#81d4fa;">
+                            {regime_info.get('ma200', 0):,.0f}원 <span style="font-size:0.78rem; color:{dist_color}; font-weight:600;">({dist_pct:+.2f}%)</span>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">내 계좌 매수 평단가</div>
+                        <div style="font-size:1.05rem; font-weight:700; color:#f48fb1;">
+                            {avg_p:,.0f}원 <span style="font-size:0.78rem; color:#ff3b69; font-weight:600;">({regime_info.get('dist_avg_pct', 0):+.2f}%)</span>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">오늘 종가 적립 판정</div>
+                        <div style="font-size:0.92rem; font-weight:700; color:#ffd54f;">
+                            {sig_text} <span style="font-size:0.75rem; color:#8c96a5; font-weight:normal;">({short_reason})</span>
+                        </div>
                     </div>
                 </div>
+            """
+        else:
+            grid_html = f"""
                 <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; background:#12161f; padding:10px 14px; border-radius:8px; border:1px solid #232b3a;">
                     <div>
                         <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">현재가</div>
@@ -631,6 +633,40 @@ else:
                         </div>
                     </div>
                 </div>
+            """
+
+        # 전략 개별 카드 (st.html을 사용하여 코드 노출 원천 차단)
+        st.html(f"""
+        <div class="strategy-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid #2d3648; padding-bottom:10px;">
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <span style="font-size:1.4rem;">⚡</span>
+                    <span style="font-size:1.2rem; font-weight:800; color:#f0f3f6;">
+                        전략 {idx}. {strat_name}
+                    </span>
+                    <span style="{badge_style} padding:2px 10px; border-radius:12px; font-size:0.82rem; font-weight:700;">
+                        {market}
+                    </span>
+                </div>
+                <div style="font-size:0.85rem; color:#8c96a5;">
+                    전략 배정 원금: <b style="color:#f0f3f6;">{initial_cap:,.0f}원</b> | 1 Unit: <b style="color:#f0f3f6;">{unit_krw:,.0f}원</b>
+                </div>
+            </div>
+
+            <div style="background:linear-gradient(135deg, #181d27 0%, #1f2634 100%); border:1px solid #333d4e; border-radius:10px; padding:12px 16px; margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span style="font-size:1.25rem;">🧭</span>
+                        <span style="font-size:0.95rem; font-weight:700; color:#f0f3f6;">실시간 시장 국면 & 매매 엔진 상태</span>
+                        {regime_badge}
+                    </div>
+                    <div>
+                        <span style="background:{regime_color}18; color:{regime_color}; border:1px solid {regime_color}44; padding:3px 10px; border-radius:8px; font-size:0.84rem; font-weight:700;">
+                            {mode_desc}
+                        </span>
+                    </div>
+                </div>
+                {grid_html}
 
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:8px; border-top:1px dashed #2a3344; font-size:0.8rem;">
                     {sub_info_html}
@@ -641,44 +677,78 @@ else:
 
         # 전략 핵심 성과 지표 4분할
         sc1, sc2, sc3, sc4 = st.columns(4)
-        with sc1:
-            st.html(f"""
-            <div class="metric-card">
-                <div class="metric-title">전략 총 수익률</div>
-                <div class="metric-val {ret_color}">{strat_ret:+.2f}%</div>
-                <div class="metric-sub">순손익: <b class="{pnl_color}">{strat_pnl:+,.0f}원</b></div>
-            </div>
-            """)
+        if market == "KRW-BTC":
+            with sc1:
+                st.html(f"""
+                <div class="metric-card">
+                    <div class="metric-title">계좌 총 평가손익 (수익률)</div>
+                    <div class="metric-val {ret_color}">{strat_ret:+.2f}%</div>
+                    <div class="metric-sub">평가손익: <b class="{pnl_color}">{strat_pnl:+,.0f}원</b></div>
+                </div>
+                """)
+            with sc2:
+                st.html(f"""
+                <div class="metric-card">
+                    <div class="metric-title">총 보유 비트코인</div>
+                    <div class="metric-val text-yellow">{coin_bal:.6f} <span style="font-size:1rem; color:#8c96a5;">BTC</span></div>
+                    <div class="metric-sub">평가금액: <b>{eval_amt:,.0f}원</b></div>
+                </div>
+                """)
+            with sc3:
+                st.html(f"""
+                <div class="metric-card">
+                    <div class="metric-title">내 계좌 매수 평단가</div>
+                    <div class="metric-val text-blue">{avg_p:,.0f} <span style="font-size:1rem; color:#8c96a5;">원</span></div>
+                    <div class="metric-sub">매수원가: <b>{strat['cost_amount']:,.0f}원</b></div>
+                </div>
+                """)
+            with sc4:
+                st.html(f"""
+                <div class="metric-card">
+                    <div class="metric-title">200일선 (시장 기준선)</div>
+                    <div class="metric-val text-green">{regime_info.get('ma200', 0):,.0f} <span style="font-size:1rem; color:#8c96a5;">원</span></div>
+                    <div class="metric-sub">200일선 이격도: <b style="color:{dist_color};">{dist_pct:+.2f}%</b></div>
+                </div>
+                """)
+        else:
+            with sc1:
+                st.html(f"""
+                <div class="metric-card">
+                    <div class="metric-title">전략 총 수익률</div>
+                    <div class="metric-val {ret_color}">{strat_ret:+.2f}%</div>
+                    <div class="metric-sub">순손익: <b class="{pnl_color}">{strat_pnl:+,.0f}원</b></div>
+                </div>
+                """)
 
-        with sc2:
-            real_color = "text-green" if realized_pnl >= 0 else "text-red"
-            st.html(f"""
-            <div class="metric-card">
-                <div class="metric-title">실현 누적 손익</div>
-                <div class="metric-val {real_color}">{realized_pnl:+,.0f} <span style="font-size:1rem; color:#8c96a5;">원</span></div>
-                <div class="metric-sub">완료 사이클: {strat['completed_cycles']}회</div>
-            </div>
-            """)
+            with sc2:
+                real_color = "text-green" if realized_pnl >= 0 else "text-red"
+                st.html(f"""
+                <div class="metric-card">
+                    <div class="metric-title">실현 누적 손익</div>
+                    <div class="metric-val {real_color}">{realized_pnl:+,.0f} <span style="font-size:1rem; color:#8c96a5;">원</span></div>
+                    <div class="metric-sub">완료 사이클: {strat['completed_cycles']}회</div>
+                </div>
+                """)
 
-        with sc3:
-            st.html(f"""
-            <div class="metric-card">
-                <div class="metric-title">승률 (Win Rate)</div>
-                <div class="metric-val text-blue">{strat['win_rate']:.1f}%</div>
-                <div class="metric-sub">{strat['wins']}승 {strat['losses']}패 (총 청산 {strat['wins'] + strat['losses']}건)</div>
-            </div>
-            """)
+            with sc3:
+                st.html(f"""
+                <div class="metric-card">
+                    <div class="metric-title">승률 (Win Rate)</div>
+                    <div class="metric-val text-blue">{strat['win_rate']:.1f}%</div>
+                    <div class="metric-sub">{strat['wins']}승 {strat['losses']}패 (총 청산 {strat['wins'] + strat['losses']}건)</div>
+                </div>
+                """)
 
-        with sc4:
-            pf = strat["profit_factor"]
-            pf_color = "text-green" if pf >= 1.0 else "text-red"
-            st.html(f"""
-            <div class="metric-card">
-                <div class="metric-title">손익비 (Profit Factor)</div>
-                <div class="metric-val {pf_color}">{pf:.2f}</div>
-                <div class="metric-sub">평균익 {strat['avg_win']:,.0f}원 / 평균손 {strat['avg_loss']:,.0f}원</div>
-            </div>
-            """)
+            with sc4:
+                pf = strat["profit_factor"]
+                pf_color = "text-green" if pf >= 1.0 else "text-red"
+                st.html(f"""
+                <div class="metric-card">
+                    <div class="metric-title">손익비 (Profit Factor)</div>
+                    <div class="metric-val {pf_color}">{pf:.2f}</div>
+                    <div class="metric-sub">평균익 {strat['avg_win']:,.0f}원 / 평균손 {strat['avg_loss']:,.0f}원</div>
+                </div>
+                """)
 
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
@@ -686,24 +756,35 @@ else:
         p_col1, p_col2 = st.columns([1.1, 1.9])
 
         with p_col1:
-            st.markdown(f"##### 💼 {ticker} 포지션 현황 (봇 운용 & 기존 자산 보호)")
-            bot_q = strat.get("bot_quantity", 0.0)
-            bot_avg = strat.get("bot_avg_price", 0.0)
-            bot_eval = strat.get("bot_eval", 0.0)
-            bot_pnl = strat.get("bot_unrealized_pnl", 0.0)
-            bot_pnl_pct = strat.get("bot_pnl_pct", 0.0)
-            prot_q = strat.get("protected_quantity", 0.0)
-            tot_coin = strat.get("account_total_coin_balance", coin_bal)
+            st.markdown(f"##### 💼 {ticker} 포지션 현황 (계좌 잔고 & 모으기 현황)")
+            if market == "KRW-BTC":
+                pos_data = [
+                    {"항목": "현재 시세", "값": f"{cur_p:,.0f} 원"},
+                    {"항목": "🏛️ 총 보유 수량 (기존잔고 포함)", "값": f"{coin_bal:.6f} BTC"},
+                    {"항목": "💳 계좌 매수 평단가", "값": f"{avg_p:,.0f} 원" if avg_p > 0 else "-"},
+                    {"항목": "💰 총 평가금액", "값": f"{eval_amt:,.0f} 원"},
+                    {"항목": "📈 총 평가손익 (수익률)", "값": f"{unrealized_pnl:+,.0f} 원 ({unrealized_pnl_pct:+.2f}%)" if avg_p > 0 else "-"},
+                    {"항목": "📱 업비트 자체 모으기", "값": "매일 15:05 (10,000원 적립)"},
+                    {"항목": "🤖 봇 종가 가중 적립", "값": f"매일 08:55 ({regime_info.get('signal', '0~2만 원')})"}
+                ]
+            else:
+                bot_q = strat.get("bot_quantity", 0.0)
+                bot_avg = strat.get("bot_avg_price", 0.0)
+                bot_eval = strat.get("bot_eval", 0.0)
+                bot_pnl = strat.get("bot_unrealized_pnl", 0.0)
+                bot_pnl_pct = strat.get("bot_pnl_pct", 0.0)
+                prot_q = strat.get("protected_quantity", 0.0)
+                tot_coin = strat.get("account_total_coin_balance", coin_bal)
 
-            pos_data = [
-                {"항목": "현재 시세", "값": f"{cur_p:,.0f} 원"},
-                {"항목": "🤖 봇 운용 수량", "값": f"{bot_q:.6f} {ticker}"},
-                {"항목": "🤖 봇 매수평단", "값": f"{bot_avg:,.0f} 원" if bot_avg > 0 else "미보유 (대기)"},
-                {"항목": "🤖 봇 평가금액", "값": f"{bot_eval:,.0f} 원"},
-                {"항목": "🤖 봇 미실현손익", "값": f"{bot_pnl:+,.0f} 원 ({bot_pnl_pct:+.2f}%)" if bot_avg > 0 else "-"},
-                {"항목": "🔒 기존 자산 (보호중)", "값": f"{prot_q:.6f} {ticker}"},
-                {"항목": "🏛️ 계좌 전체 총수량", "값": f"{tot_coin:.6f} {ticker}"}
-            ]
+                pos_data = [
+                    {"항목": "현재 시세", "값": f"{cur_p:,.0f} 원"},
+                    {"항목": "🤖 봇 운용 수량", "값": f"{bot_q:.6f} {ticker}"},
+                    {"항목": "🤖 봇 매수평단", "값": f"{bot_avg:,.0f} 원" if bot_avg > 0 else "미보유 (대기)"},
+                    {"항목": "🤖 봇 평가금액", "값": f"{bot_eval:,.0f} 원"},
+                    {"항목": "🤖 봇 미실현손익", "값": f"{bot_pnl:+,.0f} 원 ({bot_pnl_pct:+.2f}%)" if bot_avg > 0 else "-"},
+                    {"항목": "🔒 기존 자산 (보호중)", "값": f"{prot_q:.6f} {ticker}"},
+                    {"항목": "🏛️ 계좌 전체 총수량", "값": f"{tot_coin:.6f} {ticker}"}
+                ]
             st.dataframe(pd.DataFrame(pos_data), hide_index=True, use_container_width=True)
 
         with p_col2:
@@ -729,6 +810,8 @@ else:
             # 2. 최근 체결 완료 내역 (실거래 trades 테이블)
             if not trades_df.empty:
                 action_map = {
+                    "BTC_TIERED_BUY_T1": "비트코인 1단계 일반세일 매수 (+1만)",
+                    "BTC_TIERED_BUY_T2": "비트코인 2단계 역대급세일 매수 (+2만)",
                     "INITIAL_10K_ENTRY": "1회차 신규 진입",
                     "TREND_GOLDEN_CROSS_BUY": "5/20 골든크로스 매수",
                     "MARTINGALE_BUY_INITIAL": "마틴게일 1차 매수",
