@@ -162,12 +162,9 @@ def check_krw_balance_alert(upbit_client, context: str = "정기 감시") -> flo
     if krw < MIN_KRW_ALERT_THRESHOLD:
         if now - LAST_KRW_ALERT_TIME > KRW_ALERT_COOLDOWN_SEC:
             msg = (
-                f"🚨 <b>[예수금 10만원 미만 긴급 알림]</b>\n\n"
-                f"현재 주문 가능 예수금: <b>{krw:,.0f}원</b>\n"
-                f"설정 기준치: <b>{MIN_KRW_ALERT_THRESHOLD:,.0f}원 미만</b>\n"
-                f"감시 상황: {context}\n\n"
-                f"⚠️ <i>예수금이 부족하여 추가 물타기 또는 신규 진입이 제한될 수 있습니다.\n"
-                f"원화를 추가 입금하거나 다른 자산을 매도해 주세요.</i>"
+                f"⚠️ <b>[예수금 부족 경고]</b>\n"
+                f"• 현재 주문가능 예수금: <b>{krw:,.0f}원</b> (기준: 10만 원 미만)\n"
+                f"• 감시 상황: {context}"
             )
             print(f"\n[{time.strftime('%H:%M:%S')}] 🚨 [ALERT] 예수금 10만원 미만 감지 ({krw:,.0f}원)! 텔레그램 경고 발송.")
             send_telegram_alert(msg)
@@ -240,13 +237,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
     check_krw_balance_alert(upbit, context=f"{market} 실전 봇 시작")
 
-    send_telegram_alert(
-        f"🤖 <b>[하이브리드 실전 매매 가동]</b>\n"
-        f"종목: <b>{market}</b>\n"
-        f"1 Unit: {unit_krw:,}원\n"
-        f"하락장 방어: <b>마틴게일 배수 진입 + 매직스플릿 이중익절(개별+3%/바스켓)</b>\n"
-        f"상승장 추세: 5/20 MA 추세추종 & 트레일링 스탑"
-    )
+    send_telegram_alert(f"🚀 <b>[자동매매 가동]</b> {market} (1 Unit: {unit_krw:,}원)")
 
     last_heartbeat_time = 0
 
@@ -326,11 +317,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         rem_qty = max(0.0, actual_avail - prot_qty)
 
                         msg = (
-                            f"⚠️ <b>[국면 전환 {int(liq_pct * 100)}% 부분 손절 체결]</b> {market}\n"
-                            f"200 MA 하향 돌파 (BULL ➔ BEAR 국면 전환)\n"
-                            f"체결단가: {current_price:,.0f}원 | 평단가: {avg_price:,.0f}원 ({pnl_rate * 100:+.2f}%)\n"
-                            f"손절수량: {sell_qty:.6f} ({sell_qty * current_price:,.0f}원, 실현손익: {pnl_krw:+,.0f}원)\n"
-                            f"남은 물량({rem_qty:.6f})은 하락장 마틴-매직스플릿 방어 모드로 인계합니다."
+                            f"🔴 <b>[손절 체결]</b> {market} (하락장 전환 {int(liq_pct * 100)}% 부분손절)\n"
+                            f"• 체결단가: {current_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
+                            f"• 손실률: {pnl_rate * 100:+.2f}%\n"
+                            f"• 실현손익: <b>{pnl_krw:+,.0f}원</b> (잔여 {100 - int(liq_pct * 100)}% 하락방어 인계)"
                         )
                         print(f"[{market}] {msg}")
                         send_telegram_alert(msg)
@@ -369,10 +359,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                 avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
                 msg = (
-                    f"🐂 <b>[상승 국면 전환 감지]</b> {market}\n"
-                    f"200 MA 상향 돌파 (BEAR ➔ BULL 전환)\n"
-                    f"현재가: {current_price:,.0f}원 | 평단가: {avg_price:,.0f}원 | 보유수량: {quantity:.6f}\n"
-                    f"기존 하락장 미체결 주문을 취소하고 5/20 MA 추세추종 및 트레일링 스탑 모드로 전환합니다."
+                    f"🔄 <b>[국면 전환]</b> {market}: 🔴 하락장 ➔ 🟢 상승장 전환\n"
+                    f"• 현재가: {current_price:,.0f}원 | 봇 보유: {quantity:.4f} {ticker}"
                 )
                 print(f"[{market}] {msg}")
                 send_telegram_alert(msg)
@@ -401,10 +389,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 if pnl_rate <= BULL_STOP_LOSS_PCT:
                     loss_krw = (current_price - avg_price) * quantity
                     msg = (
-                        f"🚨 <b>[상승장 -10.0% 긴급 손절 발동]</b> {market}\n"
-                        f"현재가: {current_price:,.0f}원 | 봇 평단가: {avg_price:,.0f}원\n"
-                        f"수익률: {pnl_rate * 100:.2f}% (기준: {BULL_STOP_LOSS_PCT * 100:.1f}% 이하)\n"
-                        f"봇 보유 수량 {quantity:.6f} 전량 시장가 매도 진행. (기존 보유 자산은 안전 보호)"
+                        f"🔴 <b>[손절 체결]</b> {market} (상승장 -10% 긴급손절)\n"
+                        f"• 체결가: {current_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
+                        f"• 손실률: {pnl_rate * 100:.2f}%\n"
+                        f"• 실현손익: <b>{loss_krw:+,.0f}원</b>"
                     )
                     print(f"\n[{market}] {msg}")
                     send_telegram_alert(msg)
@@ -485,10 +473,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         real_pnl = (current_price - avg_price) * quantity
 
                         send_telegram_alert(
-                            f"🎯 <b>[바스켓 전량 익절 완료]</b> {market}\n"
-                            f"체결단가: {current_price:,.0f}원 | 평단가: {avg_price:,.0f}원\n"
-                            f"수익률: {exit_decision['pnl_pct']:+.2f}%\n"
-                            f"실현손익: <b>{real_pnl:+,.0f}원</b>"
+                            f"🟢 <b>[익절 완료]</b> {market} (바스켓 전량)\n"
+                            f"• 체결단가: {current_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
+                            f"• 수익률: {exit_decision['pnl_pct']:+.2f}%\n"
+                            f"• 실현손익: <b>{real_pnl:+,.0f}원</b>"
                         )
 
                         log_real_trade(
@@ -576,18 +564,17 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                                     steps_str = ", ".join([f"{s}차" for s in sold_steps])
                                     send_telegram_alert(
-                                        f"💧 <b>[매직스플릿 차수 일괄 익절 완료]</b> {market}\n"
-                                        f"익절 차수: {steps_str} (+3.0% 반등)\n"
-                                        f"체결단가: {current_price:,.0f}원 | 합산수량: {tot_sell_vol:.6f}\n"
-                                        f"실현손익: <b>{tot_pnl:+,.0f}원</b>\n"
-                                        f"새 평단가: {state['bot_avg_price']:,.0f}원 | 잔여 차수: {len(state['tranches'])}개"
+                                        f"🟢 <b>[익절 완료]</b> {market} (매직스플릿 {steps_str})\n"
+                                        f"• 체결단가: {current_price:,.0f}원 (+3.0% 반등)\n"
+                                        f"• 실현손익: <b>{tot_pnl:+,.0f}원</b>\n"
+                                        f"• 잔여 포지션: 평단 {state['bot_avg_price']:,.0f}원 ({len(state['tranches'])}차수 유지)"
                                     )
                                     time.sleep(2)
                                     continue
                                 else:
                                     err_msg = sell_res.get("error", {}).get("message", str(sell_res)) if isinstance(sell_res, dict) else str(sell_res)
-                                    print(f"[{market}] ⚠️ [매직스플릿 매도 실패] 거래소 오류로 상태 보존: {err_msg}")
-                                    send_telegram_alert(f"⚠️ <b>[매직스플릿 매도 실패]</b> {market}\n주문 실패 사유: {err_msg}\n상태를 보존하고 다음 루프에서 재시도합니다.")
+                                    print(f"[{market}] ⚠️ [매직스플릿 매도 실패] 거래소 오류: {err_msg}")
+                                    send_telegram_alert(f"⚠️ <b>[매도 오류]</b> {market}: {err_msg} (다음 루프 재시도)")
                             else:
                                 print(f"[{market}] ℹ️ [매직스플릿] 매도 대상 금액({tot_sell_krw:,.0f}원)이 최소주문금액(5,000원) 미만이므로 바스켓 익절 대기.")
 
@@ -705,13 +692,11 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         print(f"[{market}]     - 지정가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
                         time.sleep(0.2)
 
-                    sched_label = "4개 스쿼드 (16차수 / 32U 캡 후 홀딩)" if market == "KRW-SOL" else "1-1-2-4 무제한 순환 스쿼드"
                     send_telegram_alert(
-                        f"🛡️ <b>[하락장 마틴-매직스플릿 방어 시작]</b> {market}\n"
-                        f"진입가: {avg_price:,.0f}원 | 수량: {quantity:.6f}\n"
-                        f"바스켓 익절가: {sell_price:,.0f}원 (+{(sell_profit_margin - 1) * 100:.2f}%)\n"
-                        f"개별 차수 목표: 매수가 대비 +{MAGIC_SPLIT_TRANCHE_PROFIT*100:.1f}%\n"
-                        f"스쿼드 물타기 ({len(new_orders)}단계 예약 / {sched_label})"
+                        f"🔵 <b>[매수 체결]</b> {market} (하락 방어 1차수)\n"
+                        f"• 체결가: {avg_price:,.0f}원 ({unit_krw:,}원)\n"
+                        f"• 평단가: {avg_price:,.0f}원 | 수량: {quantity:.6f} {ticker}\n"
+                        f"• 바스켓 목표: {sell_price:,.0f}원 (+{(sell_profit_margin - 1) * 100:.2f}%)"
                     )
 
                 # Case 4: 물타기 매수 체결 감지
@@ -793,10 +778,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                     max_steps_str = f"{max_steps}차수" if max_steps < 900 else "무제한"
                     send_telegram_alert(
-                        f"💧 <b>[물타기 체결 후 포지션 재조정]</b> {market}\n"
-                        f"새 평단가: {avg_price:,.0f}원 | 총 보유수량: {quantity:.6f}\n"
-                        f"새 바스켓 익절가: {sell_price:,.0f}원\n"
-                        f"누적 차수: {len(state['tranches'])}/{max_steps_str} | 추가 매수 {len(additional_orders)}건 등록"
+                        f"🔵 <b>[매수 체결]</b> {market} (하락 방어 {len(state['tranches'])}/{max_steps_str})\n"
+                        f"• 체결가: {current_price:,.0f}원 ({unit_krw * assigned_units:,.0f}원)\n"
+                        f"• 새 평단가: {avg_price:,.0f}원 | 총 보유: {quantity:.6f} {ticker}\n"
+                        f"• 바스켓 목표: {sell_price:,.0f}원 (+{(sell_profit_margin - 1) * 100:.2f}%)"
                     )
 
             # =========================================================================
@@ -830,9 +815,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             state["trailing_stop_active"] = True
                             state["trend_peak_price"] = current_price
                             msg = (
-                                f"🎯 <b>[동적 트레일링 스탑 가동]</b> {market}\n"
-                                f"현재 물량: {current_steps}/{MAX_BULL_DCA_STEPS}회차 ({current_steps * unit_krw:,.0f}원 투입)\n"
-                                f"수익률 {profit_rate*100:+.2f}% 도달 (동적 목표: +{active_ts_trigger*100:.1f}%)! 고점 추적을 시작합니다."
+                                f"🎯 <b>[트레일링 스탑 가동]</b> {market}\n"
+                                f"• 수익률: {profit_rate*100:+.2f}% 도달 (목표 +{active_ts_trigger*100:.1f}% 돌파, 고점 추적 시작)"
                             )
                             print(f"\n[{market}] {msg}")
                             send_telegram_alert(msg)
@@ -846,9 +830,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         if drop_from_peak <= -TRAILING_STOP_DROP:
                             real_pnl = (current_price - avg_price) * quantity
                             msg = (
-                                f"🏆 <b>[트레일링 스탑 익절 청산]</b> {market}\n"
-                                f"최고가: {peak_p:,.0f}원 -> 현재가: {current_price:,.0f}원 (고점 대비 {drop_from_peak*100:.2f}%)\n"
-                                f"최종 수익률: {profit_rate*100:+.2f}% | 실현손익: {real_pnl:+,.0f}원"
+                                f"🟢 <b>[익절 완료]</b> {market} (트레일링 스탑)\n"
+                                f"• 체결단가: {current_price:,.0f}원 (고점 {peak_p:,.0f}원)\n"
+                                f"• 수익률: {profit_rate*100:+.2f}%\n"
+                                f"• 실현손익: <b>{real_pnl:+,.0f}원</b>"
                             )
                             print(f"\n[{market}] {msg}")
                             send_telegram_alert(msg)
@@ -956,13 +941,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         strategy="HYBRID_TREND"
                                     )
 
+                                    pnl_pct = ((current_price - new_avg) / new_avg) * 100
                                     msg = (
-                                        f"⏰ <b>[상승장 {BULL_TIME_DCA_INTERVAL_HOURS}시간 정기 분할적립 체결]</b> {market}\n"
-                                        f"차수: {next_step}/{MAX_BULL_DCA_STEPS}회차 ({hours_elapsed:.1f}시간 경과 분할 매수)\n"
-                                        f"추가 매수액: {unit_krw:,.0f}원 (체결: {bought_vol:.6f} {ticker})\n"
-                                        f"새 봇 평단가: {new_avg:,.0f}원 | 총 누적수량: {new_q:.6f} {ticker}\n"
-                                        f"총 투입원금: {new_avg * new_q:,.0f}원\n"
-                                        f"수익률: {((current_price - new_avg)/new_avg)*100:+.2f}%"
+                                        f"🔵 <b>[매수 체결]</b> {market} (상승 적립 {next_step}/{MAX_BULL_DCA_STEPS}회차)\n"
+                                        f"• 체결가: {current_price:,.0f}원 ({unit_krw:,}원)\n"
+                                        f"• 새 평단가: {new_avg:,.0f}원 | 누적 수량: {new_q:.6f} {ticker}\n"
+                                        f"• 현재 손익률: {pnl_pct:+.2f}%"
                                     )
                                     print(f"[{market}] {msg}")
                                     send_telegram_alert(msg)
@@ -1028,13 +1012,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         strategy="HYBRID_TREND"
                                     )
 
+                                    pnl_pct = ((current_price - new_avg) / new_avg) * 100
                                     msg = (
-                                        f"🔥 <b>[상승장 피라미딩 불타기 매수 체결]</b> {market}\n"
-                                        f"차수: {next_step}/{MAX_PYRAMID_STEPS}회차 (+{price_increase_ratio*100:.2f}% 상승 돌파)\n"
-                                        f"추가 매수액: {unit_krw:,.0f}원 (체결: {bought_vol:.6f} {ticker})\n"
-                                        f"새 봇 평단가: {new_avg:,.0f}원 | 총 누적수량: {new_q:.6f} {ticker}\n"
-                                        f"총 투입원금: {new_avg * new_q:,.0f}원\n"
-                                        f"수익률: {((current_price - new_avg)/new_avg)*100:+.2f}%"
+                                        f"🔵 <b>[매수 체결]</b> {market} (불타기 {next_step}/{MAX_PYRAMID_STEPS}회차)\n"
+                                        f"• 체결가: {current_price:,.0f}원 ({unit_krw:,}원)\n"
+                                        f"• 새 평단가: {new_avg:,.0f}원 | 누적 수량: {new_q:.6f} {ticker}\n"
+                                        f"• 현재 손익률: {pnl_pct:+.2f}%"
                                     )
                                     print(f"[{market}] {msg}")
                                     send_telegram_alert(msg)
@@ -1103,13 +1086,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                             strategy="HYBRID_TREND"
                                         )
 
+                                        pnl_pct = ((current_price - new_avg) / new_avg) * 100
                                         msg = (
-                                            f"🌅 <b>[상승장 일봉 양봉 종가매수 체결]</b> {market}\n"
-                                            f"차수: {next_step}/{MAX_BULL_DCA_STEPS}회차 (08:55 일봉 양봉 & 5일선 지지 확인)\n"
-                                            f"추가 매수액: {unit_krw:,.0f}원 (체결: {bought_vol:.6f} {ticker})\n"
-                                            f"새 봇 평단가: {new_avg:,.0f}원 | 총 누적수량: {new_q:.6f} {ticker}\n"
-                                            f"총 투입원금: {new_avg * new_q:,.0f}원\n"
-                                            f"수익률: {((current_price - new_avg)/new_avg)*100:+.2f}%"
+                                            f"🔵 <b>[매수 체결]</b> {market} (종가 매수 {next_step}/{MAX_BULL_DCA_STEPS}회차)\n"
+                                            f"• 체결가: {current_price:,.0f}원 ({unit_krw:,}원)\n"
+                                            f"• 새 평단가: {new_avg:,.0f}원 | 누적 수량: {new_q:.6f} {ticker}\n"
+                                            f"• 현재 손익률: {pnl_pct:+.2f}%"
                                         )
                                         print(f"[{market}] {msg}")
                                         send_telegram_alert(msg)
@@ -1194,12 +1176,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 strategy="HYBRID_TREND"
                             )
 
-                            prot_q = PROTECTED_BALANCES.get(market, 0.0)
                             send_telegram_alert(
-                                f"🚀 <b>[하이브리드 봇 1회차 신규 매수 체결]</b> {market}\n"
-                                f"진입가: {avg_p:,.0f}원 | 수량: {q:.6f} {ticker}\n"
-                                f"사유: {buy_reason}\n"
-                                f"🔒 <b>기존 보유분({prot_q:,.4f} {ticker}) 안전 보호/격리 완료</b>"
+                                f"🔵 <b>[매수 체결]</b> {market} (상승 1회차 신규)\n"
+                                f"• 체결가: {avg_p:,.0f}원 ({unit_krw:,}원)\n"
+                                f"• 평단가: {avg_p:,.0f}원 | 수량: {q:.6f} {ticker}"
                             )
                             time.sleep(5)
                             continue
@@ -1212,6 +1192,85 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             time.sleep(10)
 
         time.sleep(5)
+
+
+# --- 텔레그램 정기 현황 브리핑 (오전 8시 ~ 오후 8시, 1시간 간격) ---
+def send_telegram_status_briefing():
+    """
+    현재 계좌 잔고 및 코인별 봇 포지션/진행상태를 텔레그램으로 깔끔하게 브리핑
+    """
+    try:
+        from utils.analytics import get_total_account_summary
+        from strategy.hybrid_regime import get_hybrid_regime_and_signals
+
+        acc = get_total_account_summary()
+        tot_equity = acc.get("total_equity", 0.0)
+        krw_bal = acc.get("krw_balance", 0.0)
+        growth_pct = acc.get("growth_pct", 0.0)
+
+        lines = [
+            "📊 <b>[정기 현황 브리핑]</b>",
+            f"• 총 자산: <b>{tot_equity:,.0f}원</b> (수익률 {growth_pct:+.2f}%)",
+            f"• 주문가능 예수금: <b>{krw_bal:,.0f}원</b>",
+            ""
+        ]
+
+        for m in INVESTMENTS.keys():
+            ticker = m.split("-")[1]
+            state = load_strategy_state(m)
+            regime_info = get_hybrid_regime_and_signals(m)
+            regime = regime_info.get("regime", "BULL")
+            p = pyupbit.get_current_price(m) or 0.0
+            q = state.get("bot_quantity", 0.0)
+            avg = state.get("bot_avg_price", 0.0)
+            tranches = state.get("tranches", [])
+            pnl_pct = ((p - avg) / avg * 100.0) if avg > 0 else 0.0
+
+            if regime == "BULL":
+                regime_label = "🟢 상승 추세"
+                prog_label = f"정기 적립 {len(tranches)}/{MAX_BULL_DCA_STEPS}회차" if q > 0 else "진입 대기 중"
+            else:
+                regime_label = "🔴 하락 방어"
+                max_s = MARTINGALE_MAX_STEPS.get(m, 16 if m == "KRW-SOL" else 9999)
+                max_str = f"{max_s}차" if max_s < 900 else "무제한"
+                margin = (get_profit_margin(m) - 1) * 100
+                prog_label = f"물타기 {len(tranches)}/{max_str} (바스켓 목표 +{margin:.2f}%)" if q > 0 else "진입 대기 중"
+
+            lines.append(f"<b>[{m}]</b> {regime_label} ({p:,.0f}원)")
+            if q > 0:
+                lines.append(f"• 봇 보유: {q:.4f} {ticker} (평단 {avg:,.0f}원 | {pnl_pct:+.2f}%)")
+                lines.append(f"• 진행 상태: {prog_label}")
+            else:
+                lines.append(f"• 봇 보유: 없음 ({prog_label})")
+            lines.append("")
+
+        send_telegram_alert("\n".join(lines).strip())
+        print(f"[{time.strftime('%H:%M:%S')}] [BRIEFING] 텔레그램 정기 현황 브리핑 발송 완료.")
+    except Exception as e:
+        print(f"[WARN] 텔레그램 정기 브리핑 생성 오류: {e}")
+
+
+def telegram_hourly_briefing_worker():
+    """
+    오전 8시부터 오후 8시까지(08:00 ~ 20:59) 1시간 간격으로
+    정기 현황 브리핑을 텔레그램으로 발송하는 백그라운드 워커
+    """
+    print("[INFO] 텔레그램 정기 현황 브리핑 워커 가동 (08:00 ~ 20:00 KST 매시 1시간 간격)")
+    last_sent_hour = None
+
+    while True:
+        try:
+            kst_now = datetime.utcnow() + timedelta(hours=9)
+            hour = kst_now.hour
+
+            if 8 <= hour <= 20:
+                if last_sent_hour != hour:
+                    send_telegram_status_briefing()
+                    last_sent_hour = hour
+        except Exception as e:
+            print(f"[WARN] 텔레그램 브리핑 루프 예외: {e}")
+
+        time.sleep(30)
 
 
 # --- 봇 단일 실행 핸들러 ---
@@ -1247,6 +1306,13 @@ if __name__ == "__main__":
         start_background_sync_thread(interval_sec=30)
     except Exception as e:
         print(f"[WARN] 클라우드 동기화 스레드 초기화 실패: {e}")
+
+    # 텔레그램 정기 현황 브리핑 스레드 가동 (08:00 ~ 20:00 KST, 1시간 간격)
+    try:
+        t_brief = threading.Thread(target=telegram_hourly_briefing_worker, daemon=True, name="TelegramBriefingThread")
+        t_brief.start()
+    except Exception as e:
+        print(f"[WARN] 텔레그램 정기 브리핑 스레드 초기화 실패: {e}")
 
     if len(target_markets) == 1:
         start_bot(target_markets[0])
