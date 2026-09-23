@@ -1,3 +1,8 @@
+"""
+⚠️ [안내] 본 스크립트는 과거 솔라나 단일 코인 단순 마틴게일 테스트용 레거시 스크립트입니다.
+현재 프로젝트의 실전 전략(BTC 계층형 적립, ETH 50%손절 무제한스쿼드, SOL 70%손절 16차캡스쿼드)을
+100% 반영한 공식 백테스트는 `python backtest_main.py`를 실행하십시오.
+"""
 import pandas as pd
 import numpy as np
 import pyupbit
