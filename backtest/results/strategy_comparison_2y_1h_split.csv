@@ -1,0 +1,21 @@
+market,strategy,period,total_return_pct,max_drawdown_pct,sharpe
+KRW-ETH,Current Hybrid (approx.),Year 1,1.51,-3.91,0.41
+KRW-ETH,Current Hybrid (approx.),Year 2,-1.16,-3.84,-0.42
+KRW-ETH,Buy & Hold (50%),Year 1,32.71,-39.49,0.92
+KRW-ETH,Buy & Hold (50%),Year 2,-23.87,-43.04,-0.82
+KRW-ETH,200h Trend,Year 1,-1.98,-39.9,0.08
+KRW-ETH,200h Trend,Year 2,-23.32,-36.74,-1.0
+KRW-ETH,20/100 Cross,Year 1,18.78,-33.73,0.86
+KRW-ETH,20/100 Cross,Year 2,0.09,-17.06,0.08
+KRW-ETH,RSI-Bollinger,Year 1,0.12,-25.41,0.1
+KRW-ETH,RSI-Bollinger,Year 2,-15.41,-24.59,-0.96
+KRW-SOL,Current Hybrid (approx.),Year 1,5.78,-3.87,1.41
+KRW-SOL,Current Hybrid (approx.),Year 2,-1.0,-3.96,-0.38
+KRW-SOL,Buy & Hold (50%),Year 1,30.3,-46.1,0.79
+KRW-SOL,Buy & Hold (50%),Year 2,-30.38,-46.01,-1.12
+KRW-SOL,200h Trend,Year 1,22.86,-20.89,0.9
+KRW-SOL,200h Trend,Year 2,-16.67,-32.67,-0.82
+KRW-SOL,20/100 Cross,Year 1,24.25,-27.01,0.95
+KRW-SOL,20/100 Cross,Year 2,-8.74,-28.75,-0.38
+KRW-SOL,RSI-Bollinger,Year 1,7.01,-14.11,0.47
+KRW-SOL,RSI-Bollinger,Year 2,-15.02,-24.35,-0.91

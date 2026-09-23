@@ -1,0 +1,162 @@
+[
+  {
+    "market": "KRW-ETH",
+    "strategy": "Current Hybrid (approx.)",
+    "period": "Year 1",
+    "total_return_pct": 1.51,
+    "max_drawdown_pct": -3.91,
+    "sharpe": 0.41
+  },
+  {
+    "market": "KRW-ETH",
+    "strategy": "Current Hybrid (approx.)",
+    "period": "Year 2",
+    "total_return_pct": -1.16,
+    "max_drawdown_pct": -3.84,
+    "sharpe": -0.42
+  },
+  {
+    "market": "KRW-ETH",
+    "strategy": "Buy & Hold (50%)",
+    "period": "Year 1",
+    "total_return_pct": 32.71,
+    "max_drawdown_pct": -39.49,
+    "sharpe": 0.92
+  },
+  {
+    "market": "KRW-ETH",
+    "strategy": "Buy & Hold (50%)",
+    "period": "Year 2",
+    "total_return_pct": -23.87,
+    "max_drawdown_pct": -43.04,
+    "sharpe": -0.82
+  },
+  {
+    "market": "KRW-ETH",
+    "strategy": "200h Trend",
+    "period": "Year 1",
+    "total_return_pct": -1.98,
+    "max_drawdown_pct": -39.9,
+    "sharpe": 0.08
+  },
+  {
+    "market": "KRW-ETH",
+    "strategy": "200h Trend",
+    "period": "Year 2",
+    "total_return_pct": -23.32,
+    "max_drawdown_pct": -36.74,
+    "sharpe": -1.0
+  },
+  {
+    "market": "KRW-ETH",
+    "strategy": "20/100 Cross",
+    "period": "Year 1",
+    "total_return_pct": 18.78,
+    "max_drawdown_pct": -33.73,
+    "sharpe": 0.86
+  },
+  {
+    "market": "KRW-ETH",
+    "strategy": "20/100 Cross",
+    "period": "Year 2",
+    "total_return_pct": 0.09,
+    "max_drawdown_pct": -17.06,
+    "sharpe": 0.08
+  },
+  {
+    "market": "KRW-ETH",
+    "strategy": "RSI-Bollinger",
+    "period": "Year 1",
+    "total_return_pct": 0.12,
+    "max_drawdown_pct": -25.41,
+    "sharpe": 0.1
+  },
+  {
+    "market": "KRW-ETH",
+    "strategy": "RSI-Bollinger",
+    "period": "Year 2",
+    "total_return_pct": -15.41,
+    "max_drawdown_pct": -24.59,
+    "sharpe": -0.96
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "Current Hybrid (approx.)",
+    "period": "Year 1",
+    "total_return_pct": 5.78,
+    "max_drawdown_pct": -3.87,
+    "sharpe": 1.41
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "Current Hybrid (approx.)",
+    "period": "Year 2",
+    "total_return_pct": -1.0,
+    "max_drawdown_pct": -3.96,
+    "sharpe": -0.38
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "Buy & Hold (50%)",
+    "period": "Year 1",
+    "total_return_pct": 30.3,
+    "max_drawdown_pct": -46.1,
+    "sharpe": 0.79
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "Buy & Hold (50%)",
+    "period": "Year 2",
+    "total_return_pct": -30.38,
+    "max_drawdown_pct": -46.01,
+    "sharpe": -1.12
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "200h Trend",
+    "period": "Year 1",
+    "total_return_pct": 22.86,
+    "max_drawdown_pct": -20.89,
+    "sharpe": 0.9
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "200h Trend",
+    "period": "Year 2",
+    "total_return_pct": -16.67,
+    "max_drawdown_pct": -32.67,
+    "sharpe": -0.82
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "20/100 Cross",
+    "period": "Year 1",
+    "total_return_pct": 24.25,
+    "max_drawdown_pct": -27.01,
+    "sharpe": 0.95
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "20/100 Cross",
+    "period": "Year 2",
+    "total_return_pct": -8.74,
+    "max_drawdown_pct": -28.75,
+    "sharpe": -0.38
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "RSI-Bollinger",
+    "period": "Year 1",
+    "total_return_pct": 7.01,
+    "max_drawdown_pct": -14.11,
+    "sharpe": 0.47
+  },
+  {
+    "market": "KRW-SOL",
+    "strategy": "RSI-Bollinger",
+    "period": "Year 2",
+    "total_return_pct": -15.02,
+    "max_drawdown_pct": -24.35,
+    "sharpe": -0.91
+  }
+]
