@@ -114,6 +114,31 @@ def save_strategy_state(market: str, state: dict):
         print(f"[{market}] 상태 파일 저장 실패: {e}")
 
 
+def add_bot_tranche(state: dict, units: int, buy_price: float, volume: float, tranche_type: str = "NORMAL") -> dict:
+    """
+    고유 식별자(tranche_id)를 보장하여 차수를 추가합니다.
+    차수 매도 후 번호 재사용으로 인한 장부 왜곡 및 중복 삭제를 원천 방지합니다.
+    """
+    tranches = state.setdefault("tranches", [])
+    max_id = max([t.get("tranche_id", t.get("step", 0)) for t in tranches], default=0)
+    next_id = max(state.get("next_tranche_id", 1), max_id + 1)
+    state["next_tranche_id"] = next_id + 1
+
+    step_num = len(tranches) + 1
+    new_tr = {
+        "tranche_id": next_id,
+        "step": next_id,        # 고유 식별자 (삭제 시 정확한 대상 매칭용)
+        "step_num": step_num,   # UI 및 순차 표시용 차수 번호
+        "units": units,
+        "buy_price": buy_price,
+        "volume": volume,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "type": tranche_type
+    }
+    tranches.append(new_tr)
+    return new_tr
+
+
 # --- 잔고 및 계좌 조회 (기존 자산 보호 & 봇 전용 포지션 관리) ---
 def get_bot_balance(upbit_client, market: str, ticker: str, state: dict):
     """
@@ -129,9 +154,12 @@ def get_bot_balance(upbit_client, market: str, ticker: str, state: dict):
     try:
         balance_info = upbit_client.get_balance(ticker, verbose=True)
         if balance_info and 'balance' in balance_info:
-            total_avail = float(balance_info['balance'])
-            # 실제 업비트 가용 수량 내에서만 매도 가능하도록 초과분 캡핑
-            safe_qty = min(bot_qty, total_avail)
+            avail = float(balance_info.get('balance', 0.0) or 0.0)
+            locked = float(balance_info.get('locked', 0.0) or 0.0)
+            total_held = avail + locked
+            # 실제 업비트 총 보유 수량(가용+주문잠금) 내에서만 안전하게 캡핑
+            # (바스켓 매도 주문으로 locked된 상태에서도 봇 보유량 및 매직스플릿 차수 익절 검사 정상 작동)
+            safe_qty = min(bot_qty, total_held)
             return bot_avg, safe_qty
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] [ERROR] [{ticker}] 봇 잔고 확인 오류: {e}")
@@ -140,13 +168,14 @@ def get_bot_balance(upbit_client, market: str, ticker: str, state: dict):
 
 
 def get_my_balance(upbit_client, ticker: str):
-    """(계좌 전체) 특정 코인의 보유 수량과 평단가를 조회합니다."""
+    """(계좌 전체) 특정 코인의 총 보유 수량(가용+잠금)과 평단가를 조회합니다."""
     try:
         balance_info = upbit_client.get_balance(ticker, verbose=True)
         if balance_info and 'avg_buy_price' in balance_info:
-            avg_price = float(balance_info['avg_buy_price'])
-            quantity = float(balance_info['balance'])
-            return avg_price, quantity
+            avg_price = float(balance_info.get('avg_buy_price', 0.0) or 0.0)
+            avail = float(balance_info.get('balance', 0.0) or 0.0)
+            locked = float(balance_info.get('locked', 0.0) or 0.0)
+            return avg_price, avail + locked
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] [ERROR] [{ticker}] 코인 잔고 조회 오류: {e}")
     return 0.0, 0.0
@@ -310,6 +339,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         print(f"[{time.strftime('%H:%M:%S')}] [{market}] [국면전환 부분손절] {int(liq_pct * 100)}% 매도 결과: {sell_res}")
                         time.sleep(1.0)
 
+                        if not (isinstance(sell_res, dict) and "uuid" in sell_res):
+                            print(f"[{time.strftime('%H:%M:%S')}] [{market}] [ERROR] 국면전환 부분손절 주문 실패: {sell_res}")
+                            send_telegram_alert(f"⚠️ <b>[국면전환 부분손절 실패]</b> {market}\n시장가 매도 응답: {sell_res}")
+                            time.sleep(5)
+                            continue
+
                         log_real_trade(
                             market=market,
                             ticker=ticker,
@@ -409,13 +444,20 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         f"• 실현손익: <b>{loss_krw:+,.0f}원</b>\n"
                         f"🛡️ <b>[재진입 차단]</b> 추가 급락 및 뇌동매매 방지를 위해 <b>{STOP_LOSS_COOLDOWN_HOURS}시간({cooldown_str}까지) 신규 진입을 전면 차단</b>합니다."
                     )
-                    print(f"\n[{market}] {msg}")
-                    send_telegram_alert(msg)
 
                     cancel_all_orders(upbit, market)
                     time.sleep(0.5)
                     sell_res = upbit.sell_market_order(market, quantity)
                     print(f"[{time.strftime('%H:%M:%S')}] [{market}] [STOP-LOSS] 매도 결과: {sell_res}")
+
+                    if not (isinstance(sell_res, dict) and "uuid" in sell_res):
+                        print(f"[{market}] [ERROR] 상승장 긴급손절 시장가 매도 주문 실패: {sell_res}")
+                        send_telegram_alert(f"⚠️ <b>[손절 주문 실패]</b> {market}\n시장가 매도 주문 응답: {sell_res}")
+                        time.sleep(5)
+                        continue
+
+                    print(f"\n[{market}] {msg}")
+                    send_telegram_alert(msg)
 
                     log_real_trade(
                         market=market,
@@ -487,6 +529,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         time.sleep(0.5)
 
                         sell_res = upbit.sell_market_order(market, quantity)
+                        if not (isinstance(sell_res, dict) and "uuid" in sell_res):
+                            print(f"[{market}] [ERROR] 바스켓 익절 시장가 매도 주문 실패: {sell_res}")
+                            send_telegram_alert(f"⚠️ <b>[바스켓 익절 주문 실패]</b> {market}\n시장가 매도 주문 응답: {sell_res}")
+                            time.sleep(5)
+                            continue
+
                         real_pnl = (current_price - avg_price) * quantity
 
                         send_telegram_alert(
@@ -527,7 +575,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             tot_sell_krw = tot_sell_vol * current_price
 
                             if tot_sell_krw >= MIN_ORDER_KRW:
-                                sold_steps = [tr["step"] for tr in valid_tranches]
+                                sold_steps = [tr.get("step_num", tr.get("step")) for tr in valid_tranches]
+                                sold_ids = [tr.get("tranche_id", tr.get("step")) for tr in valid_tranches]
                                 print(f"\n[{market}] 💧 [매직스플릿 차수 합산 익절] {sold_steps}차수 일괄 매도 실행: {tot_sell_vol:.6f} {ticker} ({tot_sell_krw:,.0f}원)")
 
                                 # 1. 기존 바스켓 매도 주문 취소 (코인 잔고 잠금 해제)
@@ -545,11 +594,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                                     for tr in valid_tranches:
                                         tr_pnl = (current_price - tr["buy_price"]) * tr["volume"]
+                                        st_num = tr.get("step_num", tr.get("step"))
                                         log_real_trade(
                                             market=market,
                                             ticker=ticker,
                                             side="ask",
-                                            action=f"TRANCHE_TAKE_PROFIT_STEP_{tr['step']}",
+                                            action=f"TRANCHE_TAKE_PROFIT_STEP_{st_num}",
                                             price=current_price,
                                             volume=tr["volume"],
                                             cost_or_revenue=tr["volume"] * current_price,
@@ -557,8 +607,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                             strategy="HYBRID_MARTINGALE_MAGIC_SPLIT"
                                         )
 
-                                    # 3. 체결된 차수 장부에서 제거
-                                    state["tranches"] = [t for t in state.get("tranches", []) if t.get("step") not in sold_steps]
+                                    # 3. 체결된 차수 장부에서 고유 식별자(tranche_id)로 정확히 제거 (미매도 차수 오삭제 원천 방지)
+                                    state["tranches"] = [t for t in state.get("tranches", []) if t.get("tranche_id", t.get("step")) not in sold_ids]
 
                                     # 4. 남은 차수들을 기준으로 평단가 및 봇 수량 재계산
                                     remaining = state.get("tranches", [])
@@ -681,14 +731,14 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                     # 1차 차수 등록 (신규 진입으로 차수가 비어있을 때만)
                     if not state.get("tranches"):
-                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        state["tranches"] = [{
-                            "step": 0,
-                            "units": martingale_sched[0],
-                            "buy_price": avg_price,
-                            "volume": quantity,
-                            "time": now_str
-                        }]
+                        state["tranches"] = []
+                        add_bot_tranche(
+                            state=state,
+                            units=martingale_sched[0],
+                            buy_price=avg_price,
+                            volume=quantity,
+                            tranche_type="INITIAL"
+                        )
                         state["bot_quantity"] = quantity
                         state["bot_avg_price"] = avg_price
                         save_strategy_state(market, state)
@@ -766,16 +816,16 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         print(f"[{market}]   - 새 바스켓 익절 매도: {sell_price:,.0f}원, 전량 {quantity:.6f}")
                     time.sleep(0.2)
 
-                    # 추가 차수 등록 (체결된 해당 차수의 순수 매수 수량 기록)
-                    step_idx = len(state.get("tranches", []))
-                    assigned_units = martingale_sched[step_idx % len(martingale_sched)]
-                    state.setdefault("tranches", []).append({
-                        "step": step_idx,
-                        "units": assigned_units,
-                        "buy_price": current_price,
-                        "volume": bought_step_vol,
-                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
+                    # 추가 차수 등록 (체결된 해당 차수의 순수 매수 수량 기록, 고유 ID 보장)
+                    step_seq = len(state.get("tranches", []))
+                    assigned_units = martingale_sched[step_seq % len(martingale_sched)]
+                    add_bot_tranche(
+                        state=state,
+                        units=assigned_units,
+                        buy_price=current_price,
+                        volume=bought_step_vol,
+                        tranche_type="MARTINGALE"
+                    )
                     save_strategy_state(market, state)
 
                     # 추가 매수 주문 계획 (최대 max_steps 차수 제한)
@@ -825,15 +875,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 if total_value >= MIN_ORDER_KRW and avg_price > 0:
                     profit_rate = (current_price - avg_price) / avg_price
 
-                    # 기존 포지션이 있으나 tranches가 비어있는 경우(이전 버전 호환) 1회차(step 0)로 상태 복구
+                    # 기존 포지션이 있으나 tranches가 비어있는 경우(이전 버전 호환) 1회차로 상태 복구
                     if len(state.get("tranches", [])) == 0:
-                        state["tranches"] = [{
-                            "step": 0,
-                            "units": 1,
-                            "buy_price": avg_price,
-                            "volume": quantity,
-                            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        }]
+                        state["tranches"] = []
+                        add_bot_tranche(state, units=1, buy_price=avg_price, volume=quantity, tranche_type="RECOVERED")
                         save_strategy_state(market, state)
 
                     # B-1. 트레일링 스탑 가동 조건 (동적 목표가: 1~3회차 +10%, 4~6회차 +7%, 7~20회차 +5%)
@@ -860,18 +905,18 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         # 고점 대비 -3% 하락 시 조기 익절 청산
                         if drop_from_peak <= -TRAILING_STOP_DROP:
                             real_pnl = (current_price - avg_price) * quantity
-                            msg = (
-                                f"🟢 <b>[익절 완료]</b> {market} (트레일링 스탑)\n"
-                                f"• 체결단가: {current_price:,.0f}원 (고점 {peak_p:,.0f}원)\n"
-                                f"• 수익률: {profit_rate*100:+.2f}%\n"
-                                f"• 실현손익: <b>{real_pnl:+,.0f}원</b>"
-                            )
-                            print(f"\n[{market}] {msg}")
-                            send_telegram_alert(msg)
-
                             cancel_all_orders(upbit, market)
                             time.sleep(0.5)
-                            upbit.sell_market_order(market, quantity)
+                            sell_res = upbit.sell_market_order(market, quantity)
+
+                            if not (isinstance(sell_res, dict) and "uuid" in sell_res):
+                                print(f"[{market}] [ERROR] 트레일링 스탑 시장가 매도 주문 실패: {sell_res}")
+                                send_telegram_alert(f"⚠️ <b>[트레일링 스탑 주문 실패]</b> {market}\n시장가 매도 주문 응답: {sell_res}")
+                                time.sleep(5)
+                                continue
+
+                            print(f"\n[{market}] {msg}")
+                            send_telegram_alert(msg)
 
                             log_real_trade(
                                 market=market,
@@ -950,14 +995,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                     state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)
                                     state["last_dca_buy_time"] = now_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-                                    state["tranches"].append({
-                                        "step": current_steps,
-                                        "units": 1,
-                                        "buy_price": current_price,
-                                        "volume": bought_vol,
-                                        "time": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                                        "type": "TIME_DCA"
-                                    })
+                                    add_bot_tranche(
+                                        state=state,
+                                        units=1,
+                                        buy_price=current_price,
+                                        volume=bought_vol,
+                                        tranche_type="TIME_DCA"
+                                    )
                                     save_strategy_state(market, state)
 
                                     log_real_trade(
@@ -1022,13 +1066,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                     state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)
                                     state["last_buy_date"] = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
 
-                                    state["tranches"].append({
-                                        "step": current_steps,
-                                        "units": 1,
-                                        "buy_price": current_price,
-                                        "volume": bought_vol,
-                                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    })
+                                    add_bot_tranche(
+                                        state=state,
+                                        units=1,
+                                        buy_price=current_price,
+                                        volume=bought_vol,
+                                        tranche_type="PYRAMID"
+                                    )
                                     save_strategy_state(market, state)
 
                                     log_real_trade(
@@ -1095,14 +1139,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         state["last_closing_buy_date"] = today_str
                                         state["last_dca_buy_time"] = now_kst.strftime("%Y-%m-%d %H:%M:%S")
 
-                                        state["tranches"].append({
-                                            "step": current_steps,
-                                            "units": 1,
-                                            "buy_price": current_price,
-                                            "volume": bought_vol,
-                                            "time": now_kst.strftime("%Y-%m-%d %H:%M:%S"),
-                                            "type": "CLOSING"
-                                        })
+                                        add_bot_tranche(
+                                            state=state,
+                                            units=1,
+                                            buy_price=current_price,
+                                            volume=bought_vol,
+                                            tranche_type="CLOSING"
+                                        )
                                         save_strategy_state(market, state)
 
                                         log_real_trade(
@@ -1157,13 +1200,14 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             state["trend_peak_price"] = current_price
                             state["trailing_stop_active"] = False
                             state["initial_entry_done"] = True
-                            state["tranches"] = [{
-                                "step": 0,
-                                "units": 1,
-                                "buy_price": current_price,
-                                "volume": existing_diff,
-                                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            }]
+                            state["tranches"] = []
+                            add_bot_tranche(
+                                state=state,
+                                units=1,
+                                buy_price=current_price,
+                                volume=existing_diff,
+                                tranche_type="INITIAL_SYNC"
+                            )
                             save_strategy_state(market, state)
                             continue
 
@@ -1196,13 +1240,14 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             state["trend_peak_price"] = avg_p
                             state["trailing_stop_active"] = False
                             state["initial_entry_done"] = True
-                            state["tranches"] = [{
-                                "step": 0,
-                                "units": 1,
-                                "buy_price": avg_p,
-                                "volume": q,
-                                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            }]
+                            state["tranches"] = []
+                            add_bot_tranche(
+                                state=state,
+                                units=1,
+                                buy_price=avg_p,
+                                volume=q,
+                                tranche_type="INITIAL_ENTRY"
+                            )
                             state["last_dca_buy_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             save_strategy_state(market, state)
 

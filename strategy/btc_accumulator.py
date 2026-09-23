@@ -84,7 +84,7 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
     cur_p = 0.0
     try:
         p = pyupbit.get_current_price("KRW-BTC")
-        if p is not None:
+        if p is not None and not isinstance(p, dict):
             cur_p = float(p)
     except Exception:
         pass
@@ -101,6 +101,25 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
                 account_avg_p = float(bal_info.get("avg_buy_price", 0.0))
         except Exception as e:
             print(f"[WARN] [KRW-BTC] 계좌 잔고 조회 실패: {e}")
+
+    # [중요 안전장치] 시세(현재가 또는 200일선) 조회 실패 시 매수 판단 즉시 보류
+    # (가격 0원을 폭락 바겐세일로 오인하여 2단계 매수가 오발주되는 사고 원천 차단)
+    if cur_p <= 0.0 or ma200 <= 0.0:
+        return {
+            "market": "KRW-BTC",
+            "current_price": cur_p,
+            "ma200": ma200,
+            "account_avg_price": account_avg_p,
+            "account_btc_balance": account_btc_bal,
+            "dist_avg_pct": 0.0,
+            "dist_ma200_pct": 0.0,
+            "tier": -1,
+            "tier_name": "⚠️ 시세 조회 실패 (매수 보류)",
+            "tier_reason": "현재가 또는 200일선 조회 실패로 안전을 위해 매수를 중단합니다.",
+            "buy_krw": 0,
+            "already_bought_today": False,
+            "is_valid": False
+        }
 
     # 조건 판정
     is_below_avg = (account_avg_p > 0) and (cur_p < account_avg_p)
@@ -146,6 +165,7 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
         "tier_reason": tier_reason,
         "buy_krw": buy_krw,
         "already_bought_today": already_bought_today,
+        "is_valid": True,
         "last_buy_date": state.get("last_buy_date"),
         "total_dca_buys_count": state.get("total_dca_buys_count", 0),
         "total_dca_invested_krw": state.get("total_dca_invested_krw", 0.0),
@@ -178,8 +198,13 @@ def execute_btc_tiered_buy_if_due(upbit_client) -> Optional[Dict[str, Any]]:
     tier = status["tier"]
     reason = status["tier_reason"]
 
+    # 0. 시세 조회 실패 또는 유효하지 않은 상태인 경우: 매수 판단 즉시 보류 (오발주 방지)
+    if tier < 0 or not status.get("is_valid", True):
+        print(f"[{kst_now.strftime('%H:%M:%S')}] [KRW-BTC] ⚠️ 시세 또는 200일선 조회 실패로 종가 매수 판단을 일시 보류합니다. (사유: {reason})")
+        return None
+
     # 1. 추가 매수가 필요 없는 0단계 (상승 & 수익 중)
-    if buy_krw <= 0:
+    if tier == 0 and buy_krw <= 0:
         state["last_checked_time"] = kst_now.strftime("%Y-%m-%d %H:%M:%S")
         state["last_buy_date"] = today_kst
         state["last_buy_amount"] = 0
@@ -201,6 +226,12 @@ def execute_btc_tiered_buy_if_due(upbit_client) -> Optional[Dict[str, Any]]:
         print(f"[{kst_now.strftime('%H:%M:%S')}] [KRW-BTC] 🟢 계층형 종가 매수 주문 집행: {buy_krw:,.0f}원 (Tier {tier}: {reason})")
         order_res = upbit_client.buy_market_order("KRW-BTC", buy_krw)
         time.sleep(1.5)
+
+        if not (isinstance(order_res, dict) and "uuid" in order_res):
+            print(f"[{kst_now.strftime('%H:%M:%S')}] [KRW-BTC] [ERROR] 비트코인 종가 매수 주문 실패: {order_res}")
+            from main import send_telegram_alert
+            send_telegram_alert(f"⚠️ <b>[비트코인 종가 매수 주문 실패]</b>\n시장가 매수 응답: {order_res}")
+            return None
 
         # 체결 후 상태 갱신
         cur_p = pyupbit.get_current_price("KRW-BTC") or status["current_price"]

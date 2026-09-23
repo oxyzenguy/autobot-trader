@@ -42,3 +42,4 @@ bgf_crawler/
 paper_state_*.json
 scratch/
 
+.DS_Store

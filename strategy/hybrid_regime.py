@@ -218,6 +218,7 @@ def check_magic_split_exits(
             pnl_pct = ((current_price - buy_p) / buy_p) * 100.0
             eligible_tranches.append({
                 "step": t.get("step", 0),
+                "tranche_id": t.get("tranche_id", t.get("id", t.get("step", 0))),
                 "buy_price": buy_p,
                 "target_price": target_p,
                 "volume": float(t.get("volume", 0.0)),
