@@ -6,7 +6,7 @@ import time
 import argparse
 
 
-def collect_monthly_minute_candles(market='KRW-XRP', year=2024, month=1):
+def collect_monthly_minute_candles(market='KRW-BTC', year=2024, month=1):
     """
     pyupbit을 사용한 월별 1분봉 수집
     """
@@ -72,7 +72,7 @@ def collect_monthly_minute_candles(market='KRW-XRP', year=2024, month=1):
         return pd.DataFrame()
 
 
-def collect_multiple_months(market='KRW-XRP', start_year=2024, start_month=1,
+def collect_multiple_months(market='KRW-BTC', start_year=2024, start_month=1,
                            end_year=2025, end_month=9):
     """여러 월 일괄 수집"""
     results = {}
