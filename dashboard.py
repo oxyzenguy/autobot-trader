@@ -513,6 +513,16 @@ else:
         is_bull = regime_info.get("is_bull", False)
         regime_color = "#00c087" if is_bull else "#ff3b69"
         regime_badge = f'<span style="background:{regime_color}22; color:{regime_color}; border:1px solid {regime_color}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "국면 분석 중")}</span>'
+        
+        target_base_p = strat.get("bot_avg_price", 0.0) or avg_p or cur_p
+        basket_target_p = target_base_p * strat.get("profit_margin", 1.005) if target_base_p > 0 else 0.0
+        dist_pct = float(regime_info.get("distance_ma200_pct", 0.0))
+        dist_color = "#00c087" if dist_pct >= 0 else "#ff3b69"
+        sig_text = regime_info.get("signal", "대기")
+        raw_reason = regime_info.get("reason", "-")
+        short_reason = raw_reason[:28] + "..." if len(raw_reason) > 28 else raw_reason
+        unrealized_pnl_pct = strat.get("unrealized_pnl_pct", 0.0)
+
         if market == "KRW-BTC":
             mode_desc = "🟡 무손절 계층형 적립 (08:55 봇 스마트 가중 + 15:05 업비트 1만)"
             regime_badge = f'<span style="background:#ffb30022; color:#ffb300; border:1px solid #ffb300; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "200일선 분석 중")}</span>'
