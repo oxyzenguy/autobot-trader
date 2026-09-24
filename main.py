@@ -1099,14 +1099,38 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                     continue
 
                     # B-4. 상승장 일봉 양봉 종가매매 (08:50 ~ 09:00 KST, 당일 일봉 양봉 & 5일선 지지 시 1U 추가 매수)
-                    if USE_BULL_CLOSING_BUY and not state.get("trailing_stop_active", False):
-                        current_steps = len(state.get("tranches", []))
-                        if current_steps < MAX_BULL_DCA_STEPS:
-                            now_kst = datetime.utcnow() + timedelta(hours=9)
-                            today_str = now_kst.strftime("%Y-%m-%d")
-                            is_closing_window = (now_kst.hour == 8 and now_kst.minute >= 50)
+                    if USE_BULL_CLOSING_BUY:
+                        now_kst = datetime.utcnow() + timedelta(hours=9)
+                        today_str = now_kst.strftime("%Y-%m-%d")
+                        is_closing_window = (now_kst.hour == 8 and now_kst.minute >= 50)
 
-                            if is_closing_window and state.get("last_closing_buy_date") != today_str:
+                        if is_closing_window and state.get("last_closing_buy_date") != today_str:
+                            current_steps = len(state.get("tranches", []))
+                            if state.get("trailing_stop_active", False):
+                                if now_kst.minute >= 55:
+                                    state["last_closing_buy_date"] = today_str
+                                    state["today_closing_status"] = "🎯 트레일링 익절 대기"
+                                    save_strategy_state(market, state)
+                                    skip_msg = (
+                                        f"ℹ️ <b>[일봉 종가 매수 보류]</b> {market}\n"
+                                        f"• 판정: <b>추가 매수 보류</b>\n"
+                                        f"• 사유: 트레일링 스탑 가동 중 (수익 실현 감시 단계로 종가 추가 매수를 진행하지 않습니다.)"
+                                    )
+                                    print(f"[{market}] {skip_msg}")
+                                    send_telegram_alert(skip_msg)
+                            elif current_steps >= MAX_BULL_DCA_STEPS:
+                                if now_kst.minute >= 55:
+                                    state["last_closing_buy_date"] = today_str
+                                    state["today_closing_status"] = f"☀️ 한도 완료 ({MAX_BULL_DCA_STEPS}/{MAX_BULL_DCA_STEPS}회차)"
+                                    save_strategy_state(market, state)
+                                    skip_msg = (
+                                        f"ℹ️ <b>[일봉 종가 매수 완료]</b> {market}\n"
+                                        f"• 판정: <b>추가 매수 종료</b>\n"
+                                        f"• 사유: 상승장 최대 적립 한도({MAX_BULL_DCA_STEPS}회차)에 도달하여 추가 매수를 종료합니다."
+                                    )
+                                    print(f"[{market}] {skip_msg}")
+                                    send_telegram_alert(skip_msg)
+                            else:
                                 closing_info = check_daily_closing_buy_condition(market, current_price)
                                 if closing_info.get("can_buy", False):
                                     krw_balance = check_krw_balance_alert(upbit, context=f"{market} 상승장 일봉 종가매수 {current_steps + 1}회차")
@@ -1136,6 +1160,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)
                                         state["last_buy_date"] = today_str
                                         state["last_closing_buy_date"] = today_str
+                                        state["today_closing_status"] = f"🟢 체결 (+{unit_krw:,}원, {next_step}회차)"
                                         state["last_dca_buy_time"] = now_kst.strftime("%Y-%m-%d %H:%M:%S")
 
                                         add_bot_tranche(
@@ -1161,7 +1186,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                                         pnl_pct = ((current_price - new_avg) / new_avg) * 100
                                         msg = (
-                                            f"🔵 <b>[매수 체결]</b> {market} (종가 매수 {next_step}/{MAX_BULL_DCA_STEPS}회차)\n"
+                                            f"🔵 <b>[종가 매수 체결]</b> {market} (상승장 {next_step}/{MAX_BULL_DCA_STEPS}회차)\n"
                                             f"• 체결가: {current_price:,.0f}원 ({unit_krw:,}원)\n"
                                             f"• 새 평단가: {new_avg:,.0f}원 | 누적 수량: {new_q:.6f} {ticker}\n"
                                             f"• 현재 손익률: {pnl_pct:+.2f}%"
@@ -1170,6 +1195,33 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         send_telegram_alert(msg)
                                         time.sleep(5)
                                         continue
+                                    else:
+                                        state["last_closing_buy_date"] = today_str
+                                        state["today_closing_status"] = "⚠️ 예수금 부족"
+                                        save_strategy_state(market, state)
+                                        skip_msg = (
+                                            f"⚠️ <b>[일봉 종가 매수 불가]</b> {market}\n"
+                                            f"• 사유: 주문가능 예수금 부족 (필요: {unit_krw:,}원, 현재: {krw_balance:,.0f}원)"
+                                        )
+                                        print(f"[{market}] {skip_msg}")
+                                        send_telegram_alert(skip_msg)
+                                elif now_kst.minute >= 55:
+                                    # 08:55 이후 마감 직전까지 조건 미충족 시: 당일 종가 매수 보류 판정 및 텔레그램 알림 발송
+                                    reason_str = closing_info.get("reason", "일봉 조건 미충족")
+                                    state["last_closing_buy_date"] = today_str
+                                    state["today_closing_status"] = f"⚪ 보류 ({reason_str})"
+                                    save_strategy_state(market, state)
+
+                                    skip_msg = (
+                                        f"ℹ️ <b>[상승장 일봉 종가 매수 보류]</b> {market}\n"
+                                        f"• 판정: <b>매수 보류 (안전 관망)</b>\n"
+                                        f"• 사유: <b>{reason_str}</b>\n"
+                                        f"• 현재가: {current_price:,.0f}원 (시가: {closing_info.get('today_open', 0):,.0f}원)\n"
+                                        f"• 5일 이평선: {closing_info.get('daily_ma5', 0):,.0f}원\n"
+                                        f"🛡️ <b>[안전 규칙]</b> 하락 마감(음봉) 또는 5일선 하회 시에는 추가 하락 위험 방어를 위해 종가 매수를 진행하지 않습니다."
+                                    )
+                                    print(f"[{market}] {skip_msg}")
+                                    send_telegram_alert(skip_msg)
 
                 # 포지션 미보유 시: 최초 가동 즉시 10,000원 진입 또는 5/20 MA 골든크로스 신호 감시
                 else:
@@ -1352,6 +1404,16 @@ def send_telegram_status_briefing():
             if q > 0:
                 lines.append(f"• 봇 보유: {q:.4f} {ticker} (평단 {avg:,.0f}원 | {pnl_pct:+.2f}%)")
                 lines.append(f"• 진행 상태: {prog_label}")
+                if regime == "BULL":
+                    now_kst = datetime.utcnow() + timedelta(hours=9)
+                    today_str = now_kst.strftime("%Y-%m-%d")
+                    closing_st = state.get("today_closing_status")
+                    if state.get("last_closing_buy_date") == today_str and closing_st:
+                        lines.append(f"• 종가 매수: {closing_st}")
+                    elif now_kst.hour < 8 or (now_kst.hour == 8 and now_kst.minute < 55):
+                        lines.append("• 종가 매수: 08:55 판정 대기")
+                    elif closing_st:
+                        lines.append(f"• 종가 매수: {closing_st}")
             else:
                 lines.append(f"• 봇 보유: 없음 ({prog_label})")
             lines.append("")

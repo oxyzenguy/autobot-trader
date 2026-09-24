@@ -35,6 +35,8 @@
   ],
   "completed_cycles": 1,
   "last_buy_date": "2026-09-22",
+  "last_closing_buy_date": "2026-09-24",
+  "today_closing_status": "⚪ 보류 (일봉 음봉 하락 마감)",
   "active_ts_trigger": 0.1,
   "last_dca_buy_time": "2026-09-24 02:00:55"
 }

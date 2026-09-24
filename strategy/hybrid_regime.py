@@ -249,17 +249,29 @@ def check_daily_closing_buy_condition(market: str = "KRW-SOL", current_price: fl
         if df_day is not None and len(df_day) >= 5:
             today_open = float(df_day['open'].iloc[-1])
             today_close = float(df_day['close'].iloc[-1]) if current_price <= 0 else current_price
+            if current_price > 0:
+                df_day.loc[df_day.index[-1], 'close'] = current_price
             daily_ma5 = float(df_day['close'].rolling(5).mean().iloc[-1])
 
             is_bullish_candle = today_close > today_open
             is_above_ma5 = today_close > daily_ma5
-
             can_buy = is_bullish_candle and is_above_ma5
-            reason = (
-                f"일봉 양봉(시가 {today_open:,.0f}원 < 현재가 {today_close:,.0f}원) & 5일선({daily_ma5:,.0f}원) 지지 충족"
-                if can_buy else
-                f"일봉 조건 미충족 (양봉:{is_bullish_candle}, 5일선지지:{is_above_ma5})"
-            )
+
+            if can_buy:
+                reason = f"일봉 양봉(시가 {today_open:,.0f}원 < 현재가 {today_close:,.0f}원) & 5일선({daily_ma5:,.0f}원) 지지 충족"
+            elif not is_bullish_candle and not is_above_ma5:
+                diff_krw = today_close - today_open
+                diff_pct = (diff_krw / today_open) * 100.0
+                reason = f"일봉 음봉 하락 마감(시가 대비 {diff_krw:+,.0f}원, {diff_pct:+.2f}%) 및 5일선({daily_ma5:,.0f}원) 하회"
+            elif not is_bullish_candle:
+                diff_krw = today_close - today_open
+                diff_pct = (diff_krw / today_open) * 100.0
+                reason = f"당일 일봉 음봉 하락 마감 (시가 {today_open:,.0f}원 대비 {diff_krw:+,.0f}원, {diff_pct:+.2f}%)"
+            else:
+                diff_ma = today_close - daily_ma5
+                diff_ma_pct = (diff_ma / daily_ma5) * 100.0
+                reason = f"일봉 5일선 지지 실패 (5일선 {daily_ma5:,.0f}원 대비 {diff_ma:+,.0f}원, {diff_ma_pct:+.2f}%)"
+
             return {
                 "can_buy": can_buy,
                 "today_open": today_open,
