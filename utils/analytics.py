@@ -392,7 +392,12 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
 
     # 봇의 총 손익 = 누적 실현손익 + 봇 포지션 미실현손익 (기존 자산의 손익은 배제)
     total_strat_pnl = realized_pnl + bot_unrealized_pnl
-    strategy_return_pct = (total_strat_pnl / initial_capital * 100.0) if initial_capital > 0 else 0.0
+    if market == "KRW-BTC":
+        # 비트코인은 계좌 전체 보유 잔고(기존 보유분 포함)를 모니터링하므로,
+        # 수익률은 배정원금(100만 원)이 아닌 실제 계좌 매수원가(cost_amount) 대비 평가손익률로 산출합니다.
+        strategy_return_pct = unrealized_pnl_pct
+    else:
+        strategy_return_pct = (total_strat_pnl / initial_capital * 100.0) if initial_capital > 0 else 0.0
 
     # 시계열 자산 추이 (스냅샷 테이블 또는 trades 누적)
     snapshots_df = pd.DataFrame()

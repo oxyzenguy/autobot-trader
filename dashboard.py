@@ -494,7 +494,7 @@ else:
         strat_name = strat["strategy_name"]
         unit_krw = strat["unit_krw"]
         initial_cap = strat["initial_capital"]
-        strat_ret = strat["strategy_return_pct"]
+        strat_ret = strat.get("unrealized_pnl_pct", strat["strategy_return_pct"]) if market == "KRW-BTC" else strat["strategy_return_pct"]
         strat_pnl = strat["total_strat_pnl"]
         realized_pnl = strat["realized_pnl"]
         unrealized_pnl = strat["unrealized_pnl"]
@@ -645,6 +645,11 @@ else:
                 </div>
             """
 
+        if market == "KRW-BTC":
+            cap_info_html = f"계좌 매수원가: <b style=\"color:#f0f3f6;\">{strat['cost_amount']:,.0f}원</b> | 봇 추가적립 한도: <b style=\"color:#f0f3f6;\">{initial_cap:,.0f}원</b> (1 Unit: {unit_krw:,.0f}원)"
+        else:
+            cap_info_html = f"전략 배정 원금: <b style=\"color:#f0f3f6;\">{initial_cap:,.0f}원</b> | 1 Unit: <b style=\"color:#f0f3f6;\">{unit_krw:,.0f}원</b>"
+
         # 전략 개별 카드 (st.html을 사용하여 코드 노출 원천 차단)
         st.html(f"""
         <div class="strategy-card">
@@ -659,7 +664,7 @@ else:
                     </span>
                 </div>
                 <div style="font-size:0.85rem; color:#8c96a5;">
-                    전략 배정 원금: <b style="color:#f0f3f6;">{initial_cap:,.0f}원</b> | 1 Unit: <b style="color:#f0f3f6;">{unit_krw:,.0f}원</b>
+                    {cap_info_html}
                 </div>
             </div>
 
