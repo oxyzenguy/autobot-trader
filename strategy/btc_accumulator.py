@@ -53,16 +53,29 @@ def save_btc_state(state: Dict[str, Any]):
         print(f"[WARN] [KRW-BTC] 상태 파일 저장 실패: {e}")
 
 
+_last_valid_btc_ma200 = 0.0
+_last_btc_ma200_time = 0.0
+_last_valid_btc_price = 0.0
+
+
 def get_btc_200ma() -> float:
-    """업비트 일봉 200일 이동평균선(200 SMA) 조회 및 계산"""
+    """업비트 일봉 200일 이동평균선(200 SMA) 조회 및 계산 (결과 5분 캐싱 및 장애 시 이전값 활용)"""
+    global _last_valid_btc_ma200, _last_btc_ma200_time
+    now = time.time()
+    if _last_valid_btc_ma200 > 0 and (now - _last_btc_ma200_time < 300):
+        return _last_valid_btc_ma200
+
     try:
         df = pyupbit.get_ohlcv("KRW-BTC", interval="day", count=205)
         if df is not None and len(df) >= 200:
             ma200 = float(df["close"].rolling(200).mean().iloc[-1])
-            return ma200
+            if ma200 > 0:
+                _last_valid_btc_ma200 = ma200
+                _last_btc_ma200_time = now
+                return ma200
     except Exception as e:
         print(f"[WARN] [KRW-BTC] 200일선 계산 실패: {e}")
-    return 0.0
+    return _last_valid_btc_ma200
 
 
 def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
@@ -75,6 +88,7 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
       - Tier 1: 10,000원 추가 (흐림: 둘 중 하나 만족)
       - Tier 2: 20,000원 추가 (폭풍우: 둘 다 만족 = 역대급 바겐세일)
     """
+    global _last_valid_btc_price
     if upbit_client is None:
         try:
             upbit_client = get_upbit_client()
@@ -84,10 +98,14 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
     cur_p = 0.0
     try:
         p = pyupbit.get_current_price("KRW-BTC")
-        if p is not None and not isinstance(p, dict):
+        if p is not None and not isinstance(p, dict) and float(p) > 0:
             cur_p = float(p)
+            _last_valid_btc_price = cur_p
+        elif _last_valid_btc_price > 0:
+            cur_p = _last_valid_btc_price
     except Exception:
-        pass
+        if _last_valid_btc_price > 0:
+            cur_p = _last_valid_btc_price
 
     ma200 = get_btc_200ma()
 
@@ -113,12 +131,19 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
             "account_btc_balance": account_btc_bal,
             "dist_avg_pct": 0.0,
             "dist_ma200_pct": 0.0,
+            "is_below_avg": False,
+            "is_below_ma200": False,
             "tier": -1,
             "tier_name": "⚠️ 시세 조회 실패 (매수 보류)",
             "tier_reason": "현재가 또는 200일선 조회 실패로 안전을 위해 매수를 중단합니다.",
             "buy_krw": 0,
             "already_bought_today": False,
-            "is_valid": False
+            "is_valid": False,
+            "last_buy_date": None,
+            "total_dca_buys_count": 0,
+            "total_dca_invested_krw": 0.0,
+            "upbit_dca_schedule": f"매일 {BTC_UPBIT_DCA_HOUR:02d}:{BTC_UPBIT_DCA_MINUTE:02d} (10,000원)",
+            "bot_dca_schedule": f"매일 {BTC_DCA_CLOSING_CHECK_HOUR:02d}:{BTC_DCA_CLOSING_CHECK_MINUTE:02d} (0~20,000원)"
         }
 
     # 조건 판정

@@ -1363,17 +1363,18 @@ def send_telegram_status_briefing():
                     from strategy.btc_accumulator import check_btc_tiered_status, load_btc_state
                     btc_stat = check_btc_tiered_status(upbit_client=get_upbit_client())
                     btc_state = load_btc_state()
-                    cur_p = btc_stat["current_price"]
-                    avg_p = btc_stat["account_avg_price"]
-                    tot_bal = btc_stat["account_btc_balance"]
-                    pnl_pct = btc_stat["dist_avg_pct"]
-                    ma200 = btc_stat["ma200"]
+                    cur_p = btc_stat.get("current_price", 0.0)
+                    avg_p = btc_stat.get("account_avg_price", 0.0)
+                    tot_bal = btc_stat.get("account_btc_balance", 0.0)
+                    pnl_pct = btc_stat.get("dist_avg_pct", 0.0)
+                    ma200 = btc_stat.get("ma200", 0.0)
+                    dist_ma = btc_stat.get("dist_ma200_pct", 0.0)
                     today_status = btc_state.get("today_status", "대기")
-                    tier_label = btc_stat["tier_name"]
+                    tier_label = btc_stat.get("tier_name", "대기")
 
                     lines.append(f"<b>[KRW-BTC]</b> 🟡 계층형 가중 모으기 ({cur_p:,.0f}원)")
                     lines.append(f"• 총 보유: <b>{tot_bal:.6f} BTC</b> (계좌 평단 {avg_p:,.0f}원 | {pnl_pct:+.2f}%)")
-                    lines.append(f"• 200일선: {ma200:,.0f}원 ({btc_stat['dist_ma200_pct']:+.2f}%) | {tier_label}")
+                    lines.append(f"• 200일선: {ma200:,.0f}원 ({dist_ma:+.2f}%) | {tier_label}")
                     lines.append(f"• 적립 상태: 15:05 업비트 1만 + 08:55 봇 ({today_status})")
                     lines.append("")
                 except Exception as e_btc:

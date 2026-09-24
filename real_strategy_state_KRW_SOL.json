@@ -2,8 +2,8 @@
   "market": "KRW-SOL",
   "current_regime": "BULL",
   "active_mode": "TREND",
-  "bot_quantity": 0.2525026100000005,
-  "bot_avg_price": 158364.20326110692,
+  "bot_quantity": 0.31559409000000027,
+  "bot_avg_price": 158371.35950803137,
   "protected_quantity": 6.66887531,
   "initial_entry_done": true,
   "trend_peak_price": 160200.0,
@@ -31,12 +31,23 @@
       "volume": 0.06385695999999985,
       "time": "2026-09-24 02:00:55",
       "type": "TIME_DCA"
+    },
+    {
+      "tranche_id": 3,
+      "step": 3,
+      "step_num": 4,
+      "units": 1,
+      "buy_price": 158400.0,
+      "volume": 0.06309147999999976,
+      "time": "2026-09-24 14:00:57",
+      "type": "TIME_DCA"
     }
   ],
   "completed_cycles": 1,
   "last_buy_date": "2026-09-22",
   "last_closing_buy_date": "2026-09-24",
   "today_closing_status": "⚪ 보류 (일봉 음봉 하락 마감)",
-  "active_ts_trigger": 0.1,
-  "last_dca_buy_time": "2026-09-24 02:00:55"
+  "active_ts_trigger": 0.07,
+  "last_dca_buy_time": "2026-09-24 14:00:55",
+  "next_tranche_id": 4
 }

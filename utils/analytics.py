@@ -297,24 +297,26 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
     if market == "KRW-BTC":
         from strategy.btc_accumulator import check_btc_tiered_status
         btc_stat = check_btc_tiered_status(upbit)
+        is_below_ma200 = btc_stat.get("is_below_ma200", False)
+        is_below_avg = btc_stat.get("is_below_avg", False)
         regime_info = {
-            "is_bull": (not btc_stat["is_below_ma200"]),
-            "regime": "BULL" if not btc_stat["is_below_ma200"] else "BEAR",
-            "regime_korean": "200일선 상회" if not btc_stat["is_below_ma200"] else "200일선 하회 (하락 세일)",
-            "ma200": btc_stat["ma200"],
-            "ma5": btc_stat["account_avg_price"],
-            "ma20": btc_stat["current_price"],
-            "distance_ma200_pct": btc_stat["dist_ma200_pct"],
-            "signal": btc_stat["tier_name"],
-            "reason": btc_stat["tier_reason"],
-            "tier": btc_stat["tier"],
-            "buy_krw": btc_stat["buy_krw"],
+            "is_bull": (not is_below_ma200),
+            "regime": "BULL" if not is_below_ma200 else "BEAR",
+            "regime_korean": "200일선 상회" if not is_below_ma200 else "200일선 하회 (하락 세일)",
+            "ma200": btc_stat.get("ma200", 0.0),
+            "ma5": btc_stat.get("account_avg_price", 0.0),
+            "ma20": btc_stat.get("current_price", 0.0),
+            "distance_ma200_pct": btc_stat.get("dist_ma200_pct", 0.0),
+            "signal": btc_stat.get("tier_name", "대기"),
+            "reason": btc_stat.get("tier_reason", "-"),
+            "tier": btc_stat.get("tier", 0),
+            "buy_krw": btc_stat.get("buy_krw", 0),
             "today_status": runtime_state.get("today_status", "대기"),
-            "is_below_avg": btc_stat["is_below_avg"],
-            "is_below_ma200": btc_stat["is_below_ma200"],
-            "dist_avg_pct": btc_stat["dist_avg_pct"],
-            "upbit_dca_schedule": btc_stat["upbit_dca_schedule"],
-            "bot_dca_schedule": btc_stat["bot_dca_schedule"]
+            "is_below_avg": is_below_avg,
+            "is_below_ma200": is_below_ma200,
+            "dist_avg_pct": btc_stat.get("dist_avg_pct", 0.0),
+            "upbit_dca_schedule": btc_stat.get("upbit_dca_schedule", "매일 15:05 (10,000원)"),
+            "bot_dca_schedule": btc_stat.get("bot_dca_schedule", "매일 08:55 (0~20,000원)")
         }
         # BTC는 사용자 요청에 따라 '기존 잔고 포함' 전체 계좌 잔고를 기준으로 모니터링
         protected_quantity = 0.0
