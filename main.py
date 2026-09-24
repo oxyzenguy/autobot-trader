@@ -1291,11 +1291,12 @@ def send_telegram_status_briefing():
         acc = get_total_account_summary()
         tot_equity = acc.get("total_equity", 0.0)
         krw_bal = acc.get("krw_balance", 0.0)
-        growth_pct = acc.get("growth_pct", 0.0)
+        unrealized_pnl = acc.get("unrealized_pnl", 0.0)
+        coin_pnl_pct = acc.get("coin_pnl_pct", 0.0)
 
         lines = [
             "📊 <b>[정기 현황 브리핑]</b>",
-            f"• 총 자산: <b>{tot_equity:,.0f}원</b> (수익률 {growth_pct:+.2f}%)",
+            f"• 총 자산: <b>{tot_equity:,.0f}원</b> (평가손익 {unrealized_pnl:+,.0f}원 | {coin_pnl_pct:+.2f}%)",
             f"• 주문가능 예수금: <b>{krw_bal:,.0f}원</b>",
             ""
         ]
