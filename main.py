@@ -1340,6 +1340,7 @@ def send_telegram_status_briefing():
     try:
         from utils.analytics import get_total_account_summary
         from strategy.hybrid_regime import get_hybrid_regime_and_signals
+        from utils.market_commentary import get_all_markets_technical_summary, generate_gemini_market_commentary
 
         acc = get_total_account_summary()
         tot_equity = acc.get("total_equity", 0.0)
@@ -1347,12 +1348,29 @@ def send_telegram_status_briefing():
         unrealized_pnl = acc.get("unrealized_pnl", 0.0)
         coin_pnl_pct = acc.get("coin_pnl_pct", 0.0)
 
+        # 실시간 기술적 지표 및 Gemini AI 마켓 코멘터리 생성
+        tech_data = {}
+        ai_commentary = None
+        try:
+            tech_data = get_all_markets_technical_summary()
+            ai_commentary = generate_gemini_market_commentary(tech_data)
+        except Exception as e_comm:
+            print(f"[WARN] 시황 분석 생성 오류: {e_comm}")
+
         lines = [
             "📊 <b>[정기 현황 브리핑]</b>",
             f"• 총 자산: <b>{tot_equity:,.0f}원</b> (평가손익 {unrealized_pnl:+,.0f}원 | {coin_pnl_pct:+.2f}%)",
             f"• 주문가능 예수금: <b>{krw_bal:,.0f}원</b>",
-            ""
         ]
+
+        if ai_commentary:
+            lines.extend([
+                "",
+                "🤖 <b>[Gemini AI 마켓 코멘터리]</b>",
+                f"<i>{ai_commentary}</i>"
+            ])
+
+        lines.append("")
 
         markets = list(INVESTMENTS.keys())
         priority_map = {"KRW-BTC": 1, "KRW-ETH": 2, "KRW-SOL": 3}
@@ -1372,10 +1390,13 @@ def send_telegram_status_briefing():
                     dist_ma = btc_stat.get("dist_ma200_pct", 0.0)
                     today_status = btc_state.get("today_status", "대기")
                     tier_label = btc_stat.get("tier_name", "대기")
+                    btc_tech = tech_data.get("KRW-BTC", {}).get("summary_line")
 
                     lines.append(f"<b>[KRW-BTC]</b> 🟡 계층형 가중 모으기 ({cur_p:,.0f}원)")
                     lines.append(f"• 총 보유: <b>{tot_bal:.6f} BTC</b> (계좌 평단 {avg_p:,.0f}원 | {pnl_pct:+.2f}%)")
                     lines.append(f"• 200일선: {ma200:,.0f}원 ({dist_ma:+.2f}%) | {tier_label}")
+                    if btc_tech:
+                        lines.append(f"• 시장 시황: {btc_tech}")
                     lines.append(f"• 적립 상태: 15:05 업비트 1만 + 08:55 봇 ({today_status})")
                     lines.append("")
                 except Exception as e_btc:
@@ -1403,6 +1424,9 @@ def send_telegram_status_briefing():
                 prog_label = f"물타기 {len(tranches)}/{max_str} (바스켓 목표 +{margin:.2f}%)" if q > 0 else "진입 대기 중"
 
             lines.append(f"<b>[{m}]</b> {regime_label} ({p:,.0f}원)")
+            alt_tech = tech_data.get(m, {}).get("summary_line")
+            if alt_tech:
+                lines.append(f"• 시장 시황: {alt_tech}")
             if q > 0:
                 lines.append(f"• 봇 보유: {q:.4f} {ticker} (평단 {avg:,.0f}원 | {pnl_pct:+.2f}%)")
                 lines.append(f"• 진행 상태: {prog_label}")
