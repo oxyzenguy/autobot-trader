@@ -2,8 +2,8 @@
   "market": "KRW-SOL",
   "current_regime": "BULL",
   "active_mode": "TREND",
-  "bot_quantity": 0.31559409000000027,
-  "bot_avg_price": 158371.35950803137,
+  "bot_quantity": 0.4409861199999998,
+  "bot_avg_price": 158692.21104963578,
   "protected_quantity": 6.66887531,
   "initial_entry_done": true,
   "trend_peak_price": 160200.0,
@@ -41,13 +41,33 @@
       "volume": 0.06309147999999976,
       "time": "2026-09-24 14:00:57",
       "type": "TIME_DCA"
+    },
+    {
+      "tranche_id": 4,
+      "step": 4,
+      "step_num": 5,
+      "units": 1,
+      "buy_price": 159300.0,
+      "volume": 0.06277462999999983,
+      "time": "2026-09-25 02:01:00",
+      "type": "TIME_DCA"
+    },
+    {
+      "tranche_id": 5,
+      "step": 5,
+      "step_num": 6,
+      "units": 1,
+      "buy_price": 159700.0,
+      "volume": 0.06261739999999971,
+      "time": "2026-09-25 08:50:02",
+      "type": "CLOSING"
     }
   ],
   "completed_cycles": 1,
-  "last_buy_date": "2026-09-22",
-  "last_closing_buy_date": "2026-09-24",
-  "today_closing_status": "⚪ 보류 (일봉 음봉 하락 마감)",
+  "last_buy_date": "2026-09-25",
+  "last_closing_buy_date": "2026-09-25",
+  "today_closing_status": "🟢 체결 (+10,000원, 6회차)",
   "active_ts_trigger": 0.07,
-  "last_dca_buy_time": "2026-09-24 14:00:55",
-  "next_tranche_id": 4
+  "last_dca_buy_time": "2026-09-25 08:50:00",
+  "next_tranche_id": 6
 }

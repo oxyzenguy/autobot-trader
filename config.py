@@ -116,6 +116,9 @@ PROFIT_MARGINS = {
     "KRW-BTC": 1.005,  # 비트코인: +0.5%
 }
 
+# 텔레그램 정기 현황 브리핑 발송 시각 (KST 기준 하루 4회: 09:30, 12:40, 16:40, 19:00)
+TELEGRAM_BRIEFING_SCHEDULE = ["09:30", "12:40", "16:40", "19:00"]
+
 
 def get_profit_margin(market: str) -> float:
     """해당 마켓의 익절 목표 마진을 반환합니다."""

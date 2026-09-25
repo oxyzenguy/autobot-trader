@@ -2,8 +2,8 @@
   "market": "KRW-ETH",
   "current_regime": "BULL",
   "active_mode": "TREND",
-  "bot_quantity": 0.00811259999999997,
-  "bot_avg_price": 3697611.7237383826,
+  "bot_quantity": 0.013580160000000008,
+  "bot_avg_price": 3681433.126708375,
   "protected_quantity": 0.40756151,
   "initial_entry_done": true,
   "trend_peak_price": 3718000.0,
@@ -33,13 +33,33 @@
       "volume": 0.0027107599999999787,
       "time": "2026-09-24 10:07:52",
       "type": "TIME_DCA"
+    },
+    {
+      "tranche_id": 3,
+      "step": 3,
+      "step_num": 4,
+      "units": 1,
+      "buy_price": 3641000.0,
+      "volume": 0.002745740000000052,
+      "time": "2026-09-24 22:07:57",
+      "type": "TIME_DCA"
+    },
+    {
+      "tranche_id": 4,
+      "step": 4,
+      "step_num": 5,
+      "units": 1,
+      "buy_price": 3674000.0,
+      "volume": 0.002721819999999986,
+      "time": "2026-09-25 10:08:00",
+      "type": "TIME_DCA"
     }
   ],
   "completed_cycles": 2,
   "last_buy_date": "2026-09-22",
-  "last_closing_buy_date": "2026-09-24",
-  "today_closing_status": "⚪ 보류 (일봉 음봉 하락 마감)",
-  "last_dca_buy_time": "2026-09-24 10:07:50",
-  "active_ts_trigger": 0.1,
-  "next_tranche_id": 3
+  "last_closing_buy_date": "2026-09-25",
+  "today_closing_status": "⚪ 보류 (일봉 음봉 하락 마감(시가 대비 -20,000원, -0.54%) 및 5일선(3,684,600원) 하회)",
+  "last_dca_buy_time": "2026-09-25 10:07:58",
+  "active_ts_trigger": 0.07,
+  "next_tranche_id": 5
 }

@@ -2,11 +2,11 @@
   "market": "KRW-BTC",
   "strategy": "BTC_TIERED_ACCUMULATOR",
   "active_mode": "TIERED_ACCUMULATOR_BUY_ONLY",
-  "last_checked_time": "2026-09-24 08:50:00",
-  "last_buy_date": "2026-09-24",
+  "last_checked_time": "2026-09-25 08:50:02",
+  "last_buy_date": "2026-09-25",
   "last_buy_amount": 10000,
   "last_buy_tier": 1,
-  "total_dca_buys_count": 1,
-  "total_dca_invested_krw": 10000.0,
+  "total_dca_buys_count": 2,
+  "total_dca_invested_krw": 20000.0,
   "today_status": "🟢 +10,000원 체결 (Tier 1)"
 }

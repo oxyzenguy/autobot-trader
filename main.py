@@ -34,7 +34,8 @@ from config import (
     REGIME_SWITCH_LIQUIDATION_PCT,
     MARTINGALE_SCHEDULE,
     MARTINGALE_MAX_STEPS,
-    STOP_LOSS_COOLDOWN_HOURS
+    STOP_LOSS_COOLDOWN_HOURS,
+    TELEGRAM_BRIEFING_SCHEDULE
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 from strategy.hybrid_regime import get_hybrid_regime_and_signals, check_magic_split_exits, check_daily_closing_buy_condition
@@ -1427,25 +1428,28 @@ def send_telegram_status_briefing():
 
 def telegram_hourly_briefing_worker():
     """
-    오전 8시부터 오후 8시까지(08:00 ~ 20:59) 1시간 간격으로
-    정기 현황 브리핑을 텔레그램으로 발송하는 백그라운드 워커
+    지정된 정기 시각(09:30, 12:40, 16:40, 19:00 KST, 하루 4회)에
+    계좌 및 전략 현황 브리핑을 텔레그램으로 자동 발송하는 백그라운드 워커
     """
-    print("[INFO] 텔레그램 정기 현황 브리핑 워커 가동 (08:00 ~ 20:00 KST 매시 1시간 간격)")
-    last_sent_hour = None
+    schedule_str = ", ".join(TELEGRAM_BRIEFING_SCHEDULE)
+    print(f"[INFO] 텔레그램 정기 현황 브리핑 워커 가동 (KST 하루 {len(TELEGRAM_BRIEFING_SCHEDULE)}회: {schedule_str})")
+    last_sent_slot = None
 
     while True:
         try:
             kst_now = datetime.utcnow() + timedelta(hours=9)
-            hour = kst_now.hour
+            hm_str = kst_now.strftime("%H:%M")
+            today_str = kst_now.strftime("%Y-%m-%d")
 
-            if 8 <= hour <= 20:
-                if last_sent_hour != hour:
+            if hm_str in TELEGRAM_BRIEFING_SCHEDULE:
+                slot_key = f"{today_str}_{hm_str}"
+                if last_sent_slot != slot_key:
                     send_telegram_status_briefing()
-                    last_sent_hour = hour
+                    last_sent_slot = slot_key
         except Exception as e:
             print(f"[WARN] 텔레그램 브리핑 루프 예외: {e}")
 
-        time.sleep(30)
+        time.sleep(15)
 
 
 def telegram_command_listener_worker():
