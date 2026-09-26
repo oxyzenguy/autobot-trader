@@ -77,6 +77,7 @@ USE_BULL_TIME_DCA = True             # 상승장 12시간 정기 분할 적립 �
 BULL_TIME_DCA_INTERVAL_HOURS = 12    # 정기 적립 간격 (12시간)
 MAX_BULL_DCA_STEPS = 20              # 최대 적립 차수 (20회 = 총 20만 원, 또는 예수금 한도)
 USE_BULL_CLOSING_BUY = True          # 당일 일봉 양봉 종가매매 (08:50 KST 양봉 & 5일선 지지 시 1U)
+MIN_BULL_BUY_GAP_HOURS = 3           # 매수 간 최소 보호 간격 (최근 매수 후 3시간 이내 중복 매수 방지)
 USE_BULL_PYRAMID = False             # 상승장 가격 돌파 불타기 OFF (12h 적립 + 일봉 종가매수로 안정화)
 PYRAMID_STEP_PCT = 0.03              # 직전 매수가 대비 +3.0% 상승 시 추가매수
 MAX_PYRAMID_STEPS = 20               # 최대 누적 차수

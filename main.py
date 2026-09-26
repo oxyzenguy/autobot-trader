@@ -26,6 +26,7 @@ from config import (
     PYRAMID_STEP_PCT,
     MAX_PYRAMID_STEPS,
     USE_BULL_CLOSING_BUY,
+    MIN_BULL_BUY_GAP_HOURS,
     USE_MAGIC_SPLIT_DEFENSE,
     MAGIC_SPLIT_TRANCHE_PROFIT,
     MAGIC_SPLIT_DOWN_PCT,
@@ -138,6 +139,31 @@ def add_bot_tranche(state: dict, units: int, buy_price: float, volume: float, tr
     }
     tranches.append(new_tr)
     return new_tr
+
+
+def get_hours_since_last_buy(state: dict, now_dt: datetime) -> float:
+    """
+    최근 매수(초기 진입, 12시간 정기적립, 일봉 종가매수 등) 시점으로부터 경과한 시간(시간 단위)을 반환합니다.
+    last_dca_buy_time과 tranches의 최신 매수 시각 중 가장 최근 시각을 기준으로 계산합니다.
+    """
+    candidates = []
+    last_dca = state.get("last_dca_buy_time")
+    if last_dca:
+        try:
+            candidates.append(datetime.strptime(str(last_dca)[:19], "%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            pass
+    if state.get("tranches"):
+        last_tr_time = state["tranches"][-1].get("time")
+        if last_tr_time:
+            try:
+                candidates.append(datetime.strptime(str(last_tr_time)[:19], "%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                pass
+    if not candidates:
+        return 999.0  # 과거 매수 이력 없음: 충분히 경과한 것으로 취급
+    latest_dt = max(candidates)
+    return max(0.0, (now_dt - latest_dt).total_seconds() / 3600.0)
 
 
 # --- 잔고 및 계좌 조회 (기존 자산 보호 & 봇 전용 포지션 관리) ---
@@ -948,24 +974,29 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     if USE_BULL_TIME_DCA and not state.get("trailing_stop_active", False):
                         current_steps = len(state.get("tranches", []))
                         if current_steps < MAX_BULL_DCA_STEPS:
-                            last_buy_time_str = state.get("last_dca_buy_time")
-                            if not last_buy_time_str and state.get("tranches"):
-                                last_buy_time_str = state["tranches"][-1].get("time")
+                            now_kst = datetime.utcnow() + timedelta(hours=9)
+                            today_str = now_kst.strftime("%Y-%m-%d")
+
+                            # 💡 [중복 매수 방지 Guard 1]: 오전 일봉 종가 매수(08:50) 우선권 보장
+                            # 07:00 ~ 09:05 KST 사이에는 정기 적립 매수를 일시 대기(양보)하여,
+                            # 08:50 일봉 종가 매수와 불과 몇 초/분 간격으로 중복 매수되는 현상을 원천 방지합니다.
+                            # - 08:50 종가 매수 조건(양봉 & 5일선 지지) 충족 시 종가 매수가 체결되고 타이머가 리셋되어 저녁 20:50으로 넘어갑니다.
+                            # - 음봉/5일선 이탈 등으로 종가 매수가 보류될 경우, 09:05 이후 12시간 정기 적립이 정상 실행되어 정기 모으기를 유지합니다.
+                            in_morning_closing_window = (
+                                USE_BULL_CLOSING_BUY
+                                and (now_kst.hour in (7, 8) or (now_kst.hour == 9 and now_kst.minute < 5))
+                            )
+
+                            hours_elapsed = get_hours_since_last_buy(state, now_kst)
 
                             should_dca_buy = False
-                            hours_elapsed = 0.0
-                            now_dt = datetime.now()
+                            if not in_morning_closing_window:
+                                if hours_elapsed >= BULL_TIME_DCA_INTERVAL_HOURS:
+                                    should_dca_buy = True
 
-                            if last_buy_time_str:
-                                try:
-                                    last_dt = datetime.strptime(str(last_buy_time_str)[:19], "%Y-%m-%d %H:%M:%S")
-                                    hours_elapsed = (now_dt - last_dt).total_seconds() / 3600.0
-                                    if hours_elapsed >= BULL_TIME_DCA_INTERVAL_HOURS:
-                                        should_dca_buy = True
-                                except Exception:
-                                    should_dca_buy = False
-                            else:
-                                state["last_dca_buy_time"] = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+                            # 최초 기록이 전혀 없는 경우 현재 시각으로 초기화
+                            if not state.get("last_dca_buy_time") and not state.get("tranches"):
+                                state["last_dca_buy_time"] = now_kst.strftime("%Y-%m-%d %H:%M:%S")
                                 save_strategy_state(market, state)
 
                             if should_dca_buy:
@@ -993,7 +1024,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                     state["bot_quantity"] = new_q
                                     state["bot_avg_price"] = new_avg
                                     state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)
-                                    state["last_dca_buy_time"] = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+                                    state["last_dca_buy_time"] = now_kst.strftime("%Y-%m-%d %H:%M:%S")
 
                                     add_bot_tranche(
                                         state=state,
@@ -1107,6 +1138,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                         if is_closing_window and state.get("last_closing_buy_date") != today_str:
                             current_steps = len(state.get("tranches", []))
+                            hours_since_last_buy = get_hours_since_last_buy(state, now_kst)
+
                             if state.get("trailing_stop_active", False):
                                 if now_kst.minute >= 55:
                                     state["last_closing_buy_date"] = today_str
@@ -1131,6 +1164,18 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                     )
                                     print(f"[{market}] {skip_msg}")
                                     send_telegram_alert(skip_msg)
+                            # 💡 [중복 방지 Guard 2]: 최근 매수 후 최소 간격(MIN_BULL_BUY_GAP_HOURS) 미달 시 종가 매수 건너뛰기
+                            elif hours_since_last_buy < MIN_BULL_BUY_GAP_HOURS:
+                                state["last_closing_buy_date"] = today_str
+                                state["today_closing_status"] = f"⚪ 정기적립 근접 스킵 ({hours_since_last_buy:.1f}h 전 매수)"
+                                save_strategy_state(market, state)
+                                skip_msg = (
+                                    f"ℹ️ <b>[일봉 종가 매수 보류]</b> {market}\n"
+                                    f"• 판정: <b>중복 매수 방지 (보류)</b>\n"
+                                    f"• 사유: 최근 매수({hours_since_last_buy:.1f}시간 전) 후 최소 보호 간격({MIN_BULL_BUY_GAP_HOURS}시간)이 경과하지 않아 동일 시간대 중복 매수를 건너뜁니다."
+                                )
+                                print(f"[{market}] {skip_msg}")
+                                send_telegram_alert(skip_msg)
                             else:
                                 closing_info = check_daily_closing_buy_condition(market, current_price)
                                 if closing_info.get("can_buy", False):
