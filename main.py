@@ -48,6 +48,8 @@ from utils.db_logger import log_real_trade, init_db
 LAST_KRW_ALERT_TIME = 0
 KRW_ALERT_COOLDOWN_SEC = 3600  # 1시간 쿨다운 (도배 방지)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ORDER_SETTLEMENT_ATTEMPTS = 5
+ORDER_SETTLEMENT_DELAY_SEC = 0.5
 
 
 def trigger_instant_account_snapshot():
@@ -107,15 +109,28 @@ _last_saved_state_strings = {}
 def save_strategy_state(market: str, state: dict):
     """실전 매매 상태 영속 저장 (내용이 실제로 변경되었을 때만 디스크 쓰기)"""
     path = get_state_file_path(market)
+    temp_path = None
     try:
         new_content = json.dumps(state, indent=2, ensure_ascii=False)
         if _last_saved_state_strings.get(market) == new_content:
             return
-        with open(path, "w", encoding="utf-8") as f:
+        fd, temp_path = tempfile.mkstemp(
+            dir=BASE_DIR,
+            prefix=f".{market.replace('-', '_')}_",
+            suffix=".json.tmp"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(new_content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
         _last_saved_state_strings[market] = new_content
     except Exception as e:
         print(f"[{market}] 상태 파일 저장 실패: {e}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 
 def add_bot_tranche(state: dict, units: int, buy_price: float, volume: float, tranche_type: str = "NORMAL") -> dict:
@@ -256,18 +271,146 @@ def safe_get_current_price(market: str, retries: int = 3, delay: float = 0.5) ->
     return None
 
 
+def get_order_fill_price(order: dict, executed_volume: float) -> float:
+    trades = order.get("trades", []) if isinstance(order, dict) else []
+    if not isinstance(trades, list) or executed_volume <= 0:
+        return 0.0
+    total_funds = 0.0
+    for trade in trades:
+        if not isinstance(trade, dict):
+            continue
+        try:
+            total_funds += float(trade.get("funds", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return total_funds / executed_volume if total_funds > 0 else 0.0
+
+
+def submit_market_order_and_wait(upbit_client, market: str, side: str, amount: float) -> dict:
+    try:
+        if side == "bid":
+            response = upbit_client.buy_market_order(market, amount)
+        else:
+            response = upbit_client.sell_market_order(market, amount)
+    except Exception as e:
+        return {"status": "REJECTED", "reason": f"주문 제출 예외: {e}"}
+
+    if not isinstance(response, dict) or not response.get("uuid"):
+        return {"status": "REJECTED", "reason": f"주문 접수 실패: {response}"}
+
+    order_uuid = response["uuid"]
+    for attempt in range(ORDER_SETTLEMENT_ATTEMPTS):
+        try:
+            order = upbit_client.get_order(order_uuid)
+        except Exception as e:
+            order = None
+            last_error = f"체결 조회 예외: {e}"
+        else:
+            last_error = "체결 대기 중"
+
+        if isinstance(order, dict):
+            state = order.get("state")
+            if state == "done":
+                try:
+                    executed_volume = float(order.get("executed_volume", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    executed_volume = 0.0
+                fill_price = get_order_fill_price(order, executed_volume)
+                if executed_volume > 0 and fill_price > 0:
+                    if side == "ask" and executed_volume < amount * (1.0 - 0.000001):
+                        return {
+                            "status": "PARTIAL",
+                            "uuid": order_uuid,
+                            "volume": executed_volume,
+                            "price": fill_price,
+                            "reason": "시장가 매도 부분체결"
+                        }
+                    return {
+                        "status": "FILLED",
+                        "uuid": order_uuid,
+                        "volume": executed_volume,
+                        "price": fill_price,
+                        "fee": float(order.get("paid_fee", 0.0) or 0.0)
+                    }
+                return {"status": "REJECTED", "uuid": order_uuid, "reason": "체결 수량 또는 체결가 없음"}
+            if state in ("cancel", "reject"):
+                return {"status": "REJECTED", "uuid": order_uuid, "reason": f"주문 종결 상태: {state}"}
+
+        if attempt < ORDER_SETTLEMENT_ATTEMPTS - 1:
+            time.sleep(ORDER_SETTLEMENT_DELAY_SEC)
+
+    return {"status": "PENDING", "uuid": order_uuid, "reason": last_error}
+
+
+def submit_limit_order(upbit_client, market: str, side: str, price: float, volume: float) -> Optional[dict]:
+    try:
+        if side == "bid":
+            response = upbit_client.buy_limit_order(market, price, volume)
+        else:
+            response = upbit_client.sell_limit_order(market, price, volume)
+    except Exception as e:
+        print(f"[{market}] [ERROR] 지정가 주문 제출 예외: {e}")
+        return None
+    if not isinstance(response, dict) or not response.get("uuid"):
+        print(f"[{market}] [ERROR] 지정가 주문 접수 실패: {response}")
+        return None
+    return response
+
+
+def cancel_order_and_wait(upbit_client, order_uuid: str) -> bool:
+    try:
+        response = upbit_client.cancel_order(order_uuid)
+    except Exception as e:
+        print(f"[ERROR] 주문 취소 제출 예외 ({order_uuid}): {e}")
+        return False
+    if not isinstance(response, dict) or not response.get("uuid"):
+        print(f"[ERROR] 주문 취소 접수 실패 ({order_uuid}): {response}")
+        return False
+    for attempt in range(ORDER_SETTLEMENT_ATTEMPTS):
+        try:
+            order = upbit_client.get_order(order_uuid)
+        except Exception as e:
+            print(f"[ERROR] 취소 주문 상태 조회 예외 ({order_uuid}): {e}")
+            order = None
+        if isinstance(order, dict):
+            state = order.get("state")
+            if state == "cancel":
+                return True
+            if state == "done":
+                print(f"[ERROR] 취소 전 주문 체결 감지 ({order_uuid})")
+                return False
+        if attempt < ORDER_SETTLEMENT_ATTEMPTS - 1:
+            time.sleep(ORDER_SETTLEMENT_DELAY_SEC)
+    print(f"[ERROR] 주문 취소 미확정 ({order_uuid})")
+    return False
+
+
+def halt_for_order_reconciliation(market: str, state: dict, order_result: dict):
+    state["trading_halted"] = True
+    state["halt_reason"] = order_result.get("reason", "주문 체결 상태 미확정")
+    state["pending_order_uuid"] = order_result.get("uuid")
+    save_strategy_state(market, state)
+    send_telegram_alert(
+        f"⚠️ <b>[거래 중단]</b> {market}\n"
+        f"• 사유: {state['halt_reason']}\n"
+        f"• 주문 UUID: {state.get('pending_order_uuid') or '없음'}\n"
+        f"• 거래소 체결·잔고를 확인한 뒤 상태를 재조정하세요."
+    )
+
+
 def cancel_all_orders(upbit_client, market: str):
-    """해당 마켓의 모든 미체결 주문(매수/매도)을 취소합니다."""
     try:
         open_orders = upbit_client.get_order(market, state="wait")
         if open_orders and isinstance(open_orders, list):
             for order in open_orders:
                 if isinstance(order, dict) and 'uuid' in order:
-                    upbit_client.cancel_order(order['uuid'])
-                    time.sleep(0.1)
+                    if not cancel_order_and_wait(upbit_client, order['uuid']):
+                        return False
             print(f"[{time.strftime('%H:%M:%S')}] [{market}] [ACTION] 미체결 주문 {len(open_orders)}건 전체 취소 완료.")
+        return True
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] [{market}] [ERROR] 미체결 주문 전체 취소 중 오류: {e}")
+        return False
 
 
 def acquire_market_process_lock(market: str):
@@ -327,6 +470,11 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
     while True:
         try:
+            if state.get("trading_halted", False):
+                print(f"[{market}] [CRITICAL] 주문 체결 상태 미확정으로 거래 중단: {state.get('halt_reason', '')}")
+                time.sleep(30)
+                continue
+
             # 1. 예수금 체크
             check_krw_balance_alert(upbit, context=f"{market} 실시간 감시")
 
@@ -355,8 +503,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             # 국면 전환 감지 (BULL ➔ BEAR 또는 BEAR ➔ BULL)
             if prev_regime == "BULL" and curr_regime == "BEAR":
                 print(f"\n[{market}] ⚠️ [국면 전환 감지] 200 MA 하향 이탈: 상승장(BULL) ➔ 하락장(BEAR)")
-                cancel_all_orders(upbit, market)
-                time.sleep(0.5)
+                if not cancel_all_orders(upbit, market):
+                    halt_for_order_reconciliation(market, state, {"reason": "국면 전환 전 주문 취소 미확정"})
+                    continue
 
                 avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
                 total_value = quantity * current_price
@@ -376,30 +525,28 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 sell_qty = quantity
 
                     if sell_qty > 0 and (sell_qty * current_price) >= MIN_ORDER_KRW:
-                        pnl_krw = (current_price - avg_price) * sell_qty
-                        pnl_rate = (current_price - avg_price) / avg_price
                         action_name = f"REGIME_SWITCH_PARTIAL_CUT_{int(liq_pct * 100)}PCT"
-
-                        sell_res = upbit.sell_market_order(market, sell_qty)
-                        print(f"[{time.strftime('%H:%M:%S')}] [{market}] [국면전환 부분손절] {int(liq_pct * 100)}% 매도 결과: {sell_res}")
-                        time.sleep(1.0)
-
-                        if not (isinstance(sell_res, dict) and "uuid" in sell_res):
-                            print(f"[{time.strftime('%H:%M:%S')}] [{market}] [ERROR] 국면전환 부분손절 주문 실패: {sell_res}")
-                            send_telegram_alert(f"⚠️ <b>[국면전환 부분손절 실패]</b> {market}\n시장가 매도 응답: {sell_res}")
-                            time.sleep(5)
+                        sell_result = submit_market_order_and_wait(upbit, market, "ask", sell_qty)
+                        if sell_result.get("status") != "FILLED":
+                            halt_for_order_reconciliation(market, state, sell_result)
                             continue
+
+                        filled_volume = float(sell_result["volume"])
+                        filled_price = float(sell_result["price"])
+                        pnl_krw = (filled_price - avg_price) * filled_volume
+                        pnl_rate = (filled_price - avg_price) / avg_price
 
                         log_real_trade(
                             market=market,
                             ticker=ticker,
                             side="ask",
                             action=action_name,
-                            price=current_price,
-                            volume=sell_qty,
-                            cost_or_revenue=sell_qty * current_price,
+                            price=filled_price,
+                            volume=filled_volume,
+                            cost_or_revenue=filled_price * filled_volume,
                             pnl=pnl_krw,
-                            strategy="HYBRID_REGIME_SWITCH"
+                            strategy="HYBRID_REGIME_SWITCH",
+                            order_uuid=sell_result["uuid"]
                         )
 
                         actual_avail = float(upbit.get_balance(ticker) or 0.0)
@@ -408,7 +555,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                         msg = (
                             f"🔴 <b>[손절 체결]</b> {market} (하락장 전환 {int(liq_pct * 100)}% 부분손절)\n"
-                            f"• 체결단가: {current_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
+                            f"• 체결단가: {filled_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
                             f"• 손실률: {pnl_rate * 100:+.2f}%\n"
                             f"• 실현손익: <b>{pnl_krw:+,.0f}원</b> (잔여 {100 - int(liq_pct * 100)}% 하락방어 인계)"
                         )
@@ -444,8 +591,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
             elif prev_regime == "BEAR" and curr_regime == "BULL":
                 print(f"\n[{market}] 🐂 [국면 전환 감지] 200 MA 상향 돌파: 하락장(BEAR) ➔ 상승장(BULL)")
-                cancel_all_orders(upbit, market)
-                time.sleep(0.5)
+                if not cancel_all_orders(upbit, market):
+                    halt_for_order_reconciliation(market, state, {"reason": "국면 전환 전 주문 취소 미확정"})
+                    continue
 
                 avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
                 msg = (
@@ -477,29 +625,35 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             if is_bull and total_value >= MIN_ORDER_KRW and avg_price > 0:
                 pnl_rate = (current_price - avg_price) / avg_price
                 if pnl_rate <= BULL_STOP_LOSS_PCT:
-                    loss_krw = (current_price - avg_price) * quantity
                     cooldown_sec = STOP_LOSS_COOLDOWN_HOURS * 3600
                     cooldown_until_ts = time.time() + cooldown_sec
                     cooldown_str = datetime.fromtimestamp(cooldown_until_ts).strftime("%H:%M:%S")
 
                     msg = (
                         f"🔴 <b>[손절 체결]</b> {market} (상승장 -10% 긴급손절)\n"
-                        f"• 체결가: {current_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
+                        f"• 평단가: {avg_price:,.0f}원\n"
+                        f"🛡️ <b>[재진입 차단]</b> 추가 급락 및 뇌동매매 방지를 위해 <b>{STOP_LOSS_COOLDOWN_HOURS}시간({cooldown_str}까지) 신규 진입을 전면 차단</b>합니다."
+                    )
+
+                    if not cancel_all_orders(upbit, market):
+                        halt_for_order_reconciliation(market, state, {"reason": "손절 전 주문 취소 미확정"})
+                        continue
+                    sell_result = submit_market_order_and_wait(upbit, market, "ask", quantity)
+                    if sell_result.get("status") != "FILLED":
+                        halt_for_order_reconciliation(market, state, sell_result)
+                        continue
+
+                    filled_volume = float(sell_result["volume"])
+                    filled_price = float(sell_result["price"])
+                    loss_krw = (filled_price - avg_price) * filled_volume
+                    pnl_rate = (filled_price - avg_price) / avg_price
+                    msg = (
+                        f"🔴 <b>[손절 체결]</b> {market} (상승장 -10% 긴급손절)\n"
+                        f"• 체결가: {filled_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
                         f"• 손실률: {pnl_rate * 100:.2f}%\n"
                         f"• 실현손익: <b>{loss_krw:+,.0f}원</b>\n"
                         f"🛡️ <b>[재진입 차단]</b> 추가 급락 및 뇌동매매 방지를 위해 <b>{STOP_LOSS_COOLDOWN_HOURS}시간({cooldown_str}까지) 신규 진입을 전면 차단</b>합니다."
                     )
-
-                    cancel_all_orders(upbit, market)
-                    time.sleep(0.5)
-                    sell_res = upbit.sell_market_order(market, quantity)
-                    print(f"[{time.strftime('%H:%M:%S')}] [{market}] [STOP-LOSS] 매도 결과: {sell_res}")
-
-                    if not (isinstance(sell_res, dict) and "uuid" in sell_res):
-                        print(f"[{market}] [ERROR] 상승장 긴급손절 시장가 매도 주문 실패: {sell_res}")
-                        send_telegram_alert(f"⚠️ <b>[손절 주문 실패]</b> {market}\n시장가 매도 주문 응답: {sell_res}")
-                        time.sleep(5)
-                        continue
 
                     print(f"\n[{market}] {msg}")
                     send_telegram_alert(msg)
@@ -509,11 +663,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         ticker=ticker,
                         side="ask",
                         action="BULL_STOP_LOSS_10PCT",
-                        price=current_price,
-                        volume=quantity,
-                        cost_or_revenue=quantity * current_price,
+                        price=filled_price,
+                        volume=filled_volume,
+                        cost_or_revenue=filled_volume * filled_price,
                         pnl=loss_krw,
-                        strategy="HYBRID_TREND"
+                        strategy="HYBRID_TREND",
+                        order_uuid=sell_result["uuid"]
                     )
 
                     state["bot_quantity"] = 0.0
@@ -569,21 +724,22 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     # [Exit 1: 바스켓 전량 익절]
                     if exit_decision["exit_type"] == "BASKET":
                         print(f"\n[{market}] 🎯 [바스켓 익절] {exit_decision['reason']}")
-                        cancel_all_orders(upbit, market)
-                        time.sleep(0.5)
-
-                        sell_res = upbit.sell_market_order(market, quantity)
-                        if not (isinstance(sell_res, dict) and "uuid" in sell_res):
-                            print(f"[{market}] [ERROR] 바스켓 익절 시장가 매도 주문 실패: {sell_res}")
-                            send_telegram_alert(f"⚠️ <b>[바스켓 익절 주문 실패]</b> {market}\n시장가 매도 주문 응답: {sell_res}")
-                            time.sleep(5)
+                        if not cancel_all_orders(upbit, market):
+                            halt_for_order_reconciliation(market, state, {"reason": "바스켓 익절 전 주문 취소 미확정"})
                             continue
 
-                        real_pnl = (current_price - avg_price) * quantity
+                        sell_result = submit_market_order_and_wait(upbit, market, "ask", quantity)
+                        if sell_result.get("status") != "FILLED":
+                            halt_for_order_reconciliation(market, state, sell_result)
+                            continue
+
+                        filled_volume = float(sell_result["volume"])
+                        filled_price = float(sell_result["price"])
+                        real_pnl = (filled_price - avg_price) * filled_volume
 
                         send_telegram_alert(
                             f"🟢 <b>[익절 완료]</b> {market} (바스켓 전량)\n"
-                            f"• 체결단가: {current_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
+                            f"• 체결단가: {filled_price:,.0f}원 (평단가: {avg_price:,.0f}원)\n"
                             f"• 수익률: {exit_decision['pnl_pct']:+.2f}%\n"
                             f"• 실현손익: <b>{real_pnl:+,.0f}원</b>"
                         )
@@ -593,11 +749,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             ticker=ticker,
                             side="ask",
                             action="BASKET_TAKE_PROFIT",
-                            price=current_price,
-                            volume=quantity,
-                            cost_or_revenue=quantity * current_price,
+                            price=filled_price,
+                            volume=filled_volume,
+                            cost_or_revenue=filled_volume * filled_price,
                             pnl=real_pnl,
-                            strategy="HYBRID_MARTINGALE_MAGIC_SPLIT"
+                            strategy="HYBRID_MARTINGALE_MAGIC_SPLIT",
+                            order_uuid=sell_result["uuid"]
                         )
 
                         state["bot_quantity"] = 0.0
@@ -623,32 +780,30 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 sold_ids = [tr.get("tranche_id", tr.get("step")) for tr in valid_tranches]
                                 print(f"\n[{market}] 💧 [매직스플릿 차수 합산 익절] {sold_steps}차수 일괄 매도 실행: {tot_sell_vol:.6f} {ticker} ({tot_sell_krw:,.0f}원)")
 
-                                # 1. 기존 바스켓 매도 주문 취소 (코인 잔고 잠금 해제)
-                                for order in sell_orders:
-                                    upbit.cancel_order(order['uuid'])
-                                    time.sleep(0.1)
+                                cancelled = all(cancel_order_and_wait(upbit, order['uuid']) for order in sell_orders)
+                                if not cancelled:
+                                    halt_for_order_reconciliation(market, state, {"reason": "기존 매도 주문 취소 미확정"})
+                                    continue
 
-                                time.sleep(0.3)
-                                sell_res = upbit.sell_market_order(market, tot_sell_vol)
-                                time.sleep(0.5)
-
-                                # 2. API 성공 여부 검증 (uuid 확인)
-                                if isinstance(sell_res, dict) and "uuid" in sell_res:
-                                    tot_pnl = sum((current_price - tr["buy_price"]) * tr["volume"] for tr in valid_tranches)
+                                sell_result = submit_market_order_and_wait(upbit, market, "ask", tot_sell_vol)
+                                if sell_result.get("status") == "FILLED":
+                                    filled_price = float(sell_result["price"])
+                                    tot_pnl = sum((filled_price - tr["buy_price"]) * tr["volume"] for tr in valid_tranches)
 
                                     for tr in valid_tranches:
-                                        tr_pnl = (current_price - tr["buy_price"]) * tr["volume"]
+                                        tr_pnl = (filled_price - tr["buy_price"]) * tr["volume"]
                                         st_num = tr.get("step_num", tr.get("step"))
                                         log_real_trade(
                                             market=market,
                                             ticker=ticker,
                                             side="ask",
                                             action=f"TRANCHE_TAKE_PROFIT_STEP_{st_num}",
-                                            price=current_price,
+                                            price=filled_price,
                                             volume=tr["volume"],
-                                            cost_or_revenue=tr["volume"] * current_price,
+                                            cost_or_revenue=tr["volume"] * filled_price,
                                             pnl=tr_pnl,
-                                            strategy="HYBRID_MARTINGALE_MAGIC_SPLIT"
+                                            strategy="HYBRID_MARTINGALE_MAGIC_SPLIT",
+                                            order_uuid=sell_result["uuid"]
                                         )
 
                                     # 3. 체결된 차수 장부에서 고유 식별자(tranche_id)로 정확히 제거 (미매도 차수 오삭제 원천 방지)
@@ -665,8 +820,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                                         # 잔여 포지션 바스켓 매도 주문 즉시 갱신
                                         rem_sell_price = adjust_price_to_tick(new_avg * sell_profit_margin, method="ceil")
-                                        upbit.sell_limit_order(market, rem_sell_price, new_tot_vol)
-                                        print(f"[{market}]   - 잔여 포지션 바스켓 익절 매도 재등록: {rem_sell_price:,.0f}원, {new_tot_vol:.6f}")
+                                        if submit_limit_order(upbit, market, "ask", rem_sell_price, new_tot_vol):
+                                            print(f"[{market}]   - 잔여 포지션 바스켓 익절 매도 재등록: {rem_sell_price:,.0f}원, {new_tot_vol:.6f}")
                                     else:
                                         state["bot_avg_price"] = 0.0
                                         state["bot_quantity"] = 0.0
@@ -683,9 +838,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                     time.sleep(2)
                                     continue
                                 else:
-                                    err_msg = sell_res.get("error", {}).get("message", str(sell_res)) if isinstance(sell_res, dict) else str(sell_res)
-                                    print(f"[{market}] ⚠️ [매직스플릿 매도 실패] 거래소 오류: {err_msg}")
-                                    send_telegram_alert(f"⚠️ <b>[매도 오류]</b> {market}: {err_msg} (다음 루프 재시도)")
+                                    halt_for_order_reconciliation(market, state, sell_result)
+                                    continue
                             else:
                                 print(f"[{market}] ℹ️ [매직스플릿] 매도 대상 금액({tot_sell_krw:,.0f}원)이 최소주문금액(5,000원) 미만이므로 바스켓 익절 대기.")
 
@@ -698,9 +852,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 # SOL 4개 스쿼드(16차수) 등 최대 차수 도달 시 잔여 매수 주문 자동 취소 및 홀딩 관리
                 if current_steps >= max_steps and num_buy > 0:
                     print(f"[{market}] 🛑 마틴게일 최대 차수({max_steps}차수 / 4개 스쿼드 32U) 도달로 잔여 매수 주문 {num_buy}건 취소.")
-                    for order in buy_orders:
-                        upbit.cancel_order(order['uuid'])
-                        time.sleep(0.1)
+                    if not all(cancel_order_and_wait(upbit, order['uuid']) for order in buy_orders):
+                        halt_for_order_reconciliation(market, state, {"reason": "마틴게일 매수 주문 취소 미확정"})
+                        continue
                     buy_orders = []
                     num_buy = 0
 
@@ -717,9 +871,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                 # Case 3: 매도 완료 (또는 신규 진입) → 매도 주문 0건
                 elif num_sell == 0:
-                    for order in buy_orders:
-                        upbit.cancel_order(order['uuid'])
-                        time.sleep(0.1)
+                    if not all(cancel_order_and_wait(upbit, order['uuid']) for order in buy_orders):
+                        halt_for_order_reconciliation(market, state, {"reason": "기존 매수 주문 취소 미확정"})
+                        continue
 
                     avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
                     if (quantity * current_price) < MIN_ORDER_KRW:
@@ -746,17 +900,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             continue
 
                         print(f"\n[{market}] 💧 [하락장 과매도 포착] ClucMay 투매 신호 감지! 1 Unit 시장가 매수 실행: {unit_krw:,} KRW")
-                        prev_avail = float(upbit.get_balance(ticker) or 0.0)
-                        upbit.buy_market_order(market, unit_krw)
-                        time.sleep(1.5)
+                        buy_result = submit_market_order_and_wait(upbit, market, "bid", unit_krw)
+                        if buy_result.get("status") != "FILLED":
+                            halt_for_order_reconciliation(market, state, buy_result)
+                            continue
 
-                        new_avail = float(upbit.get_balance(ticker) or 0.0)
-                        bought_vol = max(0.0, new_avail - prev_avail)
-                        if bought_vol <= 0:
-                            bought_vol = round(unit_krw / current_price, 8)
-
-                        quantity = bought_vol
-                        avg_price = current_price
+                        quantity = float(buy_result["volume"])
+                        avg_price = float(buy_result["price"])
 
                         state["bot_quantity"] = quantity
                         state["bot_avg_price"] = avg_price
@@ -769,8 +919,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             action="MARTINGALE_BUY_INITIAL",
                             price=avg_price,
                             volume=quantity,
-                            cost_or_revenue=unit_krw,
-                            strategy="HYBRID_MARTINGALE_MAGIC_SPLIT"
+                            cost_or_revenue=quantity * avg_price,
+                            strategy="HYBRID_MARTINGALE_MAGIC_SPLIT",
+                            order_uuid=buy_result["uuid"]
                         )
 
                     # 1차 차수 등록 (신규 진입으로 차수가 비어있을 때만)
@@ -792,8 +943,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     # 바스켓 익절 주문
                     sell_price = adjust_price_to_tick(avg_price * sell_profit_margin, method="ceil")
                     if (quantity * sell_price) >= MIN_ORDER_KRW:
-                        upbit.sell_limit_order(market, sell_price, quantity)
-                        print(f"[{market}]   - 바스켓 익절 매도 주문: {sell_price:,.0f}원, 수량 {quantity}")
+                        if submit_limit_order(upbit, market, "ask", sell_price, quantity):
+                            print(f"[{market}]   - 바스켓 익절 매도 주문: {sell_price:,.0f}원, 수량 {quantity}")
                     else:
                         print(f"[{market}]   - [INFO] 바스켓 매도 평가액({quantity * sell_price:,.0f}원)이 최소주문(5,000원) 미만이므로 추가 물타기 체결 후 등록합니다.")
                     time.sleep(0.2)
@@ -813,8 +964,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         u = order['units']
                         order_krw = unit_krw * u
                         volume = round(order_krw / p, 8)
-                        upbit.buy_limit_order(market, p, volume)
-                        print(f"[{market}]     - 지정가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
+                        if submit_limit_order(upbit, market, "bid", p, volume):
+                            print(f"[{market}]     - 지정가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
                         time.sleep(0.2)
 
                     send_telegram_alert(
@@ -828,9 +979,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 elif num_sell == 1 and num_buy < expected_open_buys:
                     print(f"\n[{time.strftime('%H:%M:%S')}] [{market}] [하락장 방어] Case 4: 물타기 매수 체결 감지. 포지션 재조정.")
 
-                    for order in sell_orders:
-                        upbit.cancel_order(order['uuid'])
-                        time.sleep(0.1)
+                    if not all(cancel_order_and_wait(upbit, order['uuid']) for order in sell_orders):
+                        halt_for_order_reconciliation(market, state, {"reason": "기존 매도 주문 취소 미확정"})
+                        continue
 
                     time.sleep(1)
                     actual_avail = float(upbit.get_balance(ticker) or 0.0)
@@ -856,8 +1007,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     # 새 바스켓 익절 매도 등록 (봇 수량만 등록)
                     sell_price = adjust_price_to_tick(avg_price * sell_profit_margin, method="ceil")
                     if (quantity * sell_price) >= MIN_ORDER_KRW:
-                        upbit.sell_limit_order(market, sell_price, quantity)
-                        print(f"[{market}]   - 새 바스켓 익절 매도: {sell_price:,.0f}원, 전량 {quantity:.6f}")
+                        if submit_limit_order(upbit, market, "ask", sell_price, quantity):
+                            print(f"[{market}]   - 새 바스켓 익절 매도: {sell_price:,.0f}원, 전량 {quantity:.6f}")
                     time.sleep(0.2)
 
                     # 추가 차수 등록 (체결된 해당 차수의 순수 매수 수량 기록, 고유 ID 보장)
@@ -896,9 +1047,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             print(f"[{market}]     [WARN] 원화 잔고 부족으로 매수 스킵 ({krw_balance:,.0f}원 < {order_krw:,}원)")
                             continue
                         volume = round(order_krw / p, 8)
-                        upbit.buy_limit_order(market, p, volume)
-                        krw_balance -= order_krw
-                        print(f"[{market}]     - 추가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
+                        if submit_limit_order(upbit, market, "bid", p, volume):
+                            krw_balance -= order_krw
+                            print(f"[{market}]     - 추가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
                         time.sleep(0.2)
 
                     max_steps_str = f"{max_steps}차수" if max_steps < 900 else "무제한"
@@ -948,16 +1099,17 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                         # 고점 대비 -3% 하락 시 조기 익절 청산
                         if drop_from_peak <= -TRAILING_STOP_DROP:
-                            real_pnl = (current_price - avg_price) * quantity
-                            cancel_all_orders(upbit, market)
-                            time.sleep(0.5)
-                            sell_res = upbit.sell_market_order(market, quantity)
-
-                            if not (isinstance(sell_res, dict) and "uuid" in sell_res):
-                                print(f"[{market}] [ERROR] 트레일링 스탑 시장가 매도 주문 실패: {sell_res}")
-                                send_telegram_alert(f"⚠️ <b>[트레일링 스탑 주문 실패]</b> {market}\n시장가 매도 주문 응답: {sell_res}")
-                                time.sleep(5)
+                            if not cancel_all_orders(upbit, market):
+                                halt_for_order_reconciliation(market, state, {"reason": "트레일링 익절 전 주문 취소 미확정"})
                                 continue
+                            sell_result = submit_market_order_and_wait(upbit, market, "ask", quantity)
+                            if sell_result.get("status") != "FILLED":
+                                halt_for_order_reconciliation(market, state, sell_result)
+                                continue
+
+                            filled_volume = float(sell_result["volume"])
+                            filled_price = float(sell_result["price"])
+                            real_pnl = (filled_price - avg_price) * filled_volume
 
                             print(f"\n[{market}] {msg}")
                             send_telegram_alert(msg)
@@ -967,11 +1119,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 ticker=ticker,
                                 side="ask",
                                 action="TRAILING_STOP_EXIT",
-                                price=current_price,
-                                volume=quantity,
-                                cost_or_revenue=quantity * current_price,
+                                price=filled_price,
+                                volume=filled_volume,
+                                cost_or_revenue=filled_volume * filled_price,
                                 pnl=real_pnl,
-                                strategy="HYBRID_TREND"
+                                strategy="HYBRID_TREND",
+                                order_uuid=sell_result["uuid"]
                             )
 
                             state["bot_quantity"] = 0.0
@@ -1025,29 +1178,27 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         f"\n[{market}] ⏰ [상승장 {BULL_TIME_DCA_INTERVAL_HOURS}시간 정기 분할적립 {next_step}/{MAX_BULL_DCA_STEPS}회차 매수]\n"
                                         f"직전 매수 후 {hours_elapsed:.1f}시간 경과 (기준: {BULL_TIME_DCA_INTERVAL_HOURS}시간) | 현재가: {current_price:,.0f}원"
                                     )
-                                    prev_avail = float(upbit.get_balance(ticker) or 0.0)
-                                    upbit.buy_market_order(market, unit_krw)
-                                    time.sleep(1.5)
-
-                                    new_avail = float(upbit.get_balance(ticker) or 0.0)
-                                    bought_vol = max(0.0, new_avail - prev_avail)
-                                    if bought_vol <= 0:
-                                        bought_vol = round(unit_krw / current_price, 8)
+                                    buy_result = submit_market_order_and_wait(upbit, market, "bid", unit_krw)
+                                    if buy_result.get("status") != "FILLED":
+                                        halt_for_order_reconciliation(market, state, buy_result)
+                                        continue
+                                    bought_vol = float(buy_result["volume"])
+                                    filled_price = float(buy_result["price"])
 
                                     old_q = quantity
                                     old_avg = avg_price
                                     new_q = old_q + bought_vol
-                                    new_avg = ((old_avg * old_q) + (current_price * bought_vol)) / new_q if new_q > 0 else current_price
+                                    new_avg = ((old_avg * old_q) + (filled_price * bought_vol)) / new_q if new_q > 0 else filled_price
 
                                     state["bot_quantity"] = new_q
                                     state["bot_avg_price"] = new_avg
-                                    state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)
+                                    state["trend_peak_price"] = max(state.get("trend_peak_price", filled_price), filled_price)
                                     state["last_dca_buy_time"] = now_kst.strftime("%Y-%m-%d %H:%M:%S")
 
                                     add_bot_tranche(
                                         state=state,
                                         units=1,
-                                        buy_price=current_price,
+                                        buy_price=filled_price,
                                         volume=bought_vol,
                                         tranche_type="TIME_DCA"
                                     )
@@ -1058,17 +1209,18 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         ticker=ticker,
                                         side="bid",
                                         action=f"BULL_TIME_DCA_STEP_{next_step}",
-                                        price=current_price,
+                                        price=filled_price,
                                         volume=bought_vol,
-                                        cost_or_revenue=unit_krw,
+                                        cost_or_revenue=filled_price * bought_vol,
                                         pnl=0.0,
-                                        strategy="HYBRID_TREND"
+                                        strategy="HYBRID_TREND",
+                                        order_uuid=buy_result["uuid"]
                                     )
 
                                     pnl_pct = ((current_price - new_avg) / new_avg) * 100
                                     msg = (
                                         f"🔵 <b>[매수 체결]</b> {market} (상승 적립 {next_step}/{MAX_BULL_DCA_STEPS}회차)\n"
-                                        f"• 체결가: {current_price:,.0f}원 ({unit_krw:,}원)\n"
+                                        f"• 체결가: {filled_price:,.0f}원 ({filled_price * bought_vol:,.0f}원)\n"
                                         f"• 새 평단가: {new_avg:,.0f}원 | 누적 수량: {new_q:.6f} {ticker}\n"
                                         f"• 현재 손익률: {pnl_pct:+.2f}%"
                                     )
@@ -1095,30 +1247,28 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         f"직전매수가: {last_buy_price:,.0f}원 -> 현재가: {current_price:,.0f}원 "
                                         f"(+{price_increase_ratio*100:.2f}% / 기준 +{PYRAMID_STEP_PCT*100:.1f}%)"
                                     )
-                                    prev_avail = float(upbit.get_balance(ticker) or 0.0)
-                                    upbit.buy_market_order(market, unit_krw)
-                                    time.sleep(1.5)
-
-                                    new_avail = float(upbit.get_balance(ticker) or 0.0)
-                                    bought_vol = max(0.0, new_avail - prev_avail)
-                                    if bought_vol <= 0:
-                                        bought_vol = round(unit_krw / current_price, 8)
+                                    buy_result = submit_market_order_and_wait(upbit, market, "bid", unit_krw)
+                                    if buy_result.get("status") != "FILLED":
+                                        halt_for_order_reconciliation(market, state, buy_result)
+                                        continue
+                                    bought_vol = float(buy_result["volume"])
+                                    filled_price = float(buy_result["price"])
 
                                     # 누적 포지션 및 평단가 갱신
                                     old_q = quantity
                                     old_avg = avg_price
                                     new_q = old_q + bought_vol
-                                    new_avg = ((old_avg * old_q) + (current_price * bought_vol)) / new_q if new_q > 0 else current_price
+                                    new_avg = ((old_avg * old_q) + (filled_price * bought_vol)) / new_q if new_q > 0 else filled_price
 
                                     state["bot_quantity"] = new_q
                                     state["bot_avg_price"] = new_avg
-                                    state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)
+                                    state["trend_peak_price"] = max(state.get("trend_peak_price", filled_price), filled_price)
                                     state["last_buy_date"] = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
 
                                     add_bot_tranche(
                                         state=state,
                                         units=1,
-                                        buy_price=current_price,
+                                        buy_price=filled_price,
                                         volume=bought_vol,
                                         tranche_type="PYRAMID"
                                     )
@@ -1129,17 +1279,18 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         ticker=ticker,
                                         side="bid",
                                         action=f"BULL_PYRAMID_STEP_{next_step}",
-                                        price=current_price,
+                                        price=filled_price,
                                         volume=bought_vol,
-                                        cost_or_revenue=unit_krw,
+                                        cost_or_revenue=filled_price * bought_vol,
                                         pnl=0.0,
-                                        strategy="HYBRID_TREND"
+                                        strategy="HYBRID_TREND",
+                                        order_uuid=buy_result["uuid"]
                                     )
 
                                     pnl_pct = ((current_price - new_avg) / new_avg) * 100
                                     msg = (
                                         f"🔵 <b>[매수 체결]</b> {market} (불타기 {next_step}/{MAX_PYRAMID_STEPS}회차)\n"
-                                        f"• 체결가: {current_price:,.0f}원 ({unit_krw:,}원)\n"
+                                        f"• 체결가: {filled_price:,.0f}원 ({filled_price * bought_vol:,.0f}원)\n"
                                         f"• 새 평단가: {new_avg:,.0f}원 | 누적 수량: {new_q:.6f} {ticker}\n"
                                         f"• 현재 손익률: {pnl_pct:+.2f}%"
                                     )
@@ -1204,24 +1355,22 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                             f"\n[{market}] 🌅 [상승장 일봉 양봉 종가매수 {next_step}/{MAX_BULL_DCA_STEPS}회차 매수]\n"
                                             f"사유: {closing_info.get('reason')} | 현재가: {current_price:,.0f}원"
                                         )
-                                        prev_avail = float(upbit.get_balance(ticker) or 0.0)
-                                        upbit.buy_market_order(market, unit_krw)
-                                        time.sleep(1.5)
-
-                                        new_avail = float(upbit.get_balance(ticker) or 0.0)
-                                        bought_vol = max(0.0, new_avail - prev_avail)
-                                        if bought_vol <= 0:
-                                            bought_vol = round(unit_krw / current_price, 8)
+                                        buy_result = submit_market_order_and_wait(upbit, market, "bid", unit_krw)
+                                        if buy_result.get("status") != "FILLED":
+                                            halt_for_order_reconciliation(market, state, buy_result)
+                                            continue
+                                        bought_vol = float(buy_result["volume"])
+                                        filled_price = float(buy_result["price"])
 
                                         # 누적 포지션 및 평단가 갱신
                                         old_q = quantity
                                         old_avg = avg_price
                                         new_q = old_q + bought_vol
-                                        new_avg = ((old_avg * old_q) + (current_price * bought_vol)) / new_q if new_q > 0 else current_price
+                                        new_avg = ((old_avg * old_q) + (filled_price * bought_vol)) / new_q if new_q > 0 else filled_price
 
                                         state["bot_quantity"] = new_q
                                         state["bot_avg_price"] = new_avg
-                                        state["trend_peak_price"] = max(state.get("trend_peak_price", current_price), current_price)
+                                        state["trend_peak_price"] = max(state.get("trend_peak_price", filled_price), filled_price)
                                         state["last_buy_date"] = today_str
                                         state["last_closing_buy_date"] = today_str
                                         state["today_closing_status"] = f"🟢 체결 (+{unit_krw:,}원, {next_step}회차)"
@@ -1230,7 +1379,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         add_bot_tranche(
                                             state=state,
                                             units=1,
-                                            buy_price=current_price,
+                                            buy_price=filled_price,
                                             volume=bought_vol,
                                             tranche_type="CLOSING"
                                         )
@@ -1241,17 +1390,18 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                             ticker=ticker,
                                             side="bid",
                                             action=f"BULL_CLOSING_BUY_STEP_{next_step}",
-                                            price=current_price,
+                                            price=filled_price,
                                             volume=bought_vol,
-                                            cost_or_revenue=unit_krw,
+                                            cost_or_revenue=filled_price * bought_vol,
                                             pnl=0.0,
-                                            strategy="HYBRID_TREND"
+                                            strategy="HYBRID_TREND",
+                                            order_uuid=buy_result["uuid"]
                                         )
 
                                         pnl_pct = ((current_price - new_avg) / new_avg) * 100
                                         msg = (
                                             f"🔵 <b>[종가 매수 체결]</b> {market} (상승장 {next_step}/{MAX_BULL_DCA_STEPS}회차)\n"
-                                            f"• 체결가: {current_price:,.0f}원 ({unit_krw:,}원)\n"
+                                            f"• 체결가: {filled_price:,.0f}원 ({filled_price * bought_vol:,.0f}원)\n"
                                             f"• 새 평단가: {new_avg:,.0f}원 | 누적 수량: {new_q:.6f} {ticker}\n"
                                             f"• 현재 손익률: {pnl_pct:+.2f}%"
                                         )
@@ -1338,17 +1488,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         krw_balance = check_krw_balance_alert(upbit, context=f"{market} 상승장 1회차 진입")
                         if krw_balance >= unit_krw:
                             print(f"\n[{market}] 🚀 [상승 국면] {buy_reason}! 1 Unit 시장가 매수 실행.")
-                            prev_avail = float(upbit.get_balance(ticker) or 0.0)
-                            upbit.buy_market_order(market, unit_krw)
-                            time.sleep(1.5)
+                            buy_result = submit_market_order_and_wait(upbit, market, "bid", unit_krw)
+                            if buy_result.get("status") != "FILLED":
+                                halt_for_order_reconciliation(market, state, buy_result)
+                                continue
 
-                            new_avail = float(upbit.get_balance(ticker) or 0.0)
-                            bought_vol = max(0.0, new_avail - prev_avail)
-                            if bought_vol <= 0:
-                                bought_vol = round(unit_krw / current_price, 8)
-
-                            avg_p = current_price
-                            q = bought_vol
+                            avg_p = float(buy_result["price"])
+                            q = float(buy_result["volume"])
 
                             state["bot_quantity"] = q
                             state["bot_avg_price"] = avg_p
@@ -1373,13 +1519,14 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 action=buy_action,
                                 price=avg_p,
                                 volume=q,
-                                cost_or_revenue=unit_krw,
-                                strategy="HYBRID_TREND"
+                                cost_or_revenue=avg_p * q,
+                                strategy="HYBRID_TREND",
+                                order_uuid=buy_result["uuid"]
                             )
 
                             send_telegram_alert(
                                 f"🔵 <b>[매수 체결]</b> {market} (상승 1회차 신규)\n"
-                                f"• 체결가: {avg_p:,.0f}원 ({unit_krw:,}원)\n"
+                                f"• 체결가: {avg_p:,.0f}원 ({avg_p * q:,.0f}원)\n"
                                 f"• 평단가: {avg_p:,.0f}원 | 수량: {q:.6f} {ticker}"
                             )
                             time.sleep(5)
