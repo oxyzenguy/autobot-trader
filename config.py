@@ -82,6 +82,9 @@ USE_BULL_PYRAMID = False             # 상승장 가격 돌파 불타기 OFF (12
 PYRAMID_STEP_PCT = 0.03              # 직전 매수가 대비 +3.0% 상승 시 추가매수
 MAX_PYRAMID_STEPS = 20               # 최대 누적 차수
 
+REGIME_SWITCH_BUFFER_PCT = 0.001
+REGIME_SWITCH_CONFIRMATION_CANDLES = 2
+
 # 하이브리드 하락장(BEAR) 마틴게일 매직스플릿 방어 설정 (Dual Exit: 바스켓 +0.5% OR 개별 +3%)
 USE_MAGIC_SPLIT_DEFENSE = True       # 매직스플릿 개별 익절 병행 방어 모드
 MAGIC_SPLIT_TRANCHE_PROFIT = 0.03   # 개별 차수 반등 시 단독 익절 목표 마진 (+3.0%)

@@ -25,6 +25,7 @@ import time
 import pyupbit
 import pandas as pd
 from typing import Dict, Any, Optional
+from config import REGIME_SWITCH_BUFFER_PCT, REGIME_SWITCH_CONFIRMATION_CANDLES
 
 # API 호출 과다 방지용 메모리 캐시 (종목별 60초 TTL)
 _CANDLE_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -44,25 +45,25 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
     Returns
     -------
     dict
-        시장 국면(regime), 신호(signal), 이평선(ma5, ma20, ma200), 이격도 등 상세 정보
+        시장 국면(regime), 신호(signal), 이평선(ma5, ma20, ma200), 이격도 등 상세 정보.
+        실시간 조회 시 진행 중인 1시간봉은 국면 판정에서 제외한다.
     """
     now = time.time()
     
     # 1. 캔들 데이터 로드 (캐시 우선 확인)
     if df is None:
         if market in _CANDLE_CACHE and (now - _CANDLE_CACHE[market]["timestamp"]) < 50:
-            df = _CANDLE_CACHE[market]["df"]
+            df = _CANDLE_CACHE[market]["df"].iloc[:-1].copy()
         else:
             try:
-                # 200 MA 계산을 위해 최소 210개 이상의 1시간봉 필요
                 candles = pyupbit.get_ohlcv(market, interval="minute60", count=220)
-                if candles is not None and len(candles) >= 200:
-                    df = candles.copy()
-                    _CANDLE_CACHE[market] = {"df": df, "timestamp": now}
+                if candles is not None and len(candles) >= 200 + REGIME_SWITCH_CONFIRMATION_CANDLES:
+                    _CANDLE_CACHE[market] = {"df": candles.copy(), "timestamp": now}
+                    df = candles.iloc[:-1].copy()
                 else:
                     # 실패 시 이전 캐시가 있으면 재사용, 전혀 없으면 HOLD 리턴
                     if market in _CANDLE_CACHE:
-                        df = _CANDLE_CACHE[market]["df"]
+                        df = _CANDLE_CACHE[market]["df"].iloc[:-1].copy()
                     else:
                         return {
                             "market": market,
@@ -92,6 +93,20 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
                     }
     else:
         df = df.copy()
+
+    minimum_candles = 200 + REGIME_SWITCH_CONFIRMATION_CANDLES - 1
+    if len(df) < minimum_candles:
+        return {
+            "market": market,
+            "regime": "HOLD",
+            "regime_korean": "데이터 수집 대기 (HOLD)",
+            "is_bull": None,
+            "signal": "HOLD",
+            "curr_price": 0.0,
+            "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
+            "distance_ma200_pct": 0.0,
+            "reason": "200 MA 국면 확인에 필요한 확정 1시간봉 데이터가 부족합니다"
+        }
 
     # 2. 이동평균선 및 ClucMay 지표 계산
     close = df["close"]
@@ -132,14 +147,33 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
         (curr_vol < prev_vol_mean30 * 20.0)
     )
 
-    # 3. 시장 국면 판별 (200 MA 기준)
-    is_bull = curr_price > curr_ma200
-    regime = "BULL" if is_bull else "BEAR"
-    regime_korean = "상승 국면 (Bull)" if is_bull else "하락 국면 (Bear)"
     distance_ma200_pct = ((curr_price / curr_ma200) - 1.0) * 100.0 if curr_ma200 > 0 else 0.0
+    recent_close = close.iloc[-REGIME_SWITCH_CONFIRMATION_CANDLES:]
+    recent_ma200 = ma200.iloc[-REGIME_SWITCH_CONFIRMATION_CANDLES:]
+    bull_confirmed = bool((recent_close > recent_ma200 * (1.0 + REGIME_SWITCH_BUFFER_PCT)).all())
+    bear_confirmed = bool((recent_close < recent_ma200 * (1.0 - REGIME_SWITCH_BUFFER_PCT)).all())
+
+    if bull_confirmed:
+        is_bull = True
+        regime = "BULL"
+        regime_korean = "상승 국면 (Bull)"
+    elif bear_confirmed:
+        is_bull = False
+        regime = "BEAR"
+        regime_korean = "하락 국면 (Bear)"
+    else:
+        is_bull = None
+        regime = "HOLD"
+        regime_korean = "국면 전환 확인 대기 (HOLD)"
 
     # 4. 신호 판별
-    if is_bull:
+    if is_bull is None:
+        signal = "HOLD"
+        reason = (
+            f"200 MA ±{REGIME_SWITCH_BUFFER_PCT * 100:.2f}% 완충 구간 또는 "
+            f"{REGIME_SWITCH_CONFIRMATION_CANDLES}개 확정봉 연속 확인 대기"
+        )
+    elif is_bull:
         # 상승장 추세 신호: 5/20 MA 골든크로스 신규 진입 (추세 청산 없이 12h 정기적립 & -10% 긴급손절 및 트레일링 익절만 적용)
         is_golden_cross = (prev_ma5 <= prev_ma20 and curr_ma5 > curr_ma20 and curr_price > curr_ma5)
         

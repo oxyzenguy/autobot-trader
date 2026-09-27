@@ -4,6 +4,8 @@ import time
 import json
 import math
 import threading
+import fcntl
+import tempfile
 import pyupbit
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
@@ -268,6 +270,17 @@ def cancel_all_orders(upbit_client, market: str):
         print(f"[{time.strftime('%H:%M:%S')}] [{market}] [ERROR] 미체결 주문 전체 취소 중 오류: {e}")
 
 
+def acquire_market_process_lock(market: str):
+    lock_path = os.path.join(tempfile.gettempdir(), f"autotrade_{market}.lock")
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        return None
+    return lock_file
+
+
 # =============================================================================
 # 실전 하이브리드 매매 로직 (상승장 추세 + 하락장 마틴게일 매직스플릿 이중익절)
 # =============================================================================
@@ -277,6 +290,11 @@ def run_trading_strategy(market: str = "KRW-SOL"):
     - 상승장(BULL, 200 MA 상회): 5/20 MA 추세추종 & 트레일링 스탑
     - 하락장(BEAR, 200 MA 하회): 마틴게일 배수 진입 + 하이브리드 매직스플릿 이중익절 (개별 +3% OR 바스켓 익절)
     """
+    market_process_lock = acquire_market_process_lock(market)
+    if market_process_lock is None:
+        print(f"[{market}] [CRITICAL] 동일 마켓 봇이 이미 실행 중입니다. 중복 주문 방지를 위해 이번 실행을 중단합니다.")
+        return
+
     init_db()
     ticker = market.split("-")[1]
     sell_profit_margin = get_profit_margin(market)
@@ -320,19 +338,19 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 continue
 
             regime_info = get_hybrid_regime_and_signals(market)
-            if regime_info.get("is_bull") is None:
-                # 캔들 데이터 수집 대기 중이므로 무리하게 매매하지 않고 안전 대기
-                print(f"[{time.strftime('%H:%M:%S')}] [{ticker}] [WARN] 국면 분석 데이터 수집 대기 중. 5초 후 재시도.")
-                time.sleep(5)
-                continue
-
-            is_bull = regime_info.get("is_bull", False)
-            signal = regime_info.get("signal", "HOLD")
-            regime_str = regime_info.get("regime_korean", "국면 분석 중")
+            confirmed_is_bull = regime_info.get("is_bull")
+            prev_regime = state.get("current_regime", "BEAR")
+            if confirmed_is_bull is None:
+                is_bull = prev_regime == "BULL"
+                signal = "HOLD"
+                regime_str = regime_info.get("regime_korean", "국면 전환 확인 대기")
+                curr_regime = prev_regime
+            else:
+                is_bull = confirmed_is_bull
+                signal = regime_info.get("signal", "HOLD")
+                regime_str = regime_info.get("regime_korean", "국면 분석 중")
+                curr_regime = "BULL" if is_bull else "BEAR"
             curr_ma5 = float(regime_info.get("ma5", 0.0))
-
-            curr_regime = "BULL" if is_bull else "BEAR"
-            prev_regime = state.get("current_regime", curr_regime)
 
             # 국면 전환 감지 (BULL ➔ BEAR 또는 BEAR ➔ BULL)
             if prev_regime == "BULL" and curr_regime == "BEAR":
