@@ -83,8 +83,8 @@ USE_BULL_PYRAMID = False             # 상승장 가격 돌파 불타기 OFF (12
 PYRAMID_STEP_PCT = 0.03              # 직전 매수가 대비 +3.0% 상승 시 추가매수
 MAX_PYRAMID_STEPS = 20               # 최대 누적 차수
 
-REGIME_SWITCH_BUFFER_PCT = 0.001
-REGIME_SWITCH_CONFIRMATION_CANDLES = 2
+REGIME_SWITCH_BUFFER_PCT = 0.003      # 200 MA 기준 ±0.3% 완충 구간 (이전 0.1% → 잔파동 오판 방지 강화)
+REGIME_SWITCH_CONFIRMATION_CANDLES = 3  # 확정 1시간봉 3개 연속 확인 필요 (이전 2개 → 최소 3시간 연속 하회 시만 BEAR 전환)
 
 # 하이브리드 하락장(BEAR) 마틴게일 매직스플릿 방어 설정 (Dual Exit: 바스켓 +0.5% OR 개별 +3%)
 USE_MAGIC_SPLIT_DEFENSE = True       # 매직스플릿 개별 익절 병행 방어 모드
