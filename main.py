@@ -209,7 +209,7 @@ def get_bot_balance(upbit_client, market: str, ticker: str, state: dict):
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] [ERROR] [{ticker}] 봇 잔고 확인 오류: {e}")
 
-    return bot_avg, bot_qty
+    return 0.0, 0.0
 
 
 def get_my_balance(upbit_client, ticker: str):
@@ -406,9 +406,10 @@ def cancel_all_orders(upbit_client, market: str):
             return False
         if open_orders:
             for order in open_orders:
-                if isinstance(order, dict) and 'uuid' in order:
-                    if not cancel_order_and_wait(upbit_client, order['uuid']):
-                        return False
+                if not isinstance(order, dict) or not order.get('uuid'):
+                    return False
+                if not cancel_order_and_wait(upbit_client, order['uuid']):
+                    return False
             print(f"[{time.strftime('%H:%M:%S')}] [{market}] [ACTION] 미체결 주문 {len(open_orders)}건 전체 취소 완료.")
         return True
     except Exception as e:
@@ -810,7 +811,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     # [Exit 2: 개별 차수 매직스플릿 +3% 단독 익절 (합산 1회 매도, API 검증 및 평단가 재계산)]
                     elif exit_decision["exit_type"] == "TRANCHE" and USE_MAGIC_SPLIT_DEFENSE:
                         eligible = exit_decision["eligible_tranches"]
-                        valid_tranches = [tr for tr in eligible if 0 < tr.get("volume", 0) <= quantity]
+                        valid_tranches = []
+                        sellable_remaining = quantity
+                        for tr in eligible:
+                            volume = tr.get("volume", 0)
+                            if 0 < volume <= sellable_remaining:
+                                valid_tranches.append(tr)
+                                sellable_remaining -= volume
 
                         if valid_tranches:
                             tot_sell_vol = sum(tr["volume"] for tr in valid_tranches)
@@ -852,18 +859,20 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                                     # 4. 남은 차수들을 기준으로 평단가 및 봇 수량 재계산
                                     remaining = state.get("tranches", [])
-                                    if remaining:
+                                    remaining_sellable = max(0.0, quantity - float(sell_result["volume"]))
+                                    if remaining and remaining_sellable > 0:
                                         new_tot_vol = sum(t["volume"] for t in remaining)
                                         new_tot_cost = sum(t["volume"] * t["buy_price"] for t in remaining)
                                         new_avg = new_tot_cost / new_tot_vol if new_tot_vol > 0 else 0.0
                                         state["bot_avg_price"] = new_avg
-                                        state["bot_quantity"] = new_tot_vol
+                                        state["bot_quantity"] = min(new_tot_vol, remaining_sellable)
 
                                         # 잔여 포지션 바스켓 매도 주문 즉시 갱신
                                         rem_sell_price = adjust_price_to_tick(new_avg * sell_profit_margin, method="ceil")
-                                        if submit_limit_order(upbit, market, "ask", rem_sell_price, new_tot_vol):
-                                            print(f"[{market}]   - 잔여 포지션 바스켓 익절 매도 재등록: {rem_sell_price:,.0f}원, {new_tot_vol:.6f}")
+                                        if submit_limit_order(upbit, market, "ask", rem_sell_price, state["bot_quantity"]):
+                                            print(f"[{market}]   - 잔여 포지션 바스켓 익절 매도 재등록: {rem_sell_price:,.0f}원, {state['bot_quantity']:.6f}")
                                     else:
+                                        state["tranches"] = []
                                         state["bot_avg_price"] = 0.0
                                         state["bot_quantity"] = 0.0
 
