@@ -38,6 +38,7 @@ from config import (
     MARTINGALE_SCHEDULE,
     MARTINGALE_MAX_STEPS,
     STOP_LOSS_COOLDOWN_HOURS,
+    REGIME_SWITCH_COOLDOWN_HOURS,
     TELEGRAM_BRIEFING_SCHEDULE
 )
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
@@ -203,7 +204,7 @@ def get_bot_balance(upbit_client, market: str, ticker: str, state: dict):
             total_held = avail + locked
             # 실제 업비트 총 보유 수량(가용+주문잠금) 내에서만 안전하게 캡핑
             # (바스켓 매도 주문으로 locked된 상태에서도 봇 보유량 및 매직스플릿 차수 익절 검사 정상 작동)
-            safe_qty = min(bot_qty, total_held)
+            safe_qty = min(bot_qty, max(0.0, total_held - PROTECTED_BALANCES.get(market, 0.0)))
             return bot_avg, safe_qty
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] [ERROR] [{ticker}] 봇 잔고 확인 오류: {e}")
@@ -401,7 +402,9 @@ def halt_for_order_reconciliation(market: str, state: dict, order_result: dict):
 def cancel_all_orders(upbit_client, market: str):
     try:
         open_orders = upbit_client.get_order(market, state="wait")
-        if open_orders and isinstance(open_orders, list):
+        if not isinstance(open_orders, list):
+            return False
+        if open_orders:
             for order in open_orders:
                 if isinstance(order, dict) and 'uuid' in order:
                     if not cancel_order_and_wait(upbit_client, order['uuid']):
@@ -585,6 +588,21 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 state["last_dca_buy_time"] = None
                 state["current_regime"] = "BEAR"
                 state["active_mode"] = "MARTINGALE_MAGIC_SPLIT"
+
+                # 국면전환 휩쏘 방지: 부분손절 후 재진입 쿨다운 설정
+                regime_cooldown_sec = REGIME_SWITCH_COOLDOWN_HOURS * 3600
+                regime_cooldown_until_ts = time.time() + regime_cooldown_sec
+                regime_cooldown_str = datetime.fromtimestamp(regime_cooldown_until_ts).strftime("%H:%M:%S")
+                state["stop_loss_cooldown_until"] = regime_cooldown_until_ts
+                print(f"[{market}] 🛡️ [휩쏘 방지] 국면전환 부분손절 완료. {REGIME_SWITCH_COOLDOWN_HOURS}시간({regime_cooldown_str}까지) 신규 진입 쿨다운 가동.")
+
+                cooldown_msg = (
+                    f"🛡️ <b>[재진입 차단]</b> {market} 국면전환 부분손절 후 "
+                    f"<b>{REGIME_SWITCH_COOLDOWN_HOURS}시간({regime_cooldown_str}까지) 신규 진입을 전면 차단</b>합니다.\n"
+                    f"• 200 MA 경계선 휩쏘(매도→즉시 재매수) 방지"
+                )
+                send_telegram_alert(cooldown_msg)
+
                 save_strategy_state(market, state)
                 time.sleep(2)
                 continue
@@ -1111,6 +1129,11 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             filled_price = float(sell_result["price"])
                             real_pnl = (filled_price - avg_price) * filled_volume
 
+                            msg = (
+                                f"🟢 <b>[트레일링 익절 체결]</b> {market}\n"
+                                f"• 체결단가: {filled_price:,.0f}원\n"
+                                f"• 실현손익: <b>{real_pnl:+,.0f}원</b>"
+                            )
                             print(f"\n[{market}] {msg}")
                             send_telegram_alert(msg)
 
