@@ -505,6 +505,18 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
             # 국면 전환 감지 (BULL ➔ BEAR 또는 BEAR ➔ BULL)
             if prev_regime == "BULL" and curr_regime == "BEAR":
+                # 🛡️ [연쇄 손절 방지] 쿨다운 중이면 부분손절을 반복 실행하지 않음
+                # 200 MA 경계에서 BULL↔BEAR 진동 시 50%→25%→12.5%... 연쇄 매도 원천 차단
+                existing_cooldown = float(state.get("stop_loss_cooldown_until", 0.0))
+                if time.time() < existing_cooldown:
+                    rem_min = int((existing_cooldown - time.time()) / 60)
+                    print(f"[{market}] 🛡️ [연쇄 손절 방지] 국면전환 쿨다운 중 ({rem_min}분 남음). 부분손절 생략, BEAR 모드 유지.")
+                    state["current_regime"] = "BEAR"
+                    state["active_mode"] = "MARTINGALE_MAGIC_SPLIT"
+                    save_strategy_state(market, state)
+                    time.sleep(5)
+                    continue
+
                 print(f"\n[{market}] ⚠️ [국면 전환 감지] 200 MA 하향 이탈: 상승장(BULL) ➔ 하락장(BEAR)")
                 if not cancel_all_orders(upbit, market):
                     halt_for_order_reconciliation(market, state, {"reason": "국면 전환 전 주문 취소 미확정"})
@@ -608,6 +620,17 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 continue
 
             elif prev_regime == "BEAR" and curr_regime == "BULL":
+                # 🛡️ [국면 진동 방지] 쿨다운 중에는 BULL 전환을 무시하여 BEAR 유지
+                # 200 MA 경계 진동 시 BEAR→BULL→BEAR→BULL... 반복으로 인한 연쇄 손절 원천 차단
+                existing_cooldown = float(state.get("stop_loss_cooldown_until", 0.0))
+                if time.time() < existing_cooldown:
+                    rem_min = int((existing_cooldown - time.time()) / 60)
+                    print(f"[{market}] 🛡️ [국면 진동 방지] 쿨다운 중 ({rem_min}분 남음). BULL 전환 무시, BEAR 모드 유지.")
+                    state["current_regime"] = "BEAR"
+                    save_strategy_state(market, state)
+                    time.sleep(5)
+                    continue
+
                 print(f"\n[{market}] 🐂 [국면 전환 감지] 200 MA 상향 돌파: 하락장(BEAR) ➔ 상승장(BULL)")
                 if not cancel_all_orders(upbit, market):
                     halt_for_order_reconciliation(market, state, {"reason": "국면 전환 전 주문 취소 미확정"})
