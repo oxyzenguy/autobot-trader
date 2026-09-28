@@ -39,6 +39,7 @@ class FakeExchange:
         if identifier == "fake-sell-1" and state is None:
             volume = self.sells[0]
             return {
+                "uuid": identifier,
                 "state": "done",
                 "executed_volume": str(volume),
                 "trades": [{"funds": str(volume * self.price)}],
@@ -67,13 +68,23 @@ class TestOrderSafetyRegressions(unittest.TestCase):
         logged: list[dict] = []
         output = io.StringIO()
         load_state = main.load_strategy_state if persist_state else lambda market: state
+
+        def record_state(market, value):
+            saved.append(copy.deepcopy(value))
+            return True
+
         save_state = (
             main.save_strategy_state
             if persist_state
-            else lambda market, value: saved.append(copy.deepcopy(value))
+            else record_state
         )
 
         with (
+            tempfile.TemporaryDirectory(prefix="autotrade-order-recovery-") as recovery_directory,
+            patch.object(
+                main, "get_trailing_exit_recovery_path",
+                return_value=os.path.join(recovery_directory, "exit-recovery.json"),
+            ),
             patch.multiple(
                 main,
                 acquire_market_process_lock=lambda market: object(),

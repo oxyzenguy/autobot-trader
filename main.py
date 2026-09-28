@@ -6,6 +6,8 @@ import math
 import threading
 import fcntl
 import tempfile
+import sqlite3
+from contextlib import closing
 import pyupbit
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
@@ -44,6 +46,7 @@ from config import (
 from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
 from strategy.hybrid_regime import get_hybrid_regime_and_signals, check_magic_split_exits, check_daily_closing_buy_condition
 from utils.db_logger import log_real_trade, init_db
+from utils import db_logger
 
 # 예수금 알림 쿨다운 관리
 LAST_KRW_ALERT_TIME = 0
@@ -114,7 +117,7 @@ def save_strategy_state(market: str, state: dict):
     try:
         new_content = json.dumps(state, indent=2, ensure_ascii=False)
         if _last_saved_state_strings.get(market) == new_content:
-            return
+            return True
         fd, temp_path = tempfile.mkstemp(
             dir=BASE_DIR,
             prefix=f".{market.replace('-', '_')}_",
@@ -127,8 +130,10 @@ def save_strategy_state(market: str, state: dict):
         os.replace(temp_path, path)
         temp_path = None
         _last_saved_state_strings[market] = new_content
+        return True
     except Exception as e:
         print(f"[{market}] 상태 파일 저장 실패: {e}")
+        return False
     finally:
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
@@ -289,7 +294,7 @@ def get_order_fill_price(order: dict, executed_volume: float) -> float:
     return total_funds / executed_volume if total_funds > 0 else 0.0
 
 
-def submit_market_order_and_wait(upbit_client, market: str, side: str, amount: float) -> dict:
+def submit_market_order_and_wait(upbit_client, market: str, side: str, amount: float, on_accepted=None) -> dict:
     try:
         if side == "bid":
             response = upbit_client.buy_market_order(market, amount)
@@ -302,6 +307,8 @@ def submit_market_order_and_wait(upbit_client, market: str, side: str, amount: f
         return {"status": "REJECTED", "reason": f"주문 접수 실패: {response}"}
 
     order_uuid = response["uuid"]
+    if on_accepted is not None:
+        on_accepted(order_uuid)
     for attempt in range(ORDER_SETTLEMENT_ATTEMPTS):
         try:
             order = upbit_client.get_order(order_uuid)
@@ -312,6 +319,8 @@ def submit_market_order_and_wait(upbit_client, market: str, side: str, amount: f
             last_error = "체결 대기 중"
 
         if isinstance(order, dict):
+            if on_accepted is not None and order.get("uuid") != order_uuid:
+                return {"status": "PENDING", "uuid": order_uuid, "reason": "주문 UUID 조회 불일치"}
             state = order.get("state")
             if state == "done":
                 try:
@@ -343,6 +352,133 @@ def submit_market_order_and_wait(upbit_client, market: str, side: str, amount: f
             time.sleep(ORDER_SETTLEMENT_DELAY_SEC)
 
     return {"status": "PENDING", "uuid": order_uuid, "reason": last_error}
+
+
+def get_trailing_exit_recovery_path(market: str) -> str:
+    return get_state_file_path(market) + ".trailing-exit.json"
+
+
+def save_trailing_exit_recovery(market: str, recovery: dict) -> None:
+    """Checkpoint the exit before an order can be sent or its UUID acknowledged."""
+    path = get_trailing_exit_recovery_path(market)
+    directory = os.path.dirname(path)
+    fd, temporary = tempfile.mkstemp(dir=directory, prefix=".trailing-exit-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(recovery, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def load_trailing_exit_recovery(market: str) -> Optional[dict]:
+    path = get_trailing_exit_recovery_path(market)
+    if not os.path.lexists(path):
+        return None
+    with open(path, encoding="utf-8") as handle:
+        recovery = json.load(handle)
+    if (
+        not isinstance(recovery, dict)
+        or recovery.get("market") != market
+        or recovery.get("kind") != "TRAILING_STOP_EXIT"
+        or not isinstance(recovery.get("uuid"), (str, type(None)))
+        or type(recovery.get("volume")) not in (int, float)
+        or not math.isfinite(recovery["volume"])
+        or recovery["volume"] <= 0
+        or type(recovery.get("avg_price")) not in (int, float)
+        or not math.isfinite(recovery["avg_price"])
+        or recovery["avg_price"] <= 0
+        or type(recovery.get("cycles")) is not int
+        or recovery["cycles"] < 0
+    ):
+        raise ValueError("손상된 trailing 청산 recovery 정보")
+    return recovery
+
+
+def clear_trailing_exit_recovery(market: str) -> None:
+    path = get_trailing_exit_recovery_path(market)
+    os.unlink(path)
+    directory_fd = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def reconcile_trailing_exit(upbit_client, market: str, state: dict, recovery: dict, fresh_result: Optional[dict] = None) -> bool:
+    """Only release the halt after the exact fill, trade row, and final JSON are durable."""
+    order_uuid = recovery["uuid"]
+    if not order_uuid:
+        return False
+    if fresh_result is None:
+        order = upbit_client.get_order(order_uuid)
+        if not isinstance(order, dict) or order.get("uuid") != order_uuid:
+            return False
+        if order.get("state") in ("cancel", "reject"):
+            if float(order.get("executed_volume", 0) or 0) != 0:
+                return False
+            clear_trailing_exit_recovery(market)
+            return True
+        if order.get("state") != "done":
+            return False
+        volume = float(order.get("executed_volume", 0) or 0)
+        price = get_order_fill_price(order, volume)
+        result = {"uuid": order_uuid, "volume": volume, "price": price}
+    else:
+        result = fresh_result
+    volume = float(result["volume"])
+    price = float(result["price"])
+    if (
+        result["uuid"] != order_uuid or not math.isfinite(price) or not math.isfinite(volume)
+        or price <= 0 or volume < recovery["volume"] * (1 - 0.000001)
+    ):
+        return False
+
+    if fresh_result is None:
+        with closing(sqlite3.connect(db_logger.DB_PATH)) as connection:
+            recorded = connection.execute(
+                "SELECT 1 FROM trades WHERE order_uuid = ? AND action = ?",
+                (order_uuid, "TRAILING_STOP_EXIT"),
+            ).fetchone() is not None
+    else:
+        recorded = False
+    if not recorded:
+        log_real_trade(
+            market=market, ticker=market.split("-")[1], side="ask",
+            action="TRAILING_STOP_EXIT", price=price, volume=volume,
+            cost_or_revenue=volume * price,
+            pnl=(price - recovery["avg_price"]) * volume,
+            strategy="HYBRID_TREND", order_uuid=order_uuid,
+        )
+
+    if state.get("completed_cycles", 0) == recovery["cycles"] and state.get("bot_quantity", 0) == recovery["volume"]:
+        state["bot_quantity"] = 0.0
+        state["bot_avg_price"] = 0.0
+        state["tranches"] = []
+        state["trailing_stop_active"] = False
+        state["trend_peak_price"] = 0.0
+        state["last_dca_buy_time"] = None
+        state["initial_entry_done"] = True
+        state["completed_cycles"] = recovery["cycles"] + 1
+    elif state.get("completed_cycles", 0) != recovery["cycles"] + 1 or state.get("bot_quantity") != 0.0:
+        return False
+    if save_strategy_state(market, state) is not True:
+        return False
+    directory_fd = os.open(os.path.dirname(get_state_file_path(market)), os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    clear_trailing_exit_recovery(market)
+    return True
 
 
 def submit_limit_order(upbit_client, market: str, side: str, price: float, volume: float) -> Optional[dict]:
@@ -536,6 +672,17 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
     while True:
         try:
+            try:
+                recovery = load_trailing_exit_recovery(market)
+                if recovery is not None:
+                    if not reconcile_trailing_exit(upbit, market, state, recovery):
+                        print(f"[{market}] [CRITICAL] trailing 청산 recovery 미확정; 자동 주문 중단")
+                    time.sleep(10)
+                    continue
+            except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
+                print(f"[{market}] [CRITICAL] trailing 청산 recovery 실패: {error}; 자동 주문 중단")
+                time.sleep(10)
+                continue
             if state.get("trading_halted", False):
                 print(f"[{market}] [CRITICAL] 주문 체결 상태 미확정으로 거래 중단: {state.get('halt_reason', '')}")
                 time.sleep(30)
@@ -1220,9 +1367,25 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             if not cancel_all_orders(upbit, market):
                                 halt_for_order_reconciliation(market, state, {"reason": "트레일링 익절 전 주문 취소 미확정"})
                                 continue
-                            sell_result = submit_market_order_and_wait(upbit, market, "ask", quantity)
+                            recovery = {
+                                "kind": "TRAILING_STOP_EXIT",
+                                "market": market,
+                                "uuid": None,
+                                "volume": quantity,
+                                "avg_price": avg_price,
+                                "cycles": state.get("completed_cycles", 0),
+                            }
+                            save_trailing_exit_recovery(market, recovery)
+
+                            def checkpoint_exit_uuid(order_uuid: str) -> None:
+                                recovery["uuid"] = order_uuid
+                                save_trailing_exit_recovery(market, recovery)
+
+                            sell_result = submit_market_order_and_wait(
+                                upbit, market, "ask", quantity, on_accepted=checkpoint_exit_uuid
+                            )
                             if sell_result.get("status") != "FILLED":
-                                halt_for_order_reconciliation(market, state, sell_result)
+                                print(f"[{market}] [CRITICAL] trailing 청산 주문 미확정; recovery 유지")
                                 continue
 
                             filled_volume = float(sell_result["volume"])
@@ -1236,29 +1399,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             )
                             print(f"\n[{market}] {msg}")
                             send_telegram_alert(msg)
-
-                            log_real_trade(
-                                market=market,
-                                ticker=ticker,
-                                side="ask",
-                                action="TRAILING_STOP_EXIT",
-                                price=filled_price,
-                                volume=filled_volume,
-                                cost_or_revenue=filled_volume * filled_price,
-                                pnl=real_pnl,
-                                strategy="HYBRID_TREND",
-                                order_uuid=sell_result["uuid"]
-                            )
-
-                            state["bot_quantity"] = 0.0
-                            state["bot_avg_price"] = 0.0
-                            state["tranches"] = []
-                            state["trailing_stop_active"] = False
-                            state["trend_peak_price"] = 0.0
-                            state["last_dca_buy_time"] = None
-                            state["initial_entry_done"] = True
-                            state["completed_cycles"] = state.get("completed_cycles", 0) + 1
-                            save_strategy_state(market, state)
+                            if not reconcile_trailing_exit(upbit, market, state, recovery, sell_result):
+                                print(f"[{market}] [CRITICAL] trailing 청산 최종 저장 실패; recovery 유지")
+                                continue
                             time.sleep(10)
                             continue
 
