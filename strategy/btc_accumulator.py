@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import math
 import sqlite3
 import pandas as pd
 import pyupbit
@@ -209,11 +210,14 @@ def execute_btc_tiered_buy_if_due(upbit_client) -> Optional[Dict[str, Any]]:
     minute = kst_now.minute
     today_kst = kst_now.strftime("%Y-%m-%d")
 
-    # 점검 시각: 08:50 ~ 08:58
+    state = load_btc_state()
+    if state.get("pending_buy_order"):
+        return _settle_btc_tiered_buy(upbit_client, state, kst_now)
+
+    # 신규 주문은 08:50 ~ 08:58에만 실행하되, 미확정 주문은 창 밖에서도 확인한다.
     if not (hour == BTC_DCA_CLOSING_CHECK_HOUR and 50 <= minute <= 58):
         return None
 
-    state = load_btc_state()
     if state.get("last_buy_date") == today_kst:
         # 오늘 이미 처리 완료됨
         return None
@@ -250,57 +254,113 @@ def execute_btc_tiered_buy_if_due(upbit_client) -> Optional[Dict[str, Any]]:
 
         print(f"[{kst_now.strftime('%H:%M:%S')}] [KRW-BTC] 🟢 계층형 종가 매수 주문 집행: {buy_krw:,.0f}원 (Tier {tier}: {reason})")
         order_res = upbit_client.buy_market_order("KRW-BTC", buy_krw)
-        time.sleep(1.5)
 
-        if not (isinstance(order_res, dict) and "uuid" in order_res):
+        if not (isinstance(order_res, dict) and order_res.get("uuid")):
             print(f"[{kst_now.strftime('%H:%M:%S')}] [KRW-BTC] [ERROR] 비트코인 종가 매수 주문 실패: {order_res}")
             from main import send_telegram_alert
             send_telegram_alert(f"⚠️ <b>[비트코인 종가 매수 주문 실패]</b>\n시장가 매수 응답: {order_res}")
             return None
 
-        # 체결 후 상태 갱신
-        cur_p = pyupbit.get_current_price("KRW-BTC") or status["current_price"]
+        # UUID는 접수 확인일 뿐이다. 조회 전에 저장해 다음 점검의 중복 주문을 막는다.
+        state["pending_buy_order"] = {
+            "uuid": order_res["uuid"], "tier": tier, "reason": reason,
+            "credited_volume": 0.0, "credited_funds": 0.0,
+        }
+        save_btc_state(state)
+        return _settle_btc_tiered_buy(upbit_client, state, kst_now)
+
+    except Exception as e:
+        print(f"[ERROR] [KRW-BTC] 종가 매수 실행 실패: {e}")
+        return None
+
+
+def _settle_btc_tiered_buy(upbit_client, state: Dict[str, Any], kst_now: datetime) -> Optional[Dict[str, Any]]:
+    """미확정 주문은 유지하고, 종결된 주문의 실제 체결만 한 번 반영한다."""
+    try:
+        pending = state["pending_buy_order"]
+        order_uuid = pending["uuid"]
+        tier = pending["tier"]
+        reason = pending["reason"]
+        order = upbit_client.get_order(order_uuid)
+        if not isinstance(order, dict) or order.get("uuid") != order_uuid:
+            print(f"[WARN] [KRW-BTC] 매수 주문 조회 미확정: {order_uuid} ({order})")
+            return None
+        order_state = order.get("state")
+        if order_state not in ("wait", "done", "cancel", "reject"):
+            print(f"[KRW-BTC] 매수 주문 체결 대기: {order_uuid}")
+            return None
+
+        bought_vol = float(order["executed_volume"])
+        buy_krw = sum(float(trade["funds"]) for trade in order.get("trades", []))
+        credited_vol = float(pending.get("credited_volume", 0.0))
+        credited_funds = float(pending.get("credited_funds", 0.0))
+        delta_vol = bought_vol - credited_vol
+        delta_funds = buy_krw - credited_funds
+        if not all(math.isfinite(value) for value in (bought_vol, buy_krw, delta_vol, delta_funds)):
+            print(f"[WARN] [KRW-BTC] 매수 주문 체결 내역 미확정: {order_uuid}")
+            return None
+        terminal = order_state in ("done", "cancel", "reject")
+        if delta_vol == 0 and delta_funds == 0:
+            if terminal:
+                state.pop("pending_buy_order")
+                if bought_vol > 0:
+                    state["today_status"] = f"🟢 +{buy_krw:,.0f}원 체결 (Tier {tier})"
+                else:
+                    print(f"[KRW-BTC] 체결 없이 매수 주문 종결: {order_uuid}")
+                save_btc_state(state)
+            return None
+        if not (delta_vol > 0 and delta_funds > 0):
+            print(f"[WARN] [KRW-BTC] 매수 주문 체결 내역 미확정: {order_uuid}")
+            return None
+        cur_p = delta_funds / delta_vol
+
+        # 계좌 전체 잔고는 알림에만 사용하고, 체결 금액/수량은 주문 조회값을 사용한다.
         bal_info = upbit_client.get_balance("BTC", verbose=True)
         new_bal = float(bal_info.get("balance", 0.0)) + float(bal_info.get("locked", 0.0))
         new_avg = float(bal_info.get("avg_buy_price", 0.0))
 
         # DB 체결 로그
         init_db()
-        bought_vol = buy_krw / cur_p if cur_p > 0 else 0.0
         log_real_trade(
             market="KRW-BTC",
             ticker="BTC",
             side="bid",
             action=f"BTC_TIERED_BUY_T{tier}",
             price=cur_p,
-            volume=bought_vol,
-            cost_or_revenue=buy_krw,
+            volume=delta_vol,
+            cost_or_revenue=delta_funds,
             pnl=0.0,
-            strategy="BTC_TIERED_ACCUMULATOR"
+            strategy="BTC_TIERED_ACCUMULATOR",
+            order_uuid=order_uuid
         )
 
         state["last_checked_time"] = kst_now.strftime("%Y-%m-%d %H:%M:%S")
-        state["last_buy_date"] = today_kst
+        state["last_buy_date"] = kst_now.strftime("%Y-%m-%d")
         state["last_buy_amount"] = buy_krw
         state["last_buy_tier"] = tier
-        state["total_dca_buys_count"] = state.get("total_dca_buys_count", 0) + 1
-        state["total_dca_invested_krw"] = state.get("total_dca_invested_krw", 0.0) + buy_krw
-        state["today_status"] = f"🟢 +{buy_krw:,.0f}원 체결 (Tier {tier})"
+        if credited_vol == 0:
+            state["total_dca_buys_count"] = state.get("total_dca_buys_count", 0) + 1
+        state["total_dca_invested_krw"] = state.get("total_dca_invested_krw", 0.0) + delta_funds
+        state["today_status"] = f"{'🟢' if terminal else '🟡'} +{buy_krw:,.0f}원 {'체결' if terminal else '부분체결'} (Tier {tier})"
+        pending["credited_volume"] = bought_vol
+        pending["credited_funds"] = buy_krw
+        if terminal:
+            state.pop("pending_buy_order")
         save_btc_state(state)
 
         # 텔레그램 체결 알림 발송
         from main import send_telegram_alert
         tier_badge = "🔥 2단계 역대급 세일" if tier == 2 else "✨ 1단계 단기 세일"
         msg = (
-            f"🟢 <b>[비트코인 종가 추가매수 체결]</b> ({tier_badge})\n"
-            f"• 추가 매수액: <b>{buy_krw:,.0f}원</b>\n"
+            f"{'🟢' if terminal else '🟡'} <b>[비트코인 종가 추가매수 {'체결' if terminal else '부분체결'}]</b> ({tier_badge})\n"
+            f"• 추가 매수액: <b>{delta_funds:,.0f}원</b>\n"
             f"• 매수 사유: {reason}\n"
             f"• 체결 단가: {cur_p:,.0f}원\n"
             f"• 총 보유량: <b>{new_bal:.6f} BTC</b> (계좌 평단: {new_avg:,.0f}원)\n"
             f"• 모으기 누적: {state['total_dca_buys_count']}회차 ({state['total_dca_invested_krw']:,.0f}원)"
         )
         send_telegram_alert(msg)
-        return {"action": "BOUGHT", "tier": tier, "amount": buy_krw, "reason": reason}
+        return {"action": "BOUGHT" if terminal else "PARTIAL", "tier": tier, "amount": delta_funds, "reason": reason}
 
     except Exception as e:
         print(f"[ERROR] [KRW-BTC] 종가 매수 실행 실패: {e}")
