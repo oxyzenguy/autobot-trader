@@ -1721,6 +1721,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                 # 포지션 미보유 시: 최초 가동 즉시 10,000원 진입 또는 5/20 MA 골든크로스 신호 감시
                 else:
+                    if float(state.get("bot_quantity", 0.0)) > quantity + 1e-10:
+                        halt_for_order_reconciliation(market, state, {"reason": "기존 봇 수량과 거래소 잔고 불일치"})
+                        continue
+
                     # 1. 손절 재진입 쿨다운 검사
                     cooldown_until = float(state.get("stop_loss_cooldown_until", 0.0))
                     now_ts = time.time()
@@ -1787,12 +1791,20 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             avg_p = float(buy_result["price"])
                             q = float(buy_result["volume"])
 
-                            state["bot_quantity"] = q
-                            state["bot_avg_price"] = avg_p
-                            state["trend_peak_price"] = avg_p
+                            previous_quantity = quantity
+                            total_quantity = previous_quantity + q
+                            state["bot_quantity"] = total_quantity
+                            state["bot_avg_price"] = (
+                                (avg_price * previous_quantity + avg_p * q) / total_quantity
+                            )
+                            state["trend_peak_price"] = max(state.get("trend_peak_price", 0.0), avg_p)
                             state["trailing_stop_active"] = False
                             state["initial_entry_done"] = True
-                            state["tranches"] = []
+                            if previous_quantity > 0 and not state.get("tranches"):
+                                add_bot_tranche(
+                                    state=state, units=1, buy_price=avg_price,
+                                    volume=previous_quantity, tranche_type="RECOVERED"
+                                )
                             add_bot_tranche(
                                 state=state,
                                 units=1,

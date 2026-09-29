@@ -128,6 +128,99 @@ class TestP1BuyBalanceSafety(unittest.TestCase):
         self.assertAlmostEqual(0.1, state["bot_quantity"])
         self.assertEqual("fake-buy", logged[0]["order_uuid"])
 
+    def test_bull_small_position_adds_only_confirmed_fill_and_preserves_tranche(self):
+        for volume, price in ((0.1, 110_000.0), (0.04, 120_000.0)):
+            with self.subTest(volume=volume), patch.dict(main._last_saved_state_strings, {}, clear=True):
+                state = self.bull_state(0.03)
+                original_tranche = state["tranches"][0].copy()
+                exchange = FakeExchange(self.protected + 0.03, price)
+                exchange.buy_volume = volume
+
+                _, logged = self.runner.run_tick(
+                    exchange, state, 100_000.0, True, "BUY", persist_state=True
+                )
+                persisted = main.load_strategy_state("KRW-ETH")
+                expected_quantity = 0.03 + volume
+                expected_average = (0.03 * 100_000.0 + volume * price) / expected_quantity
+                self.assertEqual(1, len(exchange.market_buys))
+                self.assertAlmostEqual(expected_quantity, exchange.holdings - self.protected)
+                self.assertAlmostEqual(expected_quantity, state["bot_quantity"])
+                self.assertAlmostEqual(expected_quantity, persisted["bot_quantity"])
+                self.assertAlmostEqual(expected_average, state["bot_avg_price"])
+                self.assertAlmostEqual(expected_average, persisted["bot_avg_price"])
+                self.assertEqual(original_tranche, state["tranches"][0])
+                self.assertEqual(original_tranche, persisted["tranches"][0])
+                self.assertEqual(2, len(state["tranches"]))
+                self.assertAlmostEqual(volume, state["tranches"][1]["volume"])
+                self.assertAlmostEqual(volume, logged[0]["volume"])
+
+                # The next BULL tick may repeat the signal, but must not replay the fill.
+                _, repeated_logs = self.runner.run_tick(
+                    exchange, persisted, 110_000.0, True, "BUY",
+                    complete_tick=True, persist_state=True
+                )
+                self.assertAlmostEqual(expected_quantity, persisted["bot_quantity"])
+                self.assertEqual(1, len(exchange.market_buys))
+                self.assertEqual([], repeated_logs)
+
+    def test_bull_small_position_wait_partial_remains_uncredited(self):
+        class WaitingExchange(FakeExchange):
+            def get_order(self, identifier: str, state: str | None = None):
+                order = super().get_order(identifier, state)
+                if identifier == "fake-buy":
+                    order["state"] = "wait"
+                return order
+
+        exchange = WaitingExchange(self.protected + 0.03, 100_000.0)
+        exchange.buy_volume = 0.04
+        state = self.bull_state(0.03)
+        _, logged = self.runner.run_tick(
+            exchange, state, 100_000.0, True, "BUY",
+            complete_tick=True, persist_state=True
+        )
+        persisted = main.load_strategy_state("KRW-ETH")
+        self.assertAlmostEqual(0.07, exchange.holdings - self.protected)
+        self.assertAlmostEqual(0.03, state["bot_quantity"])
+        self.assertAlmostEqual(0.03, persisted["bot_quantity"])
+        self.assertEqual([], logged)
+        self.assertTrue(persisted["trading_halted"])
+        self.assertEqual("fake-buy", persisted["pending_order_uuid"])
+
+    def test_bull_small_position_fails_closed_on_bad_or_insufficient_balance(self):
+        class BadBalanceExchange(FakeExchange):
+            response = None
+
+            def get_balance(self, currency: str, verbose: bool = False):
+                if currency == "ETH" and verbose:
+                    if isinstance(self.response, Exception):
+                        raise self.response
+                    return self.response
+                return super().get_balance(currency, verbose)
+
+        for response in (None, {"balance": None, "locked": 0.0},
+                         ConnectionError("fake balance failure")):
+            with self.subTest(response=response), patch.dict(main._last_saved_state_strings, {}, clear=True):
+                exchange = BadBalanceExchange(self.protected + 0.03, 100_000.0)
+                exchange.response = response
+                state = self.bull_state(0.03)
+                _, logged = self.runner.run_tick(
+                    exchange, state, 100_000.0, True, "BUY", persist_state=True
+                )
+                self.assertEqual([], exchange.market_buys)
+                self.assertEqual([], logged)
+                self.assertTrue(main.load_strategy_state("KRW-ETH")["trading_halted"])
+                self.assertAlmostEqual(0.03, state["bot_quantity"])
+
+        exchange = FakeExchange(self.protected + 0.02, 100_000.0)
+        state = self.bull_state(0.03)
+        _, logged = self.runner.run_tick(
+            exchange, state, 100_000.0, True, "BUY", persist_state=True
+        )
+        self.assertEqual([], exchange.market_buys)
+        self.assertEqual([], logged)
+        self.assertTrue(main.load_strategy_state("KRW-ETH")["trading_halted"])
+        self.assertAlmostEqual(0.03, state["bot_quantity"])
+
     def test_partial_limit_fill_only_adds_incremental_quantity(self):
         exchange, state, _ = self.runner.start_bear_orders(persist_state=True)
         identifier = exchange.limit_buys[0]["uuid"]
