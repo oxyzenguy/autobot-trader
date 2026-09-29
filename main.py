@@ -198,24 +198,27 @@ def get_bot_balance(upbit_client, market: str, ticker: str, state: dict):
     bot_qty = float(state.get("bot_quantity", 0.0))
     bot_avg = float(state.get("bot_avg_price", 0.0))
 
-    if bot_qty <= 0.0:
-        return 0.0, 0.0
-
     try:
         balance_info = upbit_client.get_balance(ticker, verbose=True)
-        if balance_info and 'balance' in balance_info:
-            avail = float(balance_info.get('balance', 0.0) or 0.0)
-            locked = float(balance_info.get('locked', 0.0) or 0.0)
+        if isinstance(balance_info, dict) and 'balance' in balance_info:
+            avail = float(balance_info['balance'])
+            locked = float(balance_info.get('locked', 0.0))
+            if not math.isfinite(avail) or not math.isfinite(locked) or avail < 0 or locked < 0:
+                raise ValueError("invalid exchange balance")
             total_held = avail + locked
+            if not math.isfinite(total_held):
+                raise ValueError("invalid exchange balance")
             state.pop("balance_query_failed", None)
+            if bot_qty <= 0.0:
+                return 0.0, 0.0
             # 실제 업비트 총 보유 수량(가용+주문잠금) 내에서만 안전하게 캡핑
             # (바스켓 매도 주문으로 locked된 상태에서도 봇 보유량 및 매직스플릿 차수 익절 검사 정상 작동)
             safe_qty = min(bot_qty, max(0.0, total_held - PROTECTED_BALANCES.get(market, 0.0)))
             return bot_avg, safe_qty
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] [ERROR] [{ticker}] 봇 잔고 확인 오류: {e}")
-        state["balance_query_failed"] = True
 
+    state["balance_query_failed"] = True
     return 0.0, 0.0
 
 
@@ -1158,6 +1161,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         halt_for_order_reconciliation(market, state, {"reason": "하락장 진입 전 잔고 조회 미확정"})
                         continue
                     if (quantity * current_price) < MIN_ORDER_KRW:
+                        if float(state.get("bot_quantity", 0.0)) > quantity + 1e-10:
+                            halt_for_order_reconciliation(market, state, {"reason": "기존 봇 수량과 거래소 잔고 불일치"})
+                            continue
                         # 1. 손절 재진입 쿨다운 검사
                         cooldown_until = float(state.get("stop_loss_cooldown_until", 0.0))
                         now_ts = time.time()
@@ -1186,21 +1192,31 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             halt_for_order_reconciliation(market, state, buy_result)
                             continue
 
-                        quantity = float(buy_result["volume"])
-                        avg_price = float(buy_result["price"])
+                        filled_quantity = float(buy_result["volume"])
+                        filled_price = float(buy_result["price"])
+                        previous_quantity = quantity
+                        quantity += filled_quantity
+                        avg_price = (
+                            previous_quantity * avg_price + filled_quantity * filled_price
+                        ) / quantity
 
                         state["bot_quantity"] = quantity
                         state["bot_avg_price"] = avg_price
                         state["initial_entry_done"] = True
+                        if previous_quantity > 0 and state.get("tranches"):
+                            add_bot_tranche(
+                                state, units=martingale_sched[0], buy_price=filled_price,
+                                volume=filled_quantity, tranche_type="INITIAL"
+                            )
 
                         log_real_trade(
                             market=market,
                             ticker=ticker,
                             side="bid",
                             action="MARTINGALE_BUY_INITIAL",
-                            price=avg_price,
-                            volume=quantity,
-                            cost_or_revenue=quantity * avg_price,
+                            price=filled_price,
+                            volume=filled_quantity,
+                            cost_or_revenue=filled_quantity * filled_price,
                             strategy="HYBRID_MARTINGALE_MAGIC_SPLIT",
                             order_uuid=buy_result["uuid"]
                         )
@@ -1721,7 +1737,16 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                     if not state.get("initial_entry_done", False):
                         # 안전 검사: 이미 계좌에 보호 수량을 초과하는 봇 수량이 존재하면 신규 매수 없이 즉시 동기화
-                        actual_avail = float(upbit.get_balance(ticker) or 0.0)
+                        try:
+                            available = upbit.get_balance(ticker)
+                            actual_avail = float(available)
+                            if not math.isfinite(actual_avail) or actual_avail < 0:
+                                raise ValueError("invalid exchange balance")
+                        except Exception as error:
+                            halt_for_order_reconciliation(
+                                market, state, {"reason": f"상승장 최초 진입 잔고 조회 미확정: {error}"}
+                            )
+                            continue
                         prot_qty = PROTECTED_BALANCES.get(market, 0.0)
                         existing_diff = actual_avail - prot_qty
                         if existing_diff * current_price >= MIN_ORDER_KRW:

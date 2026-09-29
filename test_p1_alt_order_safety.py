@@ -431,7 +431,7 @@ class TestAltOrderSafetyCandidates(unittest.TestCase):
         self.assertEqual([], state["tranches"])
         self.assertEqual(0.0, state["bot_quantity"])
 
-    def test_small_existing_position_is_overwritten_by_new_buy(self):
+    def test_small_existing_position_is_preserved_after_new_buy(self):
         protected = main.PROTECTED_BALANCES["KRW-ETH"]
         exchange = FakeExchange(protected + 0.03, 100_000.0)
         state = {
@@ -448,8 +448,9 @@ class TestAltOrderSafetyCandidates(unittest.TestCase):
         self.assertEqual([main.INVESTMENTS["KRW-ETH"]["unit"]], exchange.market_buys)
         self.assertEqual("MARTINGALE_BUY_INITIAL", logged[0]["action"])
         self.assertAlmostEqual(0.13, exchange.holdings - protected)
-        self.assertAlmostEqual(0.1, state["bot_quantity"])
-        self.assertAlmostEqual(0.03, sum(tr["volume"] for tr in state["tranches"]))
+        self.assertAlmostEqual(0.13, state["bot_quantity"])
+        self.assertAlmostEqual(0.13, sum(tr["volume"] for tr in state["tranches"]))
+        self.assertAlmostEqual(0.1, logged[0]["volume"])
 
     def test_failed_balance_query_halts_before_buying_over_existing_position(self):
         protected = main.PROTECTED_BALANCES["KRW-ETH"]
