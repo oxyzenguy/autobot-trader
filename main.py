@@ -391,7 +391,7 @@ def load_trailing_exit_recovery(market: str) -> Optional[dict]:
     if (
         not isinstance(recovery, dict)
         or recovery.get("market") != market
-        or recovery.get("kind") != "TRAILING_STOP_EXIT"
+        or recovery.get("kind") not in ("TRAILING_STOP_EXIT", "STOP_LOSS_EXIT")
         or not isinstance(recovery.get("uuid"), (str, type(None)))
         or type(recovery.get("volume")) not in (int, float)
         or not math.isfinite(recovery["volume"])
@@ -401,6 +401,11 @@ def load_trailing_exit_recovery(market: str) -> Optional[dict]:
         or recovery["avg_price"] <= 0
         or type(recovery.get("cycles")) is not int
         or recovery["cycles"] < 0
+        or (recovery["kind"] == "STOP_LOSS_EXIT" and (
+            type(recovery.get("cooldown_until")) not in (int, float)
+            or not math.isfinite(recovery["cooldown_until"])
+            or recovery["cooldown_until"] <= 0
+        ))
     ):
         raise ValueError("손상된 trailing 청산 recovery 정보")
     return recovery
@@ -418,6 +423,8 @@ def clear_trailing_exit_recovery(market: str) -> None:
 
 def reconcile_trailing_exit(upbit_client, market: str, state: dict, recovery: dict, fresh_result: Optional[dict] = None) -> bool:
     """Only release the halt after the exact fill, trade row, and final JSON are durable."""
+    is_stop_loss = recovery["kind"] == "STOP_LOSS_EXIT"
+    action = "BULL_STOP_LOSS_10PCT" if is_stop_loss else "TRAILING_STOP_EXIT"
     order_uuid = recovery["uuid"]
     if not order_uuid:
         return False
@@ -427,6 +434,8 @@ def reconcile_trailing_exit(upbit_client, market: str, state: dict, recovery: di
             return False
         if order.get("state") in ("cancel", "reject"):
             if float(order.get("executed_volume", 0) or 0) != 0:
+                return False
+            if is_stop_loss:
                 return False
             clear_trailing_exit_recovery(market)
             return True
@@ -449,14 +458,14 @@ def reconcile_trailing_exit(upbit_client, market: str, state: dict, recovery: di
         with closing(sqlite3.connect(db_logger.DB_PATH)) as connection:
             recorded = connection.execute(
                 "SELECT 1 FROM trades WHERE order_uuid = ? AND action = ?",
-                (order_uuid, "TRAILING_STOP_EXIT"),
+                (order_uuid, action),
             ).fetchone() is not None
     else:
         recorded = False
     if not recorded:
         log_real_trade(
             market=market, ticker=market.split("-")[1], side="ask",
-            action="TRAILING_STOP_EXIT", price=price, volume=volume,
+            action=action, price=price, volume=volume,
             cost_or_revenue=volume * price,
             pnl=(price - recovery["avg_price"]) * volume,
             strategy="HYBRID_TREND", order_uuid=order_uuid,
@@ -470,8 +479,13 @@ def reconcile_trailing_exit(upbit_client, market: str, state: dict, recovery: di
         state["trend_peak_price"] = 0.0
         state["last_dca_buy_time"] = None
         state["initial_entry_done"] = True
-        state["completed_cycles"] = recovery["cycles"] + 1
-    elif state.get("completed_cycles", 0) != recovery["cycles"] + 1 or state.get("bot_quantity") != 0.0:
+        if is_stop_loss:
+            state["stop_loss_cooldown_until"] = recovery["cooldown_until"]
+        else:
+            state["completed_cycles"] = recovery["cycles"] + 1
+    elif (state.get("completed_cycles", 0) != recovery["cycles"] + (0 if is_stop_loss else 1)
+          or state.get("bot_quantity") != 0.0
+          or (is_stop_loss and state.get("stop_loss_cooldown_until") != recovery["cooldown_until"])):
         return False
     if save_strategy_state(market, state) is not True:
         return False
@@ -901,9 +915,26 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     if not cancel_all_orders(upbit, market):
                         halt_for_order_reconciliation(market, state, {"reason": "손절 전 주문 취소 미확정"})
                         continue
-                    sell_result = submit_market_order_and_wait(upbit, market, "ask", quantity)
+                    recovery = {
+                        "kind": "STOP_LOSS_EXIT",
+                        "market": market,
+                        "uuid": None,
+                        "volume": quantity,
+                        "avg_price": avg_price,
+                        "cycles": state.get("completed_cycles", 0),
+                        "cooldown_until": cooldown_until_ts,
+                    }
+                    save_trailing_exit_recovery(market, recovery)
+
+                    def checkpoint_stop_loss_uuid(order_uuid: str) -> None:
+                        recovery["uuid"] = order_uuid
+                        save_trailing_exit_recovery(market, recovery)
+
+                    sell_result = submit_market_order_and_wait(
+                        upbit, market, "ask", quantity, on_accepted=checkpoint_stop_loss_uuid
+                    )
                     if sell_result.get("status") != "FILLED":
-                        halt_for_order_reconciliation(market, state, sell_result)
+                        print(f"[{market}] [CRITICAL] 손절 주문 미확정; recovery 유지")
                         continue
 
                     filled_volume = float(sell_result["volume"])
@@ -921,28 +952,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     print(f"\n[{market}] {msg}")
                     send_telegram_alert(msg)
 
-                    log_real_trade(
-                        market=market,
-                        ticker=ticker,
-                        side="ask",
-                        action="BULL_STOP_LOSS_10PCT",
-                        price=filled_price,
-                        volume=filled_volume,
-                        cost_or_revenue=filled_volume * filled_price,
-                        pnl=loss_krw,
-                        strategy="HYBRID_TREND",
-                        order_uuid=sell_result["uuid"]
-                    )
-
-                    state["bot_quantity"] = 0.0
-                    state["bot_avg_price"] = 0.0
-                    state["tranches"] = []
-                    state["trend_peak_price"] = 0.0
-                    state["trailing_stop_active"] = False
-                    state["last_dca_buy_time"] = None
-                    state["initial_entry_done"] = True
-                    state["stop_loss_cooldown_until"] = cooldown_until_ts
-                    save_strategy_state(market, state)
+                    if not reconcile_trailing_exit(upbit, market, state, recovery, sell_result):
+                        print(f"[{market}] [CRITICAL] 손절 최종 저장 실패; recovery 유지")
+                        continue
 
                     print(f"[{market}] [INFO] 손절 완료. {STOP_LOSS_COOLDOWN_HOURS}시간({cooldown_str}까지) 신규 진입 쿨다운 가동.")
                     time.sleep(300)
