@@ -228,9 +228,11 @@ def check_magic_split_exits(
     tranche_profit_pct: float = 0.03
 ) -> dict:
     """
-    하이브리드 매직스플릿 이중익절(Dual Exit) 판별:
-    1. 바스켓 익절: 전체 평단가 대비 목표 마진(+0.5% 등) 도달 시 전량 청산
-    2. 개별 차수 익절: 각 차수 매수가 대비 +3.0% 반등 시 해당 차수만 단독 익절
+    하이브리드 마틴게일 이중익절(Dual Exit) 판별:
+    1. 바스켓 익절: 전체 평단가 대비 목표 마진(+0.8%/+0.5% 등) 도달 시 전량 청산
+    2. 스쿼드별 익절: 각 스쿼드의 가중평균 매수가(VWAP) 대비 +3.0% 반등 시 해당 스쿼드만 단독 익절
+       - 기존 개별 차수 +3% 익절을 스쿼드별 익절로 대체
+       - 스쿼드 정보가 없는 레거시 차수(squad_id <= 0 or None)는 스쿼드 익절에서 제외(바스켓으로만 탈출)
     """
     # 1. 전체 바스켓 익절 우선 확인
     if avg_buy_price > 0 and current_price >= (avg_buy_price * profit_margin):
@@ -243,29 +245,41 @@ def check_magic_split_exits(
             "reason": f"전체 포지션 바스켓 익절 조건 달성 (평단가 {avg_buy_price:,.0f}원 대비 {pnl_pct:+.2f}%)"
         }
 
-    # 2. 개별 차수 매직스플릿 익절 확인
-    eligible_tranches = []
+    # 2. 스쿼드별 가중평균 단가 기준 익절 (+3%)
+    squad_map = {}
     for t in tranches:
-        buy_p = float(t.get("buy_price", 0.0))
-        target_p = buy_p * (1.0 + tranche_profit_pct)
-        if buy_p > 0 and current_price >= target_p:
-            pnl_pct = ((current_price - buy_p) / buy_p) * 100.0
-            eligible_tranches.append({
-                "step": t.get("step", 0),
-                "tranche_id": t.get("tranche_id", t.get("id", t.get("step", 0))),
-                "buy_price": buy_p,
+        s_id = t.get("squad_id")
+        if s_id is not None and int(s_id) > 0:
+            squad_map.setdefault(int(s_id), []).append(t)
+
+    eligible_squads = []
+    for s_id, s_tranches in sorted(squad_map.items()):
+        s_vol = sum(float(t.get("volume", 0.0)) for t in s_tranches)
+        s_cost = sum(float(t.get("volume", 0.0)) * float(t.get("buy_price", 0.0)) for t in s_tranches)
+        if s_vol <= 0 or s_cost <= 0:
+            continue
+        s_vwap = s_cost / s_vol
+        target_p = s_vwap * (1.0 + tranche_profit_pct)
+        if current_price >= target_p:
+            pnl_pct = ((current_price - s_vwap) / s_vwap) * 100.0
+            eligible_squads.append({
+                "squad_id": s_id,
+                "squad_vwap": s_vwap,
                 "target_price": target_p,
-                "volume": float(t.get("volume", 0.0)),
-                "units": t.get("units", 1),
-                "pnl_pct": pnl_pct
+                "volume": s_vol,
+                "pnl_pct": pnl_pct,
+                "tranche_ids": [t.get("tranche_id", t.get("step")) for t in s_tranches],
+                "tranches": s_tranches
             })
 
-    if eligible_tranches:
+    if eligible_squads:
+        squad_ids = [sq["squad_id"] for sq in eligible_squads]
         return {
-            "exit_type": "TRANCHE",
-            "eligible_tranches": eligible_tranches,
+            "exit_type": "SQUAD",
+            "eligible_squads": eligible_squads,
+            "eligible_tranches": [tr for sq in eligible_squads for tr in sq["tranches"]],
             "current_price": current_price,
-            "reason": f"개별 {len(eligible_tranches)}개 차수 +{tranche_profit_pct*100:.1f}% 반등 매직스플릿 익절 조건 달성"
+            "reason": f"스쿼드 {squad_ids} 가중평균가 대비 +{tranche_profit_pct*100:.1f}% 반등 익절 조건 달성"
         }
 
     return {

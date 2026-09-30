@@ -223,12 +223,12 @@ class TestOrderSafetyRegressions(unittest.TestCase):
                     "bot_quantity": bot_quantity,
                     "bot_avg_price": 115_000.0,
                     "tranches": [
-                        {"step": 1, "volume": 0.1, "buy_price": 100_000.0},
-                        {"step": 2, "volume": 0.1, "buy_price": 100_000.0},
-                        {"step": 3, "volume": 0.1, "buy_price": 120_000.0},
+                        {"step": 1, "squad_id": 1, "squad_stage": 1, "volume": 0.1, "buy_price": 100_000.0},
+                        {"step": 2, "squad_id": 1, "squad_stage": 2, "volume": 0.1, "buy_price": 100_000.0},
+                        {"step": 3, "squad_id": 2, "squad_stage": 1, "volume": 0.1, "buy_price": 120_000.0},
                     ] if name == "below" else [
-                        {"step": 1, "volume": 0.1, "buy_price": 100_000.0},
-                        {"step": 2, "volume": 0.1, "buy_price": 100_000.0},
+                        {"step": 1, "squad_id": 1, "squad_stage": 1, "volume": 0.1, "buy_price": 100_000.0},
+                        {"step": 2, "squad_id": 1, "squad_stage": 2, "volume": 0.1, "buy_price": 100_000.0},
                     ],
                 }
                 exchange = TrancheExchange(protected + account_excess)

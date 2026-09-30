@@ -43,7 +43,7 @@ from config import (
     REGIME_SWITCH_COOLDOWN_HOURS,
     TELEGRAM_BRIEFING_SCHEDULE
 )
-from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick
+from strategy.matingale2x_logic import calculate_new_buy_prices, adjust_price_to_tick, get_existing_stages_from_state
 from strategy.hybrid_regime import get_hybrid_regime_and_signals, check_magic_split_exits, check_daily_closing_buy_condition
 from utils.db_logger import log_real_trade, init_db
 from utils import db_logger
@@ -139,10 +139,19 @@ def save_strategy_state(market: str, state: dict):
             os.unlink(temp_path)
 
 
-def add_bot_tranche(state: dict, units: int, buy_price: float, volume: float, tranche_type: str = "NORMAL") -> dict:
+def add_bot_tranche(
+    state: dict,
+    units: int,
+    buy_price: float,
+    volume: float,
+    tranche_type: str = "NORMAL",
+    squad_id: Optional[int] = None,
+    squad_stage: Optional[int] = None
+) -> dict:
     """
     고유 식별자(tranche_id)를 보장하여 차수를 추가합니다.
     차수 매도 후 번호 재사용으로 인한 장부 왜곡 및 중복 삭제를 원천 방지합니다.
+    스쿼드(squad_id, squad_stage) 정보를 영속 저장합니다.
     """
     tranches = state.setdefault("tranches", [])
     max_id = max([t.get("tranche_id", t.get("step", 0)) for t in tranches], default=0)
@@ -158,7 +167,9 @@ def add_bot_tranche(state: dict, units: int, buy_price: float, volume: float, tr
         "buy_price": buy_price,
         "volume": volume,
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "type": tranche_type
+        "type": tranche_type,
+        "squad_id": squad_id,
+        "squad_stage": squad_stage
     }
     tranches.append(new_tr)
     return new_tr
@@ -513,10 +524,19 @@ def submit_limit_order(upbit_client, market: str, side: str, price: float, volum
     return response
 
 
-def track_bear_limit_buy(market: str, state: dict, order: dict, units: int):
+def track_bear_limit_buy(
+    market: str,
+    state: dict,
+    order: dict,
+    units: int,
+    squad_id: Optional[int] = None,
+    squad_stage: Optional[int] = None
+):
     """Persist ownership before the next tick; acceptance is not execution."""
     state.setdefault("bear_limit_buys", {})[order["uuid"]] = {
         "units": units,
+        "squad_id": squad_id,
+        "squad_stage": squad_stage,
         "state": "wait",
         "executed_volume": 0.0,
         "executed_funds": 0.0,
@@ -556,7 +576,9 @@ def reconcile_bear_limit_buys(upbit_client, market: str, state: dict) -> bool:
             if tranche is None:
                 tranche = add_bot_tranche(
                     state, recorded["units"], delta_funds / delta_volume,
-                    delta_volume, tranche_type="MARTINGALE"
+                    delta_volume, tranche_type="MARTINGALE",
+                    squad_id=recorded.get("squad_id"),
+                    squad_stage=recorded.get("squad_stage")
                 )
                 tranche["order_uuid"] = order_uuid
             else:
@@ -1047,11 +1069,120 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         state["tranches"] = []
                         state["initial_entry_done"] = True
                         state["completed_cycles"] = state.get("completed_cycles", 0) + 1
+                        for rec in state.get("bear_limit_buys", {}).values():
+                            if rec.get("state") == "wait":
+                                rec["state"] = "cancel"
                         save_strategy_state(market, state)
                         time.sleep(10)
                         continue
 
-                    # [Exit 2: 개별 차수 매직스플릿 +3% 단독 익절 (합산 1회 매도, API 검증 및 평단가 재계산)]
+                    # [Exit 2: 스쿼드별 가중평균 매수가 대비 +3% 단독 익절]
+                    elif exit_decision["exit_type"] == "SQUAD" and USE_MAGIC_SPLIT_DEFENSE:
+                        eligible_squads = exit_decision.get("eligible_squads", [])
+                        if eligible_squads:
+                            sq = eligible_squads[0]
+                            sq_id = sq["squad_id"]
+                            squad_tranches = sq["tranches"]
+                            valid_squad_tranches = []
+                            sellable_remaining = quantity
+                            for tr in squad_tranches:
+                                vol = float(tr.get("volume", 0.0))
+                                if 0 < vol <= sellable_remaining + 1e-12:
+                                    valid_squad_tranches.append(tr)
+                                    sellable_remaining -= vol
+
+                            if valid_squad_tranches:
+                                tot_sell_vol = round(sum(tr["volume"] for tr in valid_squad_tranches), 8)
+                                tot_sell_krw = tot_sell_vol * current_price
+
+                                if tot_sell_krw >= MIN_ORDER_KRW and tot_sell_vol > 0:
+                                    sold_ids = set(tr.get("tranche_id", tr.get("step")) for tr in valid_squad_tranches)
+                                    print(f"\n[{market}] 💧 [스쿼드 {sq_id} 익절] 일괄 매도 실행: {tot_sell_vol:.6f} {ticker} ({tot_sell_krw:,.0f}원)")
+
+                                    # 1. 기존 매도 주문(바스켓 매도) 취소
+                                    cancelled = all(cancel_order_and_wait(upbit, order['uuid']) for order in sell_orders)
+                                    if not cancelled:
+                                        halt_for_order_reconciliation(market, state, {"reason": "기존 매도 주문 취소 미확정"})
+                                        continue
+
+                                    # 2. 해당 스쿼드의 미체결 매수 주문만 취소 (다른 스쿼드는 미체결 유지)
+                                    squad_buys_to_cancel = [
+                                        uuid for uuid, rec in state.get("bear_limit_buys", {}).items()
+                                        if rec.get("squad_id") == sq_id and rec.get("state") == "wait"
+                                    ]
+                                    cancel_buys_ok = True
+                                    for b_uuid in squad_buys_to_cancel:
+                                        if cancel_order_and_wait(upbit, b_uuid):
+                                            state["bear_limit_buys"][b_uuid]["state"] = "cancel"
+                                            print(f"[{market}]   - 스쿼드 {sq_id} 미체결 매수 주문 취소 완료: {b_uuid}")
+                                        else:
+                                            cancel_buys_ok = False
+                                    if not cancel_buys_ok:
+                                        halt_for_order_reconciliation(market, state, {"reason": f"스쿼드 {sq_id} 매수 주문 취소 미확정"})
+                                        continue
+
+                                    # 3. 스쿼드 보유 물량 시장가 매도
+                                    sell_result = submit_market_order_and_wait(upbit, market, "ask", tot_sell_vol)
+                                    if sell_result.get("status") == "FILLED":
+                                        filled_price = float(sell_result["price"])
+                                        filled_vol = float(sell_result["volume"])
+                                        tot_pnl = sum((filled_price - tr["buy_price"]) * tr["volume"] for tr in valid_squad_tranches)
+
+                                        for tr in valid_squad_tranches:
+                                            tr_pnl = (filled_price - tr["buy_price"]) * tr["volume"]
+                                            log_real_trade(
+                                                market=market,
+                                                ticker=ticker,
+                                                side="ask",
+                                                action=f"SQUAD_{sq_id}_TAKE_PROFIT",
+                                                price=filled_price,
+                                                volume=tr["volume"],
+                                                cost_or_revenue=tr["volume"] * filled_price,
+                                                pnl=tr_pnl,
+                                                strategy="HYBRID_MARTINGALE_SQUAD_EXIT",
+                                                order_uuid=sell_result["uuid"]
+                                            )
+
+                                    # 4. 체결된 스쿼드 차수 장부에서 고유 식별자(tranche_id)로 정확히 제거
+                                    state["tranches"] = [t for t in state.get("tranches", []) if t.get("tranche_id", t.get("step")) not in sold_ids]
+
+                                    # 5. 남은 차수들을 기준으로 평단가 및 봇 수량 재계산 (다른 스쿼드는 보존)
+                                    remaining = state.get("tranches", [])
+                                    remaining_sellable = max(0.0, quantity - filled_vol)
+                                    if remaining and remaining_sellable > 0:
+                                        new_tot_vol = sum(t["volume"] for t in remaining)
+                                        new_tot_cost = sum(t["volume"] * t["buy_price"] for t in remaining)
+                                        new_avg = new_tot_cost / new_tot_vol if new_tot_vol > 0 else 0.0
+                                        state["bot_avg_price"] = new_avg
+                                        state["bot_quantity"] = min(new_tot_vol, remaining_sellable)
+
+                                        # 잔여 포지션 바스켓 매도 주문 즉시 갱신
+                                        rem_sell_price = adjust_price_to_tick(new_avg * sell_profit_margin, method="ceil")
+                                        if (state["bot_quantity"] * rem_sell_price) >= MIN_ORDER_KRW:
+                                            if submit_limit_order(upbit, market, "ask", rem_sell_price, state["bot_quantity"]):
+                                                print(f"[{market}]   - 잔여 포지션 바스켓 익절 매도 재등록: {rem_sell_price:,.0f}원, {state['bot_quantity']:.6f}")
+                                    else:
+                                        state["tranches"] = []
+                                        state["bot_avg_price"] = 0.0
+                                        state["bot_quantity"] = 0.0
+
+                                    save_strategy_state(market, state)
+
+                                    send_telegram_alert(
+                                        f"🟢 <b>[익절 완료]</b> {market} (스쿼드 {sq_id} 익절)\n"
+                                        f"• 체결단가: {filled_price:,.0f}원 (스쿼드 평단: {sq['squad_vwap']:,.0f}원)\n"
+                                        f"• 실현손익: <b>{tot_pnl:+,.0f}원</b> ({sq['pnl_pct']:+.2f}%)\n"
+                                        f"• 잔여 포지션: 평단 {state['bot_avg_price']:,.0f}원 ({len(state['tranches'])}차수 유지)"
+                                    )
+                                    time.sleep(2)
+                                    continue
+                                else:
+                                    halt_for_order_reconciliation(market, state, sell_result)
+                                    continue
+                            else:
+                                print(f"[{market}] ℹ️ [스쿼드 익절] 매도 대상 금액({tot_sell_krw:,.0f}원)이 최소주문금액(5,000원) 미만이므로 바스켓 익절 대기.")
+
+                    # [Exit 3: 개별 차수 매직스플릿 +3% 단독 익절 (레거시 하위호환용)]
                     elif exit_decision["exit_type"] == "TRANCHE" and USE_MAGIC_SPLIT_DEFENSE:
                         eligible = exit_decision["eligible_tranches"]
                         valid_tranches = []
@@ -1139,11 +1270,13 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 # A-2. 마틴게일 상태 머신 (주문 등록 및 물타기)
                 martingale_sched = MARTINGALE_SCHEDULE.get(market, MARTINGALE_MULTIPLIERS)
                 max_steps = MARTINGALE_MAX_STEPS.get(market, 16 if market == "KRW-SOL" else 9999)
+                active_stages = get_existing_stages_from_state(state)
+                max_squad_cap_reached = (market == "KRW-SOL" and any(sid >= 4 and stg >= 4 for sid, stg in active_stages))
                 current_steps = len(state.get("tranches", []))
-                expected_open_buys = max(0, min(3, max_steps - current_steps))
+                expected_open_buys = 0 if max_squad_cap_reached else max(0, min(3, max_steps - len(active_stages)))
 
                 # SOL 4개 스쿼드(16차수) 등 최대 차수 도달 시 잔여 매수 주문 자동 취소 및 홀딩 관리
-                if current_steps >= max_steps and num_buy > 0:
+                if (current_steps >= max_steps or max_squad_cap_reached) and num_buy > 0:
                     print(f"[{market}] 🛑 마틴게일 최대 차수({max_steps}차수 / 4개 스쿼드 32U) 도달로 잔여 매수 주문 {num_buy}건 취소.")
                     if not all(cancel_order_and_wait(upbit, order['uuid']) for order in buy_orders):
                         halt_for_order_reconciliation(market, state, {"reason": "마틴게일 매수 주문 취소 미확정"})
@@ -1218,7 +1351,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         if previous_quantity > 0 and state.get("tranches"):
                             add_bot_tranche(
                                 state, units=martingale_sched[0], buy_price=filled_price,
-                                volume=filled_quantity, tranche_type="INITIAL"
+                                volume=filled_quantity, tranche_type="INITIAL",
+                                squad_id=1, squad_stage=1
                             )
 
                         log_real_trade(
@@ -1241,7 +1375,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             units=martingale_sched[0],
                             buy_price=avg_price,
                             volume=quantity,
-                            tranche_type="INITIAL"
+                            tranche_type="INITIAL",
+                            squad_id=1,
+                            squad_stage=1
                         )
                         state["bot_quantity"] = quantity
                         state["bot_avg_price"] = avg_price
@@ -1264,19 +1400,22 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         existing_orders=None,
                         max_steps=max_steps,
                         current_step=len(state.get("tranches", [])),
-                        multipliers=martingale_sched
+                        multipliers=martingale_sched,
+                        state=state
                     )
                     print(f"[{market}]   - 신규 마틴게일 매수 주문 계획 ({len(new_orders)}개): {new_orders}")
 
                     for order in new_orders:
                         p = order['price']
                         u = order['units']
+                        s_id = order.get('squad_id', 1)
+                        s_stage = order.get('squad_stage', 1)
                         order_krw = unit_krw * u
                         volume = round(order_krw / p, 8)
                         buy_order = submit_limit_order(upbit, market, "bid", p, volume)
                         if buy_order:
-                            track_bear_limit_buy(market, state, buy_order, u)
-                            print(f"[{market}]     - 지정가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
+                            track_bear_limit_buy(market, state, buy_order, u, squad_id=s_id, squad_stage=s_stage)
+                            print(f"[{market}]     - 지정가 매수 주문: {p:,.0f}원 | Squad {s_id} Stage {s_stage} | {u} Units ({order_krw:,}원)")
                         time.sleep(0.2)
 
                     state["bear_buy_rebalance_pending"] = False
@@ -1314,24 +1453,38 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     time.sleep(0.2)
 
                     # 추가 매수 주문 계획 (최대 max_steps 차수 제한)
-                    current_total_steps = len(state.get("tranches", [])) + len(buy_orders)
-                    if current_total_steps >= max_steps:
-                        print(f"[{market}]   - 마틴게일 최대 차수({max_steps}차수) 도달: 추가 물타기 매수 생략.")
+                    active_stages = get_existing_stages_from_state(state)
+                    max_squad_cap_reached = (market == "KRW-SOL" and any(sid >= 4 and stg >= 4 for sid, stg in active_stages))
+                    if max_squad_cap_reached or len(active_stages) >= max_steps:
+                        print(f"[{market}]   - 마틴게일 최대 차수({max_steps}차수 / 4개 스쿼드) 도달: 추가 물타기 매수 생략.")
                         additional_orders = []
                     else:
-                        buy_order_details = [{'price': float(o['price']), 'units': 1} for o in buy_orders]
+                        buy_order_details = []
+                        for o in buy_orders:
+                            uuid = o.get('uuid')
+                            rec = state.get("bear_limit_buys", {}).get(uuid, {})
+                            buy_order_details.append({
+                                'price': float(o['price']),
+                                'units': rec.get('units', 1),
+                                'squad_id': rec.get('squad_id'),
+                                'squad_stage': rec.get('squad_stage'),
+                                'uuid': uuid
+                            })
                         additional_orders = calculate_new_buy_prices(
                             avg_buy_price=avg_price,
                             existing_orders=buy_order_details,
                             max_steps=max_steps,
                             current_step=len(state.get("tranches", [])),
-                            multipliers=martingale_sched
+                            multipliers=martingale_sched,
+                            state=state
                         )
 
                     krw_balance = check_krw_balance_alert(upbit, context=f"{market} 추가 물타기 매수")
                     for order in additional_orders:
                         p = order['price']
                         u = order['units']
+                        s_id = order.get('squad_id')
+                        s_stage = order.get('squad_stage')
                         order_krw = unit_krw * u
                         if krw_balance < order_krw:
                             print(f"[{market}]     [WARN] 원화 잔고 부족으로 매수 스킵 ({krw_balance:,.0f}원 < {order_krw:,}원)")
@@ -1339,9 +1492,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         volume = round(order_krw / p, 8)
                         buy_order = submit_limit_order(upbit, market, "bid", p, volume)
                         if buy_order:
-                            track_bear_limit_buy(market, state, buy_order, u)
+                            track_bear_limit_buy(market, state, buy_order, u, squad_id=s_id, squad_stage=s_stage)
                             krw_balance -= order_krw
-                            print(f"[{market}]     - 추가 매수 주문: {p:,.0f}원 | {u} Units ({order_krw:,}원)")
+                            print(f"[{market}]     - 추가 매수 주문: {p:,.0f}원 | Squad {s_id} Stage {s_stage} | {u} Units ({order_krw:,}원)")
                         time.sleep(0.2)
 
                     state["bear_buy_rebalance_pending"] = False
