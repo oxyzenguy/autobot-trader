@@ -41,8 +41,12 @@ def load_btc_state() -> Dict[str, Any]:
         "last_buy_tier": 0,
         "total_dca_buys_count": 0,
         "total_dca_invested_krw": 0.0,
-        "today_status": "대기"
+        "total_dca_volume": 0.0,
+        "dca_avg_price": 0.0,
+        "today_status": "대기",
+        "last_sync_time": None
     }
+
 
 
 def save_btc_state(state: Dict[str, Any]):
@@ -52,6 +56,149 @@ def save_btc_state(state: Dict[str, Any]):
             json.dump(state, f, indent=2, ensure_ascii=False)
     except Exception as e:
         print(f"[WARN] [KRW-BTC] 상태 파일 저장 실패: {e}")
+
+
+def sync_upbit_btc_recurring_buys(upbit_client=None, start_date: str = "2026-09-24", orders: Optional[list] = None) -> Dict[str, Any]:
+    """
+    업비트 거래소의 비트코인 정기 '코인 모으기' 예약 매수 체결 내역을 동기화하여
+    로컬 거래 원장(trade_history.db) 및 전략 상태(real_strategy_state_KRW_BTC.json)에 기록합니다.
+
+    - 필터 조건:
+      1) market == 'KRW-BTC'
+      2) side == 'bid'
+      3) state == 'done'
+      4) time_in_force == 'ioc' (업비트 앱 '코인 모으기' 고유 주문 속성)
+      5) created_at >= start_date (현재 적립 전략 개시일 이후)
+    - 멱등성:
+      이미 DB에 기록된 order_uuid는 건너뛰어 중복 기록을 원천 방지합니다.
+    - 동기화 후:
+      trade_history.db에 누적된 전체 BTC 매수 기록(봇 종가매수 + 업비트 모으기)을 바탕으로
+      누적 매수 횟수, 총 매수금액, 총 매수수량, 정확한 적립 평단가(dca_avg_price)를 재산출하여 상태에 저장합니다.
+    """
+    if upbit_client is None:
+        try:
+            upbit_client = get_upbit_client()
+        except Exception:
+            pass
+
+    if orders is None:
+        from api.orders import get_closed_orders
+        try:
+            orders = get_closed_orders(market="KRW-BTC", state="done", limit=100)
+        except Exception as e:
+            print(f"[WARN] [KRW-BTC] 업비트 체결 주문 목록 조회 실패: {e}")
+
+    if not isinstance(orders, list):
+        return {"status": "ERROR", "message": "Failed to fetch closed orders", "synced_count": 0}
+
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT order_uuid FROM trades WHERE market = 'KRW-BTC' AND order_uuid IS NOT NULL")
+    existing_uuids = {str(row[0]) for row in cur.fetchall()}
+
+    newly_synced = 0
+    # 오래된 주문부터 순서대로 반영
+    for o in reversed(orders):
+        if not isinstance(o, dict):
+            continue
+        if o.get("market") != "KRW-BTC":
+            continue
+        if o.get("side") != "bid":
+            continue
+        if o.get("state") != "done":
+            continue
+        if o.get("time_in_force") != "ioc":
+            continue
+        created_at_raw = o.get("created_at", "")
+        if created_at_raw < start_date:
+            continue
+
+        order_uuid = o.get("uuid")
+        if not order_uuid or str(order_uuid) in existing_uuids:
+            continue
+
+        # 상세 체결 내역 조회 (정확한 funds 및 체결단가 추출)
+        order_detail = None
+        if upbit_client is not None and hasattr(upbit_client, "get_order"):
+            try:
+                order_detail = upbit_client.get_order(order_uuid)
+            except Exception:
+                pass
+
+        if isinstance(order_detail, dict) and order_detail.get("trades"):
+            trades = order_detail.get("trades", [])
+            total_funds = sum(float(t.get("funds", 0.0)) for t in trades)
+            total_vol = float(order_detail.get("executed_volume", 0.0))
+            cur_p = (total_funds / total_vol) if total_vol > 0 else float(order_detail.get("price", 0.0))
+        elif o.get("trades"):
+            trades = o.get("trades", [])
+            total_funds = sum(float(t.get("funds", 0.0)) for t in trades)
+            total_vol = float(o.get("executed_volume", 0.0))
+            cur_p = (total_funds / total_vol) if total_vol > 0 else float(o.get("price", 0.0))
+        else:
+            total_vol = float(o.get("executed_volume", 0.0))
+            order_p = float(o.get("price", 0.0))
+            total_funds = total_vol * order_p
+            cur_p = order_p
+
+        if total_vol <= 0 or total_funds <= 0:
+            continue
+
+        try:
+            ts_str = created_at_raw.replace("T", " ")[:19]
+        except Exception:
+            ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        log_real_trade(
+            market="KRW-BTC",
+            ticker="BTC",
+            side="bid",
+            action="BTC_UPBIT_DCA",
+            price=cur_p,
+            volume=total_vol,
+            cost_or_revenue=total_funds,
+            pnl=0.0,
+            cycle=0,
+            strategy="BTC_TIERED_ACCUMULATOR",
+            strategy_id="BTC_TIERED_ACCUMULATOR",
+            order_uuid=str(order_uuid),
+            timestamp=ts_str
+        )
+        existing_uuids.add(str(order_uuid))
+        newly_synced += 1
+
+    # DB에 기록된 전체 BTC 매수 원장을 기반으로 정확한 누적 적립 지표 재산출
+    cur.execute("""
+        SELECT COUNT(*), COALESCE(SUM(cost_or_revenue), 0.0), COALESCE(SUM(volume), 0.0)
+        FROM trades
+        WHERE market = 'KRW-BTC' AND side = 'bid'
+    """)
+    row = cur.fetchone()
+    conn.close()
+
+    total_count = int(row[0]) if row else 0
+    total_funds = float(row[1]) if row else 0.0
+    total_vol = float(row[2]) if row else 0.0
+    dca_avg_p = (total_funds / total_vol) if total_vol > 0 else 0.0
+
+    state = load_btc_state()
+    state["total_dca_buys_count"] = total_count
+    state["total_dca_invested_krw"] = total_funds
+    state["total_dca_volume"] = total_vol
+    state["dca_avg_price"] = dca_avg_p
+    state["last_sync_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_btc_state(state)
+
+    return {
+        "status": "SUCCESS",
+        "synced_count": newly_synced,
+        "total_dca_buys_count": total_count,
+        "total_dca_invested_krw": total_funds,
+        "total_dca_volume": total_vol,
+        "dca_avg_price": dca_avg_p
+    }
+
 
 
 _last_valid_btc_ma200 = 0.0
@@ -195,9 +342,13 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
         "last_buy_date": state.get("last_buy_date"),
         "total_dca_buys_count": state.get("total_dca_buys_count", 0),
         "total_dca_invested_krw": state.get("total_dca_invested_krw", 0.0),
+        "total_dca_volume": state.get("total_dca_volume", 0.0),
+        "dca_avg_price": state.get("dca_avg_price", 0.0),
+        "last_sync_time": state.get("last_sync_time"),
         "upbit_dca_schedule": f"매일 {BTC_UPBIT_DCA_HOUR:02d}:{BTC_UPBIT_DCA_MINUTE:02d} (10,000원)",
         "bot_dca_schedule": f"매일 {BTC_DCA_CLOSING_CHECK_HOUR:02d}:{BTC_DCA_CLOSING_CHECK_MINUTE:02d} (0~20,000원)"
     }
+
 
 
 def execute_btc_tiered_buy_if_due(upbit_client) -> Optional[Dict[str, Any]]:
@@ -341,6 +492,9 @@ def _settle_btc_tiered_buy(upbit_client, state: Dict[str, Any], kst_now: datetim
         if credited_vol == 0:
             state["total_dca_buys_count"] = state.get("total_dca_buys_count", 0) + 1
         state["total_dca_invested_krw"] = state.get("total_dca_invested_krw", 0.0) + delta_funds
+        state["total_dca_volume"] = state.get("total_dca_volume", 0.0) + delta_vol
+        if state["total_dca_volume"] > 0:
+            state["dca_avg_price"] = state["total_dca_invested_krw"] / state["total_dca_volume"]
         state["today_status"] = f"{'🟢' if terminal else '🟡'} +{buy_krw:,.0f}원 {'체결' if terminal else '부분체결'} (Tier {tier})"
         pending["credited_volume"] = bought_vol
         pending["credited_funds"] = buy_krw
@@ -351,14 +505,16 @@ def _settle_btc_tiered_buy(upbit_client, state: Dict[str, Any], kst_now: datetim
         # 텔레그램 체결 알림 발송
         from main import send_telegram_alert
         tier_badge = "🔥 2단계 역대급 세일" if tier == 2 else "✨ 1단계 단기 세일"
+        dca_p_text = f", 평단: {state['dca_avg_price']:,.0f}원" if state.get("dca_avg_price", 0) > 0 else ""
         msg = (
             f"{'🟢' if terminal else '🟡'} <b>[비트코인 종가 추가매수 {'체결' if terminal else '부분체결'}]</b> ({tier_badge})\n"
             f"• 추가 매수액: <b>{delta_funds:,.0f}원</b>\n"
             f"• 매수 사유: {reason}\n"
             f"• 체결 단가: {cur_p:,.0f}원\n"
             f"• 총 보유량: <b>{new_bal:.6f} BTC</b> (계좌 평단: {new_avg:,.0f}원)\n"
-            f"• 모으기 누적: {state['total_dca_buys_count']}회차 ({state['total_dca_invested_krw']:,.0f}원)"
+            f"• 모으기 누적: {state['total_dca_buys_count']}회차 ({state['total_dca_invested_krw']:,.0f}원{dca_p_text})"
         )
+
         send_telegram_alert(msg)
         return {"action": "BOUGHT" if terminal else "PARTIAL", "tier": tier, "amount": delta_funds, "reason": reason}
 

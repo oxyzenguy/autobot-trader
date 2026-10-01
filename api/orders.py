@@ -53,3 +53,22 @@ def cancel_orders(uuids: list):
         results.append(response.json())
     return results
 
+
+def get_closed_orders(market: str = None, state: str = "done", limit: int = 100):
+    """체결/종결 주문 목록 조회 (state: 'done' or 'cancel')"""
+    params = {
+        "state": state,
+        "limit": limit
+    }
+    if market:
+        params["market"] = market
+    query_string = build_query_string(params)
+    headers = get_headers(query_string)
+
+    url = f"{BASE_URL}/v1/orders?{query_string}"
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.json()
+    return None
+
+

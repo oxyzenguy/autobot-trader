@@ -710,11 +710,14 @@ else:
                 </div>
                 """)
             with sc3:
+                r_state = strat.get("runtime_state", {})
+                dca_avg = r_state.get("dca_avg_price", 0.0)
+                dca_sub_text = f" | 적립평단: <b style='color:#00c087;'>{dca_avg:,.0f}원</b>" if dca_avg > 0 else ""
                 st.html(f"""
                 <div class="metric-card">
                     <div class="metric-title">내 계좌 매수 평단가</div>
                     <div class="metric-val text-blue">{avg_p:,.0f} <span style="font-size:1rem; color:#8c96a5;">원</span></div>
-                    <div class="metric-sub">매수원가: <b>{strat['cost_amount']:,.0f}원</b></div>
+                    <div class="metric-sub">매수원가: <b>{strat['cost_amount']:,.0f}원</b>{dca_sub_text}</div>
                 </div>
                 """)
             with sc4:
@@ -773,15 +776,22 @@ else:
         with p_col1:
             st.markdown(f"##### 💼 {ticker} 포지션 현황 (계좌 잔고 & 모으기 현황)")
             if market == "KRW-BTC":
+                r_state = strat.get("runtime_state", {})
+                dca_cnt = r_state.get("total_dca_buys_count", 0)
+                dca_inv = r_state.get("total_dca_invested_krw", 0.0)
+                dca_avg = r_state.get("dca_avg_price", 0.0)
                 pos_data = [
                     {"항목": "현재 시세", "값": f"{cur_p:,.0f} 원"},
-                    {"항목": "🏛️ 총 보유 수량 (기존잔고 포함)", "값": f"{coin_bal:.6f} BTC"},
-                    {"항목": "💳 계좌 매수 평단가", "값": f"{avg_p:,.0f} 원" if avg_p > 0 else "-"},
-                    {"항목": "💰 총 평가금액", "값": f"{eval_amt:,.0f} 원"},
-                    {"항목": "📈 총 평가손익 (수익률)", "값": f"{unrealized_pnl:+,.0f} 원 ({unrealized_pnl_pct:+.2f}%)" if avg_p > 0 else "-"},
-                    {"항목": "📱 업비트 자체 모으기", "값": "매일 15:05 (10,000원 적립)"},
+                    {"항목": "🏛️ 계좌 총 보유 수량 (기존잔고 포함)", "값": f"{coin_bal:.6f} BTC"},
+                    {"항목": "💳 계좌 전체 평단가", "값": f"{avg_p:,.0f} 원" if avg_p > 0 else "-"},
+                    {"항목": "💰 계좌 총 평가금액", "값": f"{eval_amt:,.0f} 원"},
+                    {"항목": "📈 계좌 총 평가손익 (수익률)", "값": f"{unrealized_pnl:+,.0f} 원 ({unrealized_pnl_pct:+.2f}%)" if avg_p > 0 else "-"},
+                    {"항목": "🎯 전략 적립 평단가 (DCA)", "값": f"{dca_avg:,.0f} 원" if dca_avg > 0 else "-"},
+                    {"항목": "📊 전략 누적 적립 현황", "값": f"{dca_cnt}회차 ({dca_inv:,.0f}원 누적)"},
+                    {"항목": "📱 업비트 정기 모으기", "값": "매일 15:05 (10,000원 적립)"},
                     {"항목": "🤖 봇 종가 가중 적립", "값": f"매일 08:55 ({regime_info.get('signal', '0~2만 원')})"}
                 ]
+
             else:
                 bot_q = strat.get("bot_quantity", 0.0)
                 bot_avg = strat.get("bot_avg_price", 0.0)

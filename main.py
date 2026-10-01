@@ -2211,7 +2211,11 @@ def run_btc_accumulator(market: str = "KRW-BTC"):
     - 매일 오전 08:50 ~ 08:58 사이에 당일 1회 일봉 종가 조건 검사
     - 200일선 및 내 계좌 평단가 비교하여 0원 / 1만 원 / 2만 원 자동 매수 집행
     """
-    from strategy.btc_accumulator import execute_btc_tiered_buy_if_due, check_btc_tiered_status
+    from strategy.btc_accumulator import (
+        execute_btc_tiered_buy_if_due,
+        check_btc_tiered_status,
+        sync_upbit_btc_recurring_buys
+    )
     print("=" * 65)
     print(f"🟡 업비트 비트코인 계층형 가중 적립 실전 봇 가동: {market}")
     print(f" 대상 마켓: {market} (기존 계좌 잔고 포함 모니터링)")
@@ -2226,10 +2230,19 @@ def run_btc_accumulator(market: str = "KRW-BTC"):
         print(f"[{market}] [CRITICAL] 업비트 클라이언트 초기화 실패: {e}")
         return
 
+    # 시작 시 업비트 모으기 체결 내역 동기화 (원장 및 평단가 갱신)
+    try:
+        sync_res = sync_upbit_btc_recurring_buys(upbit)
+        if sync_res.get("synced_count", 0) > 0:
+            print(f"[{market}] 🔄 업비트 모으기 체결 {sync_res['synced_count']}건 신규 동기화 완료 (누적 {sync_res['total_dca_buys_count']}회, 적립평단: {sync_res['dca_avg_price']:,.0f}원)")
+    except Exception as e:
+        print(f"[{market}] 업비트 모으기 초기 동기화 오류: {e}")
+
     # 시작 시 현재 상태 점검 및 출력
     try:
         stat = check_btc_tiered_status(upbit)
-        print(f"[{market}] 현재가: {stat['current_price']:,.0f}원 | 200일선: {stat['ma200']:,.0f}원 | 계좌평단: {stat['account_avg_price']:,.0f}원")
+        dca_text = f" | 적립평단: {stat['dca_avg_price']:,.0f}원 ({stat['total_dca_buys_count']}회차)" if stat.get('dca_avg_price', 0) > 0 else ""
+        print(f"[{market}] 현재가: {stat['current_price']:,.0f}원 | 200일선: {stat['ma200']:,.0f}원 | 계좌평단: {stat['account_avg_price']:,.0f}원{dca_text}")
         print(f"[{market}] 현재 판정: {stat['tier_name']} ({stat['tier_reason']}) | 매수 예정액: {stat['buy_krw']:,}원")
     except Exception as e:
         print(f"[{market}] 초기 상태 조회 오류: {e}")
@@ -2237,23 +2250,36 @@ def run_btc_accumulator(market: str = "KRW-BTC"):
     send_telegram_alert(f"🟡 <b>[비트코인 모으기 봇 가동]</b> {market}\n• 무손절 계층형 적립 (매일 08:55 봇 스마트 가중 + 15:05 업비트)")
 
     last_heartbeat_hour = None
+    last_sync_minute = None
 
     while True:
         try:
             # 1. 08:50~08:58 종가 매수 검사 및 실행
             execute_btc_tiered_buy_if_due(upbit)
 
-            # 2. 정시 하트비트 상태 출력
+            # 2. 주기적 업비트 앱 모으기 체결 동기화 (매 10분마다 실행)
             kst_now = datetime.utcnow() + timedelta(hours=9)
+            if kst_now.minute in (0, 10, 20, 30, 40, 50) and last_sync_minute != kst_now.minute:
+                last_sync_minute = kst_now.minute
+                try:
+                    sync_res = sync_upbit_btc_recurring_buys(upbit)
+                    if sync_res.get("synced_count", 0) > 0:
+                        print(f"[{kst_now.strftime('%H:%M:%S')}] [{market}] 🔄 업비트 모으기 체결 {sync_res['synced_count']}건 신규 동기화 (적립평단: {sync_res['dca_avg_price']:,.0f}원)")
+                except Exception as e:
+                    print(f"[{market}] 업비트 모으기 주기적 동기화 오류: {e}")
+
+            # 3. 정시 하트비트 상태 출력
             if kst_now.minute == 0 and last_heartbeat_hour != kst_now.hour:
                 last_heartbeat_hour = kst_now.hour
                 stat = check_btc_tiered_status(upbit)
-                print(f"[{kst_now.strftime('%H:%M:%S')}] [{market}] 💓 하트비트 | 현재가: {stat['current_price']:,.0f}원 | {stat['tier_name']}")
+                dca_info = f" | 적립평단: {stat['dca_avg_price']:,.0f}원 ({stat['total_dca_buys_count']}회차)" if stat.get('dca_avg_price', 0) > 0 else ""
+                print(f"[{kst_now.strftime('%H:%M:%S')}] [{market}] 💓 하트비트 | 현재가: {stat['current_price']:,.0f}원{dca_info} | {stat['tier_name']}")
 
         except Exception as e:
             print(f"[WARN] [{market}] 적립 루프 오류: {e}")
 
         time.sleep(10)
+
 
 
 # --- 봇 단일 실행 핸들러 ---
