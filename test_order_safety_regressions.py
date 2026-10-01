@@ -276,3 +276,42 @@ class TestOrderSafetyRegressions(unittest.TestCase):
                 return []
 
         self.assertTrue(main.cancel_all_orders(EmptyOrders(), "KRW-ETH"))
+
+    def test_submit_market_order_handles_cancel_with_executed_volume(self):
+        """Upbit market buy cancelled for dust remainder with executed_volume > 0 must be FILLED."""
+        class CancelledDustBuyExchange:
+            def buy_market_order(self, market: str, amount: float):
+                return {"uuid": "test-dust-buy-uuid"}
+
+            def get_order(self, uuid: str):
+                return {
+                    "uuid": uuid,
+                    "state": "cancel",
+                    "ord_type": "price",
+                    "executed_volume": "0.00271296",
+                    "trades": [{"funds": "9999.97056", "volume": "0.00271296", "price": "3686000"}],
+                    "paid_fee": "4.99998528",
+                }
+
+        res = main.submit_market_order_and_wait(CancelledDustBuyExchange(), "KRW-ETH", "bid", 10000.0)
+        self.assertEqual("FILLED", res.get("status"))
+        self.assertAlmostEqual(0.00271296, res["volume"])
+        self.assertAlmostEqual(3686000.0, res["price"])
+        self.assertEqual("test-dust-buy-uuid", res["uuid"])
+
+        # And zero volume with cancel state must still be REJECTED:
+        class ZeroVolumeCancelExchange:
+            def buy_market_order(self, market: str, amount: float):
+                return {"uuid": "zero-vol-uuid"}
+
+            def get_order(self, uuid: str):
+                return {
+                    "uuid": uuid,
+                    "state": "cancel",
+                    "executed_volume": "0.0",
+                    "trades": [],
+                }
+
+        res_zero = main.submit_market_order_and_wait(ZeroVolumeCancelExchange(), "KRW-ETH", "bid", 10000.0)
+        self.assertEqual("REJECTED", res_zero.get("status"))
+

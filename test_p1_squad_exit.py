@@ -432,36 +432,38 @@ class TestSquadExit(unittest.TestCase):
             "trades": [{"funds": "4750.0"}],  # 0.05 @ 95,000
         }
 
-        # First reconcile: partial fill of 0.05
-        ok = main.reconcile_bear_limit_buys(client, "KRW-ETH", state)
-        self.assertTrue(ok)
-        self.assertEqual(2, len(state["tranches"]))
-        new_tr = state["tranches"][-1]
-        self.assertEqual(2, new_tr["squad_id"])
-        self.assertEqual(1, new_tr["squad_stage"])
-        self.assertAlmostEqual(0.05, new_tr["volume"])
-        self.assertAlmostEqual(95_000.0, new_tr["buy_price"])
-        self.assertAlmostEqual(0.15, state["bot_quantity"])
+        with patch.object(main, "save_strategy_state", return_value=True):
+            # First reconcile: partial fill of 0.05
+            ok = main.reconcile_bear_limit_buys(client, "KRW-ETH", state)
+            self.assertTrue(ok)
+            self.assertEqual(2, len(state["tranches"]))
+            new_tr = state["tranches"][-1]
+            self.assertEqual(2, new_tr["squad_id"])
+            self.assertEqual(1, new_tr["squad_stage"])
+            self.assertAlmostEqual(0.05, new_tr["volume"])
+            self.assertAlmostEqual(95_000.0, new_tr["buy_price"])
+            self.assertAlmostEqual(0.15, state["bot_quantity"])
 
-        # Second reconcile with same state (restart / no new trades): must NOT double credit
-        ok2 = main.reconcile_bear_limit_buys(client, "KRW-ETH", state)
-        self.assertTrue(ok2)
-        self.assertEqual(2, len(state["tranches"]))
-        self.assertAlmostEqual(0.15, state["bot_quantity"])
+            # Second reconcile with same state (restart / no new trades): must NOT double credit
+            ok2 = main.reconcile_bear_limit_buys(client, "KRW-ETH", state)
+            self.assertTrue(ok2)
+            self.assertEqual(2, len(state["tranches"]))
+            self.assertAlmostEqual(0.15, state["bot_quantity"])
 
-        # Third reconcile: final fill of remaining 0.05 (total 0.10)
-        client.orders["order-sq2-stage1"] = {
-            "uuid": "order-sq2-stage1",
-            "state": "done",
-            "executed_volume": "0.10",
-            "trades": [{"funds": "9500.0"}],
-        }
-        ok3 = main.reconcile_bear_limit_buys(client, "KRW-ETH", state)
-        self.assertTrue(ok3)
-        self.assertEqual(2, len(state["tranches"]))
-        self.assertAlmostEqual(0.10, state["tranches"][-1]["volume"])
-        self.assertAlmostEqual(0.20, state["bot_quantity"])
-        self.assertEqual("done", state["bear_limit_buys"]["order-sq2-stage1"]["state"])
+            # Third reconcile: final fill of remaining 0.05 (total 0.10)
+            client.orders["order-sq2-stage1"] = {
+                "uuid": "order-sq2-stage1",
+                "state": "done",
+                "executed_volume": "0.10",
+                "trades": [{"funds": "9500.0"}],
+            }
+            ok3 = main.reconcile_bear_limit_buys(client, "KRW-ETH", state)
+            self.assertTrue(ok3)
+            self.assertEqual(2, len(state["tranches"]))
+            self.assertAlmostEqual(0.10, state["tranches"][-1]["volume"])
+            self.assertAlmostEqual(0.20, state["bot_quantity"])
+            self.assertEqual("done", state["bear_limit_buys"]["order-sq2-stage1"]["state"])
+
 
     def test_sol_strictly_capped_at_four_squads_and_16_stages(self):
         """SOL does not generate any orders beyond 4 squads (16 stages)."""

@@ -336,7 +336,7 @@ def submit_market_order_and_wait(upbit_client, market: str, side: str, amount: f
             if on_accepted is not None and order.get("uuid") != order_uuid:
                 return {"status": "PENDING", "uuid": order_uuid, "reason": "주문 UUID 조회 불일치"}
             state = order.get("state")
-            if state == "done":
+            if state in ("done", "cancel", "reject"):
                 try:
                     executed_volume = float(order.get("executed_volume", 0.0) or 0.0)
                 except (TypeError, ValueError):
@@ -358,9 +358,8 @@ def submit_market_order_and_wait(upbit_client, market: str, side: str, amount: f
                         "price": fill_price,
                         "fee": float(order.get("paid_fee", 0.0) or 0.0)
                     }
-                return {"status": "REJECTED", "uuid": order_uuid, "reason": "체결 수량 또는 체결가 없음"}
-            if state in ("cancel", "reject"):
-                return {"status": "REJECTED", "uuid": order_uuid, "reason": f"주문 종결 상태: {state}"}
+                return {"status": "REJECTED", "uuid": order_uuid, "reason": f"주문 종결 상태: {state}" if executed_volume == 0 else "체결 수량 또는 체결가 없음"}
+
 
         if attempt < ORDER_SETTLEMENT_ATTEMPTS - 1:
             time.sleep(ORDER_SETTLEMENT_DELAY_SEC)
@@ -723,9 +722,15 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 time.sleep(10)
                 continue
             if state.get("trading_halted", False):
-                print(f"[{market}] [CRITICAL] 주문 체결 상태 미확정으로 거래 중단: {state.get('halt_reason', '')}")
-                time.sleep(30)
-                continue
+                fresh_state = load_strategy_state(market)
+                if fresh_state and not fresh_state.get("trading_halted", False):
+                    state = fresh_state
+                    print(f"[{market}] 🔄 [원장 재조정 확인] 상태 정상화 감지. 자동매매를 재개합니다.")
+                else:
+                    print(f"[{market}] [CRITICAL] 주문 체결 상태 미확정으로 거래 중단: {state.get('halt_reason', '')}")
+                    time.sleep(30)
+                    continue
+
 
             # 1. 예수금 체크
             check_krw_balance_alert(upbit, context=f"{market} 실시간 감시")
