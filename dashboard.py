@@ -510,9 +510,22 @@ else:
         badge_style = "background:#2962ff22; color:#2962ff; border:1px solid #2962ff;"
 
         regime_info = strat.get("regime_info", {})
-        is_bull = regime_info.get("is_bull", False)
+        r_state = strat.get("runtime_state", {})
+        persisted_regime = r_state.get("current_regime", "BEAR")
+
+        raw_is_bull = regime_info.get("is_bull")
+        if raw_is_bull is None:
+            # 완충/확인 대기(HOLD) 구간에서는 봇이 유지 중인 직전 확정 국면(runtime_state)을 따름
+            is_bull = (persisted_regime == "BULL")
+        else:
+            is_bull = bool(raw_is_bull)
+
         regime_color = "#00c087" if is_bull else "#ff3b69"
-        regime_badge = f'<span style="background:{regime_color}22; color:{regime_color}; border:1px solid {regime_color}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "국면 분석 중")}</span>'
+        if raw_is_bull is None:
+            hold_sub = "상승 유지" if is_bull else "하락 유지"
+            regime_badge = f'<span style="background:#ffb30022; color:#ffb300; border:1px solid #ffb300; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">국면 확인 대기 ({hold_sub})</span>'
+        else:
+            regime_badge = f'<span style="background:{regime_color}22; color:{regime_color}; border:1px solid {regime_color}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">{regime_info.get("regime_korean", "국면 분석 중")}</span>'
         
         target_base_p = strat.get("bot_avg_price", 0.0) or avg_p or cur_p
         basket_target_p = target_base_p * strat.get("profit_margin", 1.005) if target_base_p > 0 else 0.0

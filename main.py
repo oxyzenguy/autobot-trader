@@ -2089,14 +2089,18 @@ def send_telegram_status_briefing():
             ticker = m.split("-")[1]
             state = load_strategy_state(m)
             regime_info = get_hybrid_regime_and_signals(m)
-            regime = regime_info.get("regime", "BULL")
+            confirmed_is_bull = regime_info.get("is_bull")
+            if confirmed_is_bull is None:
+                is_bull = (state.get("current_regime") == "BULL")
+            else:
+                is_bull = confirmed_is_bull
             p = pyupbit.get_current_price(m) or 0.0
             q = state.get("bot_quantity", 0.0)
             avg = state.get("bot_avg_price", 0.0)
             tranches = state.get("tranches", [])
             pnl_pct = ((p - avg) / avg * 100.0) if avg > 0 else 0.0
 
-            if regime == "BULL":
+            if is_bull:
                 regime_label = "🟢 상승 추세"
                 prog_label = f"정기 적립 {len(tranches)}/{MAX_BULL_DCA_STEPS}회차" if q > 0 else "진입 대기 중"
             else:

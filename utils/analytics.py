@@ -329,6 +329,13 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
     else:
         from strategy.hybrid_regime import get_hybrid_regime_and_signals
         regime_info = get_hybrid_regime_and_signals(market)
+        persisted = runtime_state.get("current_regime", "BEAR")
+        if regime_info.get("is_bull") is None:
+            regime_info["effective_regime"] = persisted
+            regime_info["effective_is_bull"] = (persisted == "BULL")
+        else:
+            regime_info["effective_regime"] = regime_info.get("regime", "BEAR")
+            regime_info["effective_is_bull"] = bool(regime_info.get("is_bull", False))
 
         # 2-2. 봇 전용 독립 포지션 계산 (기존 보유 자산 완전 격리/보호)
         protected_quantity = float(PROTECTED_BALANCES.get(market, 0.0))
