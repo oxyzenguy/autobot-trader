@@ -938,7 +938,7 @@ if os.path.exists(paper_state_file):
         p_grids = paper_state.get("active_grids", [])
         p_base = paper_state.get("base_price", 0.0)
 
-        with st.expander("🧪 [가상 매매] KRW-XRP 5,000원 마이크로 그리드 스캘퍼 실시간 현황 (1주일 검증 중)", expanded=True):
+        with st.expander("🧪 [가상 매매] KRW-XRP 10,000원 마이크로 그리드 스캘퍼 실시간 현황 (1주일 검증 중)", expanded=True):
             p_col1, p_col2, p_col3, p_col4 = st.columns(4)
             p_col1.metric("가상 투자 원금", f"{p_init:,.0f} 원")
             p_col2.metric("현재 총 자산", f"{p_tot:,.0f} 원", f"{p_ret:+.2f}%")
@@ -947,7 +947,7 @@ if os.path.exists(paper_state_file):
             
             p_sub1, p_sub2 = st.columns(2)
             with p_sub1:
-                st.caption(f"기준 가격(Base): {p_base:,.0f}원 | 1회 주문: 5,000원 | 간격: 0.5% 매수 / +0.8% 익절")
+                st.caption(f"기준 가격(Base): {p_base:,.0f}원 | 1회 주문: 10,000원 | 간격: 0.5% 매수 (최대 50단계) / +0.8% 익절")
                 if p_grids:
                     df_p_grids = pd.DataFrame(p_grids)
                     show_cols = [c for c in ["lvl", "buy_p", "tp_p", "vol", "buy_time"] if c in df_p_grids.columns]

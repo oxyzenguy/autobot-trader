@@ -28,10 +28,10 @@ DB_FILE = os.path.join(BASE_DIR, "paper_trade_history.db")
 MARKET = "KRW-XRP"
 TICKER = "XRP"
 INITIAL_CAPITAL = 1_000_000.0  # 100만 원
-UNIT_KRW = 5_000.0             # 1회 5,000원
+UNIT_KRW = 10_000.0            # 1회 10,000원
 STEP_PCT = 0.005               # 0.5% 간격
 PROFIT_PCT = 0.008             # +0.8% 익절
-MAX_LEVELS = 20                # 최대 20레벨 (100,000원 한도 운용, 90만 원 안전 현금)
+MAX_LEVELS = 50                # 최대 50레벨 (500,000원 한도 운용, 50만 원 안전 현금)
 FEE_RATE = 0.0005              # 업비트 0.05% taker fee
 SLIPPAGE = 0.0002              # 0.02% 슬리피지
 POLL_INTERVAL_SEC = 5          # 5초 주기 감시
@@ -145,7 +145,7 @@ def run_paper_trading():
     state = load_state()
 
     print("=" * 70)
-    print(f"🚀 [가상 매매] KRW-XRP 5,000원 마이크로 그리드 스캘퍼 가동")
+    print(f"🚀 [가상 매매] KRW-XRP 10,000원 마이크로 그리드 스캘퍼 가동")
     print(f" • 시작 자본금:    {state['initial_capital']:,.0f} KRW")
     print(f" • 현재 예수금:    {state['available_krw']:,.0f} KRW")
     print(f" • 1회 주문 단위:  {UNIT_KRW:,.0f} KRW (총 {int(INITIAL_CAPITAL // UNIT_KRW)}회 분할)")
