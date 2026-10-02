@@ -947,7 +947,7 @@ if os.path.exists(paper_state_file):
             
             p_sub1, p_sub2 = st.columns(2)
             with p_sub1:
-                st.caption(f"기준 가격(Base): {p_base:,.0f}원 | 1회 주문: 10,000원 | 간격: 0.5% 매수 (최대 50단계) / +0.8% 익절")
+                st.caption(f"기준 가격(Base): {p_base:,.0f}원 | 1회 주문: 10,000원 | 간격: 0.5% 매수 (최대 50단계) / +1.2% 익절")
                 if p_grids:
                     df_p_grids = pd.DataFrame(p_grids)
                     show_cols = [c for c in ["lvl", "buy_p", "tp_p", "vol", "buy_time"] if c in df_p_grids.columns]

@@ -30,7 +30,7 @@ TICKER = "XRP"
 INITIAL_CAPITAL = 1_000_000.0  # 100만 원
 UNIT_KRW = 10_000.0            # 1회 10,000원
 STEP_PCT = 0.005               # 0.5% 간격
-PROFIT_PCT = 0.008             # +0.8% 익절
+PROFIT_PCT = 0.012             # +1.2% 익절 (황금 밸런스 스위트 스팟)
 MAX_LEVELS = 50                # 최대 50레벨 (500,000원 한도 운용, 50만 원 안전 현금)
 FEE_RATE = 0.0005              # 업비트 0.05% taker fee
 SLIPPAGE = 0.0002              # 0.02% 슬리피지
@@ -150,14 +150,14 @@ def run_paper_trading():
     print(f" • 현재 예수금:    {state['available_krw']:,.0f} KRW")
     print(f" • 1회 주문 단위:  {UNIT_KRW:,.0f} KRW (총 {int(INITIAL_CAPITAL // UNIT_KRW)}회 분할)")
     print(f" • 그리드 간격:    {STEP_PCT * 100:.2f}% 하락 시마다 매수 (최대 {MAX_LEVELS}단계)")
-    print(f" • 1회 익절 목표:  +{PROFIT_PCT * 100:.2f}% (수수료 제외 순익 약 +0.7%)")
+    print(f" • 1회 익절 목표:  +{PROFIT_PCT * 100:.2f}% (수수료 제외 순익 약 +1.10%)")
     print(f" • 상태 저장:      {STATE_FILE}")
     print(f" • 로그/DB:        {DB_FILE}")
     print("=" * 70)
 
     send_telegram_alert(
-        f"🧪 <b>[가상 매매 가동]</b> {MARKET} 그리드 스캘퍼\n"
-        f"• 가상 원금: {INITIAL_CAPITAL:,.0f}원 (1Unit: {UNIT_KRW:,.0f}원)\n"
+        f"🧪 <b>[가상 매매 가동]</b> {MARKET} 그리드 스캘퍼 (1.2% 익절형)\n"
+        f"• 가상 원금: {INITIAL_CAPITAL:,.0f}원 (1Unit: {UNIT_KRW:,.0f}원 / 50단계)\n"
         f"• 그리드: {STEP_PCT*100:.1f}% 하락 매수 / +{PROFIT_PCT*100:.1f}% 즉시 익절\n"
         f"• 일주일간 무위험 성과 검증 후 실전 투입 여부 결정"
     )
