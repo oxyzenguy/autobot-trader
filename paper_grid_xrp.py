@@ -68,31 +68,36 @@ def send_telegram_alert(message: str) -> None:
 
 def init_db() -> None:
     """가상 매매 전용 SQLite DB 초기화"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS paper_trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            market TEXT,
-            side TEXT,
-            action TEXT,
-            price REAL,
-            volume REAL,
-            cost_or_revenue REAL,
-            pnl REAL,
-            level INTEGER,
-            strategy TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=10.0)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS paper_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                market TEXT,
+                side TEXT,
+                action TEXT,
+                price REAL,
+                volume REAL,
+                cost_or_revenue REAL,
+                pnl REAL,
+                level INTEGER,
+                strategy TEXT
+            )
+        ''')
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()
 
 
 def log_paper_trade(market: str, side: str, action: str, price: float, volume: float, cost_or_revenue: float, pnl: float, level: int, strategy: str = "GRID_SCALPER") -> None:
     """가상 체결 기록 저장"""
+    conn = None
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=10.0)
         c = conn.cursor()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         c.execute('''
@@ -100,9 +105,11 @@ def log_paper_trade(market: str, side: str, action: str, price: float, volume: f
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (now_str, market, side, action, price, volume, cost_or_revenue, pnl, level, strategy))
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[ERROR] 가상 체결 DB 저장 실패: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 
 def load_state() -> Dict[str, Any]:
@@ -165,7 +172,11 @@ def get_current_price(market: str = MARKET) -> Optional[float]:
         if r.status_code == 200:
             data = r.json()
             if data and len(data) > 0:
-                return float(data[0]["trade_price"])
+                p = float(data[0].get("trade_price", 0.0) or 0.0)
+                if math.isfinite(p) and p > 0:
+                    return p
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] 현재가 API 응답 비정상 (Status: {r.status_code}): {r.text[:100]}")
     except Exception as e:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 현재가 조회 예외: {e}")
     return None
@@ -306,7 +317,8 @@ def run_paper_trading():
                                 n_grid_costs = sum(g["cost"] for g in active_grids)
                                 n_gom_vols = sum(t["vol"] for t in state["gommapa_tranches"])
                                 n_gom_costs = sum(t["cost"] for t in state["gommapa_tranches"])
-                                new_vwap = (n_grid_costs + n_gom_costs) / (n_grid_vols + n_gom_vols)
+                                tot_den = n_grid_vols + n_gom_vols
+                                new_vwap = (n_grid_costs + n_gom_costs) / tot_den if tot_den > 0 else curr_p
 
                                 log_paper_trade(
                                     market=MARKET,
@@ -334,8 +346,14 @@ def run_paper_trading():
                     surviving_grids = []
                     for g in active_grids:
                         if curr_p >= g["tp_p"]:
+                            ok_sell, clean_vol, sell_err = preflight_check_sell(MARKET, g["vol"], curr_p, g["vol"])
+                            if not ok_sell:
+                                print(f"[WARN] 곰마파 중 그리드 {g['lvl']} 매도 사전 검증 미달: {sell_err}")
+                                surviving_grids.append(g)
+                                continue
+
                             exit_p = g["tp_p"] * (1.0 - SLIPPAGE)
-                            rev = exit_p * g["vol"] * (1.0 - FEE_RATE)
+                            rev = exit_p * clean_vol * (1.0 - FEE_RATE)
                             cost = g["cost"] * (1.0 + FEE_RATE)
                             net_pnl = rev - cost
                             state["available_krw"] += rev
@@ -344,11 +362,16 @@ def run_paper_trading():
                             state["total_trades"] += 1
                             log_paper_trade(
                                 market=MARKET, side="ask", action=f"GRID_TP_LVL_{g['lvl']}",
-                                price=exit_p, volume=g["vol"], cost_or_revenue=rev, pnl=net_pnl, level=g["lvl"]
+                                price=exit_p, volume=clean_vol, cost_or_revenue=rev, pnl=net_pnl, level=g["lvl"]
                             )
                         else:
                             surviving_grids.append(g)
                     state["active_grids"] = surviving_grids
+
+                    # 만약 모든 그리드와 곰마파 물량이 소진되었으면 정상 그리드로 복귀
+                    if len(state["active_grids"]) == 0 and len(state["gommapa_tranches"]) == 0:
+                        state["mode"] = "GRID_SCALPER"
+                        state["base_price"] = curr_p
 
             # -------------------------------------------------------------
             # [MODE: GRID_SCALPER] 평상시 그리드 스캘퍼 모드 로직
@@ -470,7 +493,7 @@ def run_paper_trading():
                 # 3. 만약 50단계가 전부 체결되었다면 ➔ [곰마파 탈출 모드]로 국면 전환!
                 if len(state["active_grids"]) >= MAX_LEVELS:
                     state["mode"] = "GOMMAPA_ESCAPE"
-                    state["gommapa_base_p"] = min(g["buy_p"] for g in state["active_grids"])
+                    state["gommapa_base_p"] = min([g["buy_p"] for g in state["active_grids"]], default=curr_p)
                     state["gommapa_tranches"] = []
 
                     grid_vols = sum(g["vol"] for g in state["active_grids"])

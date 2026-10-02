@@ -44,11 +44,18 @@ def preflight_check_buy(
 ) -> Tuple[bool, int, str]:
     """
     시장가 매수 전 검증:
-    1. 최소 주문액(5,000원) 이상인지 확인
-    2. 수수료를 포함한 가용 예수금이 충분한지 확인
-    3. 업비트 시장가 매수 규격에 맞게 정수(int) 원화 금액으로 정제
+    1. 금액이 유한수(finite)이고 양수인지 확인
+    2. 최소 주문액(5,000원) 이상인지 확인
+    3. 수수료를 포함한 가용 예수금이 충분한지 확인
+    4. 업비트 시장가 매수 규격에 맞게 정수(int) 원화 금액으로 정제
     반환: (성공여부, 정제된 정수 금액, 실패사유)
     """
+    try:
+        if not math.isfinite(amount_krw) or amount_krw <= 0:
+            return False, 0, f"주문 금액이 비정상입니다 ({amount_krw})"
+    except (TypeError, ValueError):
+        return False, 0, f"주문 금액 형식 오류 ({amount_krw})"
+
     clean_amount = int(math.floor(amount_krw))
     if clean_amount < MIN_ORDER_KRW:
         return False, clean_amount, f"주문 금액({clean_amount:,}원)이 최소 주문액({MIN_ORDER_KRW:,}원) 미만입니다."
@@ -72,12 +79,16 @@ def preflight_check_sell(
 ) -> Tuple[bool, float, str]:
     """
     시장가 매도 전 검증:
-    1. 가용 보유 수량을 초과하지 않는지 확인 (부동소수점 오차 방지: 소수점 8자리 버림)
-    2. 예상 체결 금액(수량 * 현재가)이 5,000원 이상인지 확인
+    1. 수량과 가격이 유한수(finite)이고 양수인지 확인
+    2. 가용 보유 수량을 초과하지 않는지 확인 (부동소수점 오차 방지: 소수점 8자리 버림)
+    3. 예상 체결 금액(수량 * 현재가)이 5,000원 이상인지 확인
     반환: (성공여부, 정제된 8자리 수량, 실패사유)
     """
-    if volume <= 0 or current_price <= 0:
-        return False, 0.0, "매도 수량 또는 현재가가 0 이하입니다."
+    try:
+        if not math.isfinite(volume) or not math.isfinite(current_price) or volume <= 0 or current_price <= 0:
+            return False, 0.0, "매도 수량 또는 현재가가 0 이하이거나 비정상(NaN/Inf)입니다."
+    except (TypeError, ValueError):
+        return False, 0.0, "매도 파라미터 타입 오류"
 
     # 업비트 허용 최대 8자리 소수점 버림 처리
     clean_volume = math.floor(volume * 1e8) / 1e8
@@ -232,8 +243,19 @@ def poll_order_settlement(
             time.sleep(1.0)
             order_after_cancel = upbit_client.get_order(order_uuid)
             if isinstance(order_after_cancel, dict):
+                post_state = order_after_cancel.get("state")
                 exec_vol = float(order_after_cancel.get("executed_volume", 0.0) or 0.0)
-                if exec_vol > 0:
+                if post_state == "done":
+                    fill_p, fee = get_order_fill_metrics(order_after_cancel, exec_vol)
+                    return {
+                        "status": "FILLED",
+                        "uuid": order_uuid,
+                        "volume": exec_vol,
+                        "price": fill_p,
+                        "fee": fee,
+                        "state": "done"
+                    }
+                elif exec_vol > 0:
                     fill_p, fee = get_order_fill_metrics(order_after_cancel, exec_vol)
                     return {
                         "status": "PARTIAL_CANCELLED",

@@ -936,6 +936,8 @@ if os.path.exists(paper_state_file):
         p_mdd = paper_state.get("max_drawdown_pct", 0.0)
         p_wins = paper_state.get("win_count", 0)
         p_mode = paper_state.get("mode", "GRID_SCALPER")
+        p_grids = paper_state.get("active_grids", [])
+        p_base = paper_state.get("base_price", 0.0)
         mode_badge = "🟢 그리드 스캘퍼" if p_mode == "GRID_SCALPER" else "🚨 곰마파 비상 탈출 모드"
 
         with st.expander(f"🧪 [가상 매매] KRW-XRP 10,000원 그리드 & 곰마파 하이브리드 ({mode_badge})", expanded=True):
