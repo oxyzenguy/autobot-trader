@@ -336,6 +336,7 @@ def simulate_hybrid_squad(
     bull_ts_active = False
     last_dca_bar = -999
     last_closing_buy_day = None
+    bull_need_fresh_gc = False
 
     active_bear_tranches: List[Dict[str, Any]] = []
     last_bear_buy_p = 0.0
@@ -447,6 +448,7 @@ def simulate_hybrid_squad(
                     bull_tranches = []
                     bull_highest_p = 0.0
                     bull_ts_active = False
+                    bull_need_fresh_gc = True
                     continue
 
                 # 긴급 손절 (평단가 대비 -10% 하락)
@@ -464,6 +466,7 @@ def simulate_hybrid_squad(
                     bull_tranches = []
                     bull_highest_p = 0.0
                     bull_ts_active = False
+                    bull_need_fresh_gc = True
                     continue
 
                 # 12시간 Time-DCA 분할 적립 (최대 20회차)
@@ -490,12 +493,16 @@ def simulate_hybrid_squad(
                             last_dca_bar = i
                             bull_highest_p = max(bull_highest_p, buy_p)
             else:
-                # 미보유 시 5/20 MA 골든크로스 최초 1차 진입
+                # 미보유 시 5/20 MA 골든크로스 또는 정배열 1차 진입
                 prev_m5 = df['ma5'].iloc[i-1]
                 prev_m20 = df['ma20'].iloc[i-1]
                 curr_m5 = df['ma5'].iloc[i]
                 curr_m20 = df['ma20'].iloc[i]
-                if prev_m5 <= prev_m20 and curr_m5 > curr_m20 and c > curr_m5:
+                if curr_m5 <= curr_m20:
+                    bull_need_fresh_gc = False
+                is_gc = (prev_m5 <= prev_m20 and curr_m5 > curr_m20 and c > curr_m5)
+                is_aligned = (curr_m5 > curr_m20 and not bull_need_fresh_gc)
+                if is_gc or is_aligned:
                     if krw >= unit_krw * (1 + fee_rate):
                         buy_p = c
                         v = (unit_krw * (1 - fee_rate)) / buy_p
@@ -504,6 +511,7 @@ def simulate_hybrid_squad(
                         in_bull_pos = True
                         bull_highest_p = buy_p
                         bull_ts_active = False
+                        bull_need_fresh_gc = False
                         last_dca_bar = i
                         last_closing_buy_day = None
 
@@ -547,6 +555,7 @@ def simulate_hybrid_squad(
                 in_bull_pos = False
                 bull_tranches = []
                 bull_ts_active = False
+                bull_need_fresh_gc = False
 
             # 하락장 마틴게일 & 매직스플릿 운용
             if active_bear_tranches:

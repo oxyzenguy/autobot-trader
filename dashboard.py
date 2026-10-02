@@ -852,6 +852,7 @@ else:
                     "BTC_TIERED_BUY_T2": "비트코인 2단계 역대급세일 매수 (+2만)",
                     "INITIAL_10K_ENTRY": "1회차 신규 진입",
                     "TREND_GOLDEN_CROSS_BUY": "5/20 골든크로스 매수",
+                    "BULL_REGIME_ALIGNED_ENTRY": "상승장 정배열 1차 진입",
                     "MARTINGALE_BUY_INITIAL": "마틴게일 1차 매수",
                     "TRAILING_STOP_EXIT": "트레일링스탑 익절",
                     "TREND_DEAD_CROSS_SELL": "5/20 데드크로스 청산",

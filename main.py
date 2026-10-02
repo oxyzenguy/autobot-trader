@@ -489,6 +489,7 @@ def reconcile_trailing_exit(upbit_client, market: str, state: dict, recovery: di
         state["trend_peak_price"] = 0.0
         state["last_dca_buy_time"] = None
         state["initial_entry_done"] = True
+        state["need_fresh_golden_cross"] = True
         if is_stop_loss:
             state["stop_loss_cooldown_until"] = recovery["cooldown_until"]
         else:
@@ -756,6 +757,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 regime_str = regime_info.get("regime_korean", "국면 분석 중")
                 curr_regime = "BULL" if is_bull else "BEAR"
             curr_ma5 = float(regime_info.get("ma5", 0.0))
+            curr_ma20 = float(regime_info.get("ma20", 0.0))
+            curr_ma200 = float(regime_info.get("ma200", 0.0))
 
             # 국면 전환 감지 (BULL ➔ BEAR 또는 BEAR ➔ BULL)
             if prev_regime == "BULL" and curr_regime == "BEAR":
@@ -909,6 +912,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 state["last_dca_buy_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 state["current_regime"] = "BULL"
                 state["active_mode"] = "TREND"
+                state["need_fresh_golden_cross"] = False
                 save_strategy_state(market, state)
                 time.sleep(2)
                 continue
@@ -1909,6 +1913,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     buy_action = ""
                     buy_reason = ""
 
+                    need_fresh_gc = state.get("need_fresh_golden_cross", False)
                     if not state.get("initial_entry_done", False):
                         # 안전 검사: 이미 계좌에 보호 수량을 초과하는 봇 수량이 존재하면 신규 매수 없이 즉시 동기화
                         try:
@@ -1948,6 +1953,11 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         should_buy = True
                         buy_action = "TREND_GOLDEN_CROSS_BUY"
                         buy_reason = "200선 상회 중 5/20 골든크로스 발생"
+                        state["need_fresh_golden_cross"] = False
+                    elif signal == "BUY_ALIGNED" and not need_fresh_gc:
+                        should_buy = True
+                        buy_action = "BULL_REGIME_ALIGNED_ENTRY"
+                        buy_reason = f"200선 상회 및 5/20 정배열(5선 {curr_ma5:,.0f} > 20선 {curr_ma20:,.0f}) 1회차 신규 진입"
 
                     if should_buy:
                         krw_balance = check_krw_balance_alert(upbit, context=f"{market} 상승장 1회차 진입")
@@ -1970,6 +1980,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             state["trend_peak_price"] = max(state.get("trend_peak_price", 0.0), avg_p)
                             state["trailing_stop_active"] = False
                             state["initial_entry_done"] = True
+                            state["need_fresh_golden_cross"] = False
                             if previous_quantity > 0 and not state.get("tranches"):
                                 add_bot_tranche(
                                     state=state, units=1, buy_price=avg_price,

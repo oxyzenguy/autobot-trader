@@ -180,6 +180,9 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
         if is_golden_cross:
             signal = "BUY"
             reason = f"200 MA 상회 중 5/20 MA 골든크로스 발생 (5선 {curr_ma5:,.0f}원 > 20선 {curr_ma20:,.0f}원)"
+        elif curr_ma5 > curr_ma20:
+            signal = "BUY_ALIGNED"
+            reason = f"200 MA 상회 중 5/20 정배열 상승세 유지 (5선 {curr_ma5:,.0f}원 > 20선 {curr_ma20:,.0f}원)"
         else:
             signal = "HOLD"
             reason = f"200 MA 상회 상승 국면 유지 (12h 정기적립 & -10% 긴급손절 감시)"
