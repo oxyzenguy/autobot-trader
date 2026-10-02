@@ -346,12 +346,6 @@ def run_paper_trading():
             # [MODE: GRID_SCALPER] 평상시 그리드 스캘퍼 모드 로직
             # -------------------------------------------------------------
             else:
-                # 베이스 가격 초기화 또는 상향 트레일링 (포지션이 0개일 때)
-                if len(active_grids) == 0:
-                    if base_p == 0.0 or curr_p > base_p:
-                        state["base_price"] = curr_p
-                        base_p = curr_p
-
                 # 1. 개별 그리드 익절(+1.2%) 체크
                 surviving_grids = []
                 for g in active_grids:
@@ -384,14 +378,42 @@ def run_paper_trading():
 
                 state["active_grids"] = surviving_grids
 
+                # 2. 보유 포지션이 0개일 때: 새로운 그리드 사이클 시작 (1단계 즉시 진입)
                 if len(state["active_grids"]) == 0:
                     state["base_price"] = curr_p
                     base_p = curr_p
+                    if state["available_krw"] >= UNIT_KRW * (1.0 + FEE_RATE):
+                        buy_p = curr_p * (1.0 + SLIPPAGE)
+                        vol = (UNIT_KRW * (1.0 - FEE_RATE)) / buy_p
+                        state["available_krw"] -= UNIT_KRW
+                        tp_p = buy_p * (1.0 + PROFIT_PCT)
 
-                # 2. 50단계 매수 체크: -0.5% * level 도달 시 10,000원 매수
+                        new_grid = {
+                            "lvl": 1,
+                            "buy_p": buy_p,
+                            "vol": vol,
+                            "cost": UNIT_KRW,
+                            "tp_p": tp_p,
+                            "buy_time": now_str
+                        }
+                        state["active_grids"].append(new_grid)
+                        log_paper_trade(
+                            market=MARKET, side="bid", action="GRID_BUY_LVL_1",
+                            price=buy_p, volume=vol, cost_or_revenue=UNIT_KRW, pnl=0.0, level=1
+                        )
+                        msg = (
+                            f"🟢 <b>[가상 매수]</b> {MARKET} 레벨 1 신규 진입 (기준가: {base_p:,.0f}원)\n"
+                            f"• 매수가: {buy_p:,.0f}원 (투자: {UNIT_KRW:,.0f}원)\n"
+                            f"• 목표 매도가: {tp_p:,.0f}원 (+{PROFIT_PCT*100:.1f}%)\n"
+                            f"• 보유 그리드: 1개 / 잔여 예수금: {state['available_krw']:,.0f}원"
+                        )
+                        print(f"\n[{now_str}] {msg.replace('<b>','').replace('</b>','')}")
+                        send_telegram_alert(msg)
+
+                # 3. 추가 하락 단계 매수 체크 (Level 2 ~ 50): 기준가 대비 -0.5% * (lvl - 1)
                 active_levels = {g["lvl"] for g in state["active_grids"]}
-                for lvl in range(1, MAX_LEVELS + 1):
-                    target_p = base_p * (1.0 - STEP_PCT * lvl)
+                for lvl in range(2, MAX_LEVELS + 1):
+                    target_p = base_p * (1.0 - STEP_PCT * (lvl - 1))
                     if lvl not in active_levels and curr_p <= target_p:
                         if state["available_krw"] >= UNIT_KRW * (1.0 + FEE_RATE):
                             buy_p = target_p * (1.0 + SLIPPAGE)
