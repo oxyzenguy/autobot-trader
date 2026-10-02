@@ -921,6 +921,58 @@ else:
 
         st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
+# =============================================================================
+# 가상 매매 (Paper Trading) 실시간 모니터링 카드
+# =============================================================================
+paper_state_file = os.path.join(BASE_DIR, "paper_grid_state_KRW_XRP.json")
+if os.path.exists(paper_state_file):
+    try:
+        with open(paper_state_file, "r", encoding="utf-8") as pf:
+            paper_state = json.load(pf)
+        p_init = paper_state.get("initial_capital", 1_000_000.0)
+        p_tot = paper_state.get("total_equity", p_init)
+        p_pnl = paper_state.get("realized_pnl", 0.0)
+        p_ret = ((p_tot / p_init) - 1.0) * 100.0
+        p_mdd = paper_state.get("max_drawdown_pct", 0.0)
+        p_wins = paper_state.get("win_count", 0)
+        p_grids = paper_state.get("active_grids", [])
+        p_base = paper_state.get("base_price", 0.0)
+
+        with st.expander("🧪 [가상 매매] KRW-XRP 5,000원 마이크로 그리드 스캘퍼 실시간 현황 (1주일 검증 중)", expanded=True):
+            p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+            p_col1.metric("가상 투자 원금", f"{p_init:,.0f} 원")
+            p_col2.metric("현재 총 자산", f"{p_tot:,.0f} 원", f"{p_ret:+.2f}%")
+            p_col3.metric("누적 실현손익", f"{p_pnl:+,.0f} 원", f"익절 {p_wins}회")
+            p_col4.metric("최대 낙폭 (MDD)", f"{p_mdd:.2f}%", f"보유 {len(p_grids)}단계")
+            
+            p_sub1, p_sub2 = st.columns(2)
+            with p_sub1:
+                st.caption(f"기준 가격(Base): {p_base:,.0f}원 | 1회 주문: 5,000원 | 간격: 0.5% 매수 / +0.8% 익절")
+                if p_grids:
+                    df_p_grids = pd.DataFrame(p_grids)
+                    show_cols = [c for c in ["lvl", "buy_p", "tp_p", "vol", "buy_time"] if c in df_p_grids.columns]
+                    st.dataframe(df_p_grids[show_cols].rename(
+                        columns={"lvl": "레벨", "buy_p": "매수가", "tp_p": "목표가", "vol": "수량", "buy_time": "체결시각"}
+                    ), hide_index=True, use_container_width=True)
+                else:
+                    st.info("현재 보유 중인 포지션이 없습니다. (다음 0.5% 하락 매수 대기 중)")
+            with p_sub2:
+                paper_db = os.path.join(BASE_DIR, "paper_trade_history.db")
+                if os.path.exists(paper_db):
+                    conn = sqlite3.connect(paper_db)
+                    p_trades_df = pd.read_sql_query("SELECT timestamp, side, action, price, pnl FROM paper_trades ORDER BY id DESC LIMIT 10", conn)
+                    conn.close()
+                    if not p_trades_df.empty:
+                        p_trades_df["구분"] = p_trades_df["side"].apply(lambda s: "🟢 매수" if s == "bid" else "🔵 익절")
+                        p_trades_df["체결단가"] = p_trades_df["price"].apply(lambda x: f"{x:,.0f}원")
+                        p_trades_df["실현손익"] = p_trades_df["pnl"].apply(lambda x: f"{x:+,.0f}원" if x != 0 else "-")
+                        st.dataframe(p_trades_df[["timestamp", "구분", "action", "체결단가", "실현손익"]], hide_index=True, use_container_width=True)
+                    else:
+                        st.info("아직 가상 체결 기록이 없습니다.")
+
+    except Exception as pe:
+        st.warning(f"가상 매매 모니터링 로드 오류: {pe}")
+
 st.divider()
 
 
