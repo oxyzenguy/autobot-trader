@@ -30,6 +30,8 @@ import requests
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
+from utils.order_executor import preflight_check_buy, preflight_check_sell
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "paper_grid_state_KRW_XRP.json")
 DB_FILE = os.path.join(BASE_DIR, "paper_trade_history.db")
@@ -224,41 +226,45 @@ def run_paper_trading():
 
                 # 1. 곰마파 탈출 조건 체크: 전체 평단가 대비 +3.5% 도달 시 전량 청산!
                 if curr_p >= target_escape_p:
-                    exit_p = target_escape_p * (1.0 - SLIPPAGE)
-                    rev = exit_p * total_vols * (1.0 - FEE_RATE)
-                    cost = total_costs * (1.0 + FEE_RATE)
-                    net_pnl = rev - cost
+                    ok_sell, clean_vol, sell_err = preflight_check_sell(MARKET, total_vols, curr_p, total_vols)
+                    if not ok_sell:
+                        print(f"[WARN] 곰마파 탈출 전량 매도 사전 검증 미달: {sell_err}")
+                    else:
+                        exit_p = target_escape_p * (1.0 - SLIPPAGE)
+                        rev = exit_p * clean_vol * (1.0 - FEE_RATE)
+                        cost = total_costs * (1.0 + FEE_RATE)
+                        net_pnl = rev - cost
 
-                    state["available_krw"] += rev
-                    state["realized_pnl"] += net_pnl
-                    state["win_count"] += 1
-                    state["total_trades"] += 1
-                    state["active_grids"] = []
-                    state["gommapa_tranches"] = []
-                    state["mode"] = "GRID_SCALPER"
-                    state["base_price"] = curr_p
+                        state["available_krw"] += rev
+                        state["realized_pnl"] += net_pnl
+                        state["win_count"] += 1
+                        state["total_trades"] += 1
+                        state["active_grids"] = []
+                        state["gommapa_tranches"] = []
+                        state["mode"] = "GRID_SCALPER"
+                        state["base_price"] = curr_p
 
-                    log_paper_trade(
-                        market=MARKET,
-                        side="ask",
-                        action="GOMMAPA_ESCAPE_EXIT",
-                        price=exit_p,
-                        volume=total_vols,
-                        cost_or_revenue=rev,
-                        pnl=net_pnl,
-                        level=0,
-                        strategy="GOMMAPA_ESCAPE"
-                    )
+                        log_paper_trade(
+                            market=MARKET,
+                            side="ask",
+                            action="GOMMAPA_ESCAPE_EXIT",
+                            price=exit_p,
+                            volume=clean_vol,
+                            cost_or_revenue=rev,
+                            pnl=net_pnl,
+                            level=0,
+                            strategy="GOMMAPA_ESCAPE"
+                        )
 
-                    msg = (
-                        f"🎉 <b>[곰마파 탈출 대성공!]</b> {MARKET} 전체 평단 +{GOMMAPA_ESCAPE_PROFIT_PCT*100:.1f}% 도달 전량 익절!\n"
-                        f"• 매도가: {exit_p:,.0f}원 (전체 평단: {combined_vwap:,.0f}원)\n"
-                        f"• 실현 손익: <b>+{net_pnl:,.0f}원</b>\n"
-                        f"• 💰 원금 및 수익 회수 완료 (총 평가자산: {state['available_krw']:,.0f}원)\n"
-                        f"• 🔄 [그리드 스캘퍼] 1단계로 완전 리셋!"
-                    )
-                    print(f"\n[{now_str}] {msg.replace('<b>','').replace('</b>','')}")
-                    send_telegram_alert(msg)
+                        msg = (
+                            f"🎉 <b>[곰마파 탈출 대성공!]</b> {MARKET} 전체 평단 +{GOMMAPA_ESCAPE_PROFIT_PCT*100:.1f}% 도달 전량 익절!\n"
+                            f"• 매도가: {exit_p:,.0f}원 (전체 평단: {combined_vwap:,.0f}원)\n"
+                            f"• 실현 손익: <b>+{net_pnl:,.0f}원</b>\n"
+                            f"• 💰 원금 및 수익 회수 완료 (총 평가자산: {state['available_krw']:,.0f}원)\n"
+                            f"• 🔄 [그리드 스캘퍼] 1단계로 완전 리셋!"
+                        )
+                        print(f"\n[{now_str}] {msg.replace('<b>','').replace('</b>','')}")
+                        send_telegram_alert(msg)
 
                 else:
                     # 2. 곰마파 단계별 배수 물타기 체크 (최대 3단계 = 50만 원 소진)
@@ -278,16 +284,17 @@ def run_paper_trading():
                         t_price = stage_targets[stg]
 
                         if stg not in filled_stages and curr_p <= t_price:
-                            if state["available_krw"] >= amt * (1.0 + FEE_RATE):
+                            ok_buy, clean_amt, buy_err = preflight_check_buy(MARKET, amt, state["available_krw"], FEE_RATE)
+                            if ok_buy:
                                 buy_p = t_price * (1.0 + SLIPPAGE)
-                                vol = (amt * (1.0 - FEE_RATE)) / buy_p
-                                state["available_krw"] -= amt
+                                vol = math.floor(((clean_amt * (1.0 - FEE_RATE)) / buy_p) * 1e8) / 1e8
+                                state["available_krw"] -= clean_amt
 
                                 new_gom_tranche = {
                                     "stage": stg,
                                     "buy_p": buy_p,
                                     "vol": vol,
-                                    "cost": amt,
+                                    "cost": clean_amt,
                                     "buy_time": now_str
                                 }
                                 state["gommapa_tranches"].append(new_gom_tranche)
@@ -350,8 +357,15 @@ def run_paper_trading():
                 surviving_grids = []
                 for g in active_grids:
                     if curr_p >= g["tp_p"]:
+                        # 실전 대비 매도 사전 검증
+                        ok_sell, clean_vol, sell_err = preflight_check_sell(MARKET, g["vol"], curr_p, g["vol"])
+                        if not ok_sell:
+                            print(f"[WARN] 그리드 {g['lvl']} 매도 사전 검증 미달: {sell_err}")
+                            surviving_grids.append(g)
+                            continue
+
                         exit_p = g["tp_p"] * (1.0 - SLIPPAGE)
-                        rev = exit_p * g["vol"] * (1.0 - FEE_RATE)
+                        rev = exit_p * clean_vol * (1.0 - FEE_RATE)
                         cost = g["cost"] * (1.0 + FEE_RATE)
                         net_pnl = rev - cost
 
@@ -362,7 +376,7 @@ def run_paper_trading():
 
                         log_paper_trade(
                             market=MARKET, side="ask", action=f"GRID_TP_LVL_{g['lvl']}",
-                            price=exit_p, volume=g["vol"], cost_or_revenue=rev, pnl=net_pnl, level=g["lvl"]
+                            price=exit_p, volume=clean_vol, cost_or_revenue=rev, pnl=net_pnl, level=g["lvl"]
                         )
 
                         msg = (
@@ -382,50 +396,54 @@ def run_paper_trading():
                 if len(state["active_grids"]) == 0:
                     state["base_price"] = curr_p
                     base_p = curr_p
-                    if state["available_krw"] >= UNIT_KRW * (1.0 + FEE_RATE):
+                    ok_buy, clean_amt, buy_err = preflight_check_buy(MARKET, UNIT_KRW, state["available_krw"], FEE_RATE)
+                    if ok_buy:
                         buy_p = curr_p * (1.0 + SLIPPAGE)
-                        vol = (UNIT_KRW * (1.0 - FEE_RATE)) / buy_p
-                        state["available_krw"] -= UNIT_KRW
+                        vol = math.floor(((clean_amt * (1.0 - FEE_RATE)) / buy_p) * 1e8) / 1e8
+                        state["available_krw"] -= clean_amt
                         tp_p = buy_p * (1.0 + PROFIT_PCT)
 
                         new_grid = {
                             "lvl": 1,
                             "buy_p": buy_p,
                             "vol": vol,
-                            "cost": UNIT_KRW,
+                            "cost": clean_amt,
                             "tp_p": tp_p,
                             "buy_time": now_str
                         }
                         state["active_grids"].append(new_grid)
                         log_paper_trade(
                             market=MARKET, side="bid", action="GRID_BUY_LVL_1",
-                            price=buy_p, volume=vol, cost_or_revenue=UNIT_KRW, pnl=0.0, level=1
+                            price=buy_p, volume=vol, cost_or_revenue=clean_amt, pnl=0.0, level=1
                         )
                         msg = (
                             f"🟢 <b>[가상 매수]</b> {MARKET} 레벨 1 신규 진입 (기준가: {base_p:,.0f}원)\n"
-                            f"• 매수가: {buy_p:,.0f}원 (투자: {UNIT_KRW:,.0f}원)\n"
+                            f"• 매수가: {buy_p:,.0f}원 (투자: {clean_amt:,.0f}원)\n"
                             f"• 목표 매도가: {tp_p:,.0f}원 (+{PROFIT_PCT*100:.1f}%)\n"
                             f"• 보유 그리드: 1개 / 잔여 예수금: {state['available_krw']:,.0f}원"
                         )
                         print(f"\n[{now_str}] {msg.replace('<b>','').replace('</b>','')}")
                         send_telegram_alert(msg)
+                    else:
+                        print(f"[WARN] 1단계 신규 매수 사전 검증 미달: {buy_err}")
 
                 # 3. 추가 하락 단계 매수 체크 (Level 2 ~ 50): 기준가 대비 -0.5% * (lvl - 1)
                 active_levels = {g["lvl"] for g in state["active_grids"]}
                 for lvl in range(2, MAX_LEVELS + 1):
                     target_p = base_p * (1.0 - STEP_PCT * (lvl - 1))
                     if lvl not in active_levels and curr_p <= target_p:
-                        if state["available_krw"] >= UNIT_KRW * (1.0 + FEE_RATE):
+                        ok_buy, clean_amt, buy_err = preflight_check_buy(MARKET, UNIT_KRW, state["available_krw"], FEE_RATE)
+                        if ok_buy:
                             buy_p = target_p * (1.0 + SLIPPAGE)
-                            vol = (UNIT_KRW * (1.0 - FEE_RATE)) / buy_p
-                            state["available_krw"] -= UNIT_KRW
+                            vol = math.floor(((clean_amt * (1.0 - FEE_RATE)) / buy_p) * 1e8) / 1e8
+                            state["available_krw"] -= clean_amt
                             tp_p = buy_p * (1.0 + PROFIT_PCT)
 
                             new_grid = {
                                 "lvl": lvl,
                                 "buy_p": buy_p,
                                 "vol": vol,
-                                "cost": UNIT_KRW,
+                                "cost": clean_amt,
                                 "tp_p": tp_p,
                                 "buy_time": now_str
                             }
@@ -434,17 +452,19 @@ def run_paper_trading():
 
                             log_paper_trade(
                                 market=MARKET, side="bid", action=f"GRID_BUY_LVL_{lvl}",
-                                price=buy_p, volume=vol, cost_or_revenue=UNIT_KRW, pnl=0.0, level=lvl
+                                price=buy_p, volume=vol, cost_or_revenue=clean_amt, pnl=0.0, level=lvl
                             )
 
                             msg = (
                                 f"🟢 <b>[가상 매수]</b> {MARKET} 레벨 {lvl} 진입\n"
-                                f"• 매수가: {buy_p:,.0f}원 (투자: {UNIT_KRW:,.0f}원)\n"
+                                f"• 매수가: {buy_p:,.0f}원 (투자: {clean_amt:,.0f}원)\n"
                                 f"• 목표 매도가: {tp_p:,.0f}원 (+{PROFIT_PCT*100:.1f}%)\n"
                                 f"• 보유 그리드: {len(state['active_grids'])}개 / 잔여 예수금: {state['available_krw']:,.0f}원"
                             )
                             print(f"\n[{now_str}] {msg.replace('<b>','').replace('</b>','')}")
                             send_telegram_alert(msg)
+                        else:
+                            print(f"[WARN] 레벨 {lvl} 매수 사전 검증 미달: {buy_err}")
 
                 # 3. 만약 50단계가 전부 체결되었다면 ➔ [곰마파 탈출 모드]로 국면 전환!
                 if len(state["active_grids"]) >= MAX_LEVELS:
