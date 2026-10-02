@@ -935,10 +935,10 @@ if os.path.exists(paper_state_file):
         p_ret = ((p_tot / p_init) - 1.0) * 100.0
         p_mdd = paper_state.get("max_drawdown_pct", 0.0)
         p_wins = paper_state.get("win_count", 0)
-        p_grids = paper_state.get("active_grids", [])
-        p_base = paper_state.get("base_price", 0.0)
+        p_mode = paper_state.get("mode", "GRID_SCALPER")
+        mode_badge = "🟢 그리드 스캘퍼" if p_mode == "GRID_SCALPER" else "🚨 곰마파 비상 탈출 모드"
 
-        with st.expander("🧪 [가상 매매] KRW-XRP 10,000원 마이크로 그리드 스캘퍼 실시간 현황 (1주일 검증 중)", expanded=True):
+        with st.expander(f"🧪 [가상 매매] KRW-XRP 10,000원 그리드 & 곰마파 하이브리드 ({mode_badge})", expanded=True):
             p_col1, p_col2, p_col3, p_col4 = st.columns(4)
             p_col1.metric("가상 투자 원금", f"{p_init:,.0f} 원")
             p_col2.metric("현재 총 자산", f"{p_tot:,.0f} 원", f"{p_ret:+.2f}%")
@@ -947,7 +947,7 @@ if os.path.exists(paper_state_file):
             
             p_sub1, p_sub2 = st.columns(2)
             with p_sub1:
-                st.caption(f"기준 가격(Base): {p_base:,.0f}원 | 1회 주문: 10,000원 | 간격: 0.5% 매수 (최대 50단계) / +1.2% 익절")
+                st.caption(f"운용 모드: **{mode_badge}** | 기준가: {p_base:,.0f}원 | 1회: 10,000원 | 간격: 0.5% (최대 50단계) ➔ 50단계 소진 시 곰마파 비상탈출(+3.5%) 자동 전환")
                 if p_grids:
                     df_p_grids = pd.DataFrame(p_grids)
                     show_cols = [c for c in ["lvl", "buy_p", "tp_p", "vol", "buy_time"] if c in df_p_grids.columns]
