@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import math
+from decimal import Decimal, ROUND_DOWN
 import threading
 import fcntl
 import tempfile
@@ -241,22 +242,45 @@ def get_bot_balance(upbit_client, market: str, ticker: str, state: dict):
     bot_avg = float(state.get("bot_avg_price", 0.0))
 
     try:
-        balance_info = upbit_client.get_balance(ticker, verbose=True)
+        balance_info = None
+        try:
+            balance_info = upbit_client.get_balance(ticker, verbose=True)
+        except TypeError:
+            balance_info = upbit_client.get_balance(ticker)
+
         if isinstance(balance_info, dict) and 'balance' in balance_info:
-            avail = float(balance_info['balance'])
-            locked = float(balance_info.get('locked', 0.0))
-            if not math.isfinite(avail) or not math.isfinite(locked) or avail < 0 or locked < 0:
-                raise ValueError("invalid exchange balance")
-            total_held = avail + locked
-            if not math.isfinite(total_held):
-                raise ValueError("invalid exchange balance")
-            state.pop("balance_query_failed", None)
-            if bot_qty <= 0.0:
-                return 0.0, 0.0
-            # 실제 업비트 총 보유 수량(가용+주문잠금) 내에서만 안전하게 캡핑
-            # (바스켓 매도 주문으로 locked된 상태에서도 봇 보유량 및 매직스플릿 차수 익절 검사 정상 작동)
-            safe_qty = min(bot_qty, max(0.0, total_held - PROTECTED_BALANCES.get(market, 0.0)))
-            return bot_avg, safe_qty
+            raw_avail = balance_info['balance']
+            raw_locked = balance_info.get('locked', 0.0) or 0.0
+            if isinstance(raw_avail, bool) or isinstance(raw_locked, bool) or raw_avail is None:
+                raise ValueError("invalid exchange balance type")
+            avail = float(raw_avail)
+            locked = float(raw_locked)
+        elif isinstance(balance_info, (int, float, str)) and not isinstance(balance_info, bool):
+            avail = float(balance_info)
+            locked = 0.0
+        else:
+            raise ValueError("invalid exchange balance structure")
+
+        if not math.isfinite(avail) or not math.isfinite(locked) or avail < 0 or locked < 0:
+            raise ValueError("invalid exchange balance")
+        total_held = avail + locked
+        if not math.isfinite(total_held):
+            raise ValueError("invalid exchange balance")
+        state.pop("balance_query_failed", None)
+        if bot_qty <= 0.0:
+            return 0.0, 0.0
+        # 실제 업비트 총 보유 수량(가용+주문잠금) 내에서만 안전하게 캡핑
+        # Decimal 계산 및 내림(ROUND_DOWN)으로 IEEE 754 부동소수점 오차 및 상향 라운딩 방지
+        d_zero = Decimal("0")
+        d_avail = Decimal(str(avail))
+        d_locked = Decimal(str(locked))
+        d_prot = Decimal(str(PROTECTED_BALANCES.get(market, 0.0) or 0.0))
+        d_total = d_avail + d_locked
+        d_max_unprotected = max(d_zero, d_total - d_prot)
+        d_bot_qty = Decimal(str(bot_qty))
+        safe_d = max(d_zero, min(d_bot_qty, d_max_unprotected))
+        safe_qty = float(safe_d.quantize(Decimal("1e-8"), rounding=ROUND_DOWN))
+        return bot_avg, safe_qty
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] [ERROR] [{ticker}] 봇 잔고 확인 오류: {e}")
 
@@ -1032,6 +1056,28 @@ def cancel_order_and_wait(upbit_client, order_uuid: str, market: Optional[str] =
                     if not _reconcile_cancelled_order_fill(upbit_client, market, state, order, executed_volume):
                         return False
 
+                # 바스켓 매도 주문 취소/완료 확인 시 활성 주문에서 즉시 제거 및 체크포인트 영속화
+                if (market is not None and state is not None and
+                        isinstance(state.get("basket_limit_ask"), dict) and
+                        state["basket_limit_ask"].get("uuid") == order_uuid):
+                    if order_state == "done":
+                        rec_dict = state.setdefault("_reconciled_asks", {}).get(order_uuid)
+                        is_counted = isinstance(rec_dict, dict) and rec_dict.get("cycle_counted")
+                        if not is_counted:
+                            state["completed_cycles"] = state.get("completed_cycles", 0) + 1
+                            if isinstance(rec_dict, dict):
+                                rec_dict["cycle_counted"] = True
+                    else:
+                        rec_entry = state.setdefault("_reconciled_asks", {}).get(order_uuid)
+                        if not isinstance(rec_entry, dict):
+                            state["_reconciled_asks"][order_uuid] = {
+                                "volume": 0.0,
+                                "funds": 0.0
+                            }
+                    state.pop("basket_limit_ask", None)
+                    if save_strategy_state(market, state) is False:
+                        return False
+
                 if order_state == "cancel":
                     return True
                 if order_state == "done":
@@ -1200,35 +1246,75 @@ def reconcile_and_settle_engine_transition_orders(upbit_client, market: str, sta
 
 
 def get_safe_sell_quantity(upbit_client, market: str, ticker: str, desired_qty: float, state: dict) -> float:
+    """
+    안전 매도 가능 수량을 계산합니다.
+    매도 수량은 요청량(desired_qty), 봇 장부량(ledger_qty), 가용량(avail),
+    max(0, avail + locked - protected_qty)의 최솟값으로 엄격히 제한합니다.
+    조회 실패 및 비정상 응답(None, 음수, NaN, 무한대)은 fail-closed(-1.0 반환 및 balance_query_failed 플래그)를 유지합니다.
+    """
+    avail = None
+    locked = None
     try:
-        raw_bal = upbit_client.get_balance(ticker)
-        if raw_bal is None:
-            state["balance_query_failed"] = True
-            return -1.0
-        total_balance = float(raw_bal)
-    except AssertionError:
+        bal_info = None
         try:
             bal_info = upbit_client.get_balance(ticker, verbose=True)
-            if isinstance(bal_info, dict) and "balance" in bal_info:
-                avail = float(bal_info["balance"] or 0.0)
-                locked = float(bal_info.get("locked", 0.0) or 0.0)
-                total_balance = avail + locked
-            elif bal_info is None:
+        except TypeError:
+            bal_info = upbit_client.get_balance(ticker)
+
+        if isinstance(bal_info, dict):
+            raw_avail = bal_info.get("balance")
+            raw_locked = bal_info.get("locked", 0.0)
+            if raw_avail is None or isinstance(raw_avail, bool) or isinstance(raw_locked, bool):
                 state["balance_query_failed"] = True
                 return -1.0
-            else:
-                total_balance = float(bal_info)
-        except Exception:
+            avail = float(raw_avail)
+            locked = float(raw_locked or 0.0)
+        elif isinstance(bal_info, (int, float, str)) and not isinstance(bal_info, bool):
+            avail = float(bal_info)
+            locked = 0.0
+        elif bal_info is None:
+            state["balance_query_failed"] = True
+            return -1.0
+        else:
             state["balance_query_failed"] = True
             return -1.0
     except Exception:
         state["balance_query_failed"] = True
         return -1.0
-    protected_qty = PROTECTED_BALANCES.get(market, 0.0)
-    max_sellable = max(0.0, total_balance - protected_qty)
+
+    if (avail is None or locked is None or
+            not math.isfinite(avail) or not math.isfinite(locked) or
+            avail < 0.0 or locked < 0.0):
+        state["balance_query_failed"] = True
+        return -1.0
+
+    state.pop("balance_query_failed", None)
+
+    protected_qty = float(PROTECTED_BALANCES.get(market, 0.0) or 0.0)
+    if not math.isfinite(protected_qty) or protected_qty < 0.0:
+        protected_qty = 0.0
+
     ledger_qty = float(state.get("bot_quantity", 0.0) or 0.0)
-    safe_qty = min(desired_qty, ledger_qty, max_sellable)
-    return round(max(0.0, safe_qty), 8)
+    if not math.isfinite(ledger_qty) or ledger_qty < 0.0:
+        ledger_qty = 0.0
+
+    req_qty = float(desired_qty or 0.0)
+    if not math.isfinite(req_qty) or req_qty < 0.0:
+        req_qty = 0.0
+
+    d_zero = Decimal("0")
+    d_avail = Decimal(str(avail))
+    d_locked = Decimal(str(locked))
+    d_prot = Decimal(str(protected_qty))
+    d_total = d_avail + d_locked
+    d_max_unprotected = max(d_zero, d_total - d_prot)
+    d_ledger = Decimal(str(ledger_qty))
+    d_req = Decimal(str(req_qty))
+
+    # 매도 수량은 요청량, 봇 장부량, 가용량, max(0, balance + locked - protected_qty)의 최솟값
+    # Decimal 계산 및 내림(ROUND_DOWN)으로 4가지 상한선을 절대 초과하지 않도록 엄격히 보장
+    safe_d = max(d_zero, min(d_req, d_ledger, d_avail, d_max_unprotected))
+    return float(safe_d.quantize(Decimal("1e-8"), rounding=ROUND_DOWN))
 
 
 def acquire_market_process_lock(market: str):
@@ -1848,7 +1934,36 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         halt_for_order_reconciliation(market, state, {"reason": f"스쿼드 {sq_id} 익절 전 잔고 조회 미확정"})
                                         continue
                                     if tot_sell_vol <= 0 or (tot_sell_vol * current_price) < MIN_ORDER_KRW:
-                                        print(f"[{market}] ℹ️ [스쿼드 익절] 취소 후 매도 가능 수량 부족 또는 최소주문금액 미만")
+                                        print(f"[{market}] ℹ️ [스쿼드 익절] 취소 후 매도 가능 수량 부족 또는 최소주문금액 미만; 잔여 바스켓 매도 복구 시도")
+                                        state.pop("basket_limit_ask", None)
+                                        state["bear_buy_rebalance_pending"] = True
+                                        rem_qty = float(state.get("bot_quantity", quantity) or 0.0)
+                                        rem_avg = float(state.get("bot_avg_price", avg_price) or 0.0)
+                                        if rem_qty > 0 and rem_avg > 0:
+                                            if is_adaptive_grid_enabled(market):
+                                                basket_p = calculate_basket_sell_price(rem_avg, is_bull=is_bull)
+                                            else:
+                                                basket_p = adjust_price_to_tick(rem_avg * sell_profit_margin, method="ceil")
+                                            safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, rem_qty, state)
+                                            if safe_basket_qty < 0 or state.pop("balance_query_failed", False):
+                                                halt_for_order_reconciliation(market, state, {"reason": "스쿼드 익절 스킵 후 바스켓 복구 전 잔고 조회 미확정"})
+                                                continue
+                                            if safe_basket_qty > 0 and (safe_basket_qty * basket_p) >= MIN_ORDER_KRW:
+                                                restored_ask = submit_limit_order(upbit, market, "ask", basket_p, safe_basket_qty)
+                                                if restored_ask and restored_ask.get("uuid"):
+                                                    state["basket_limit_ask"] = {
+                                                        "uuid": restored_ask["uuid"],
+                                                        "price": basket_p,
+                                                        "volume": safe_basket_qty
+                                                    }
+                                                    print(f"[{market}]   - [복구] 바스켓 매도 재등록 완료: {basket_p:,.0f}원, {safe_basket_qty:.6f}")
+                                                else:
+                                                    halt_for_order_reconciliation(market, state, {"reason": "스쿼드 익절 스킵 후 바스켓 복구 주문 등록 실패"})
+                                                    continue
+                                            else:
+                                                state.pop("basket_limit_ask", None)
+                                        if save_strategy_state(market, state) is False:
+                                            halt_for_order_reconciliation(market, state, {"reason": "바스켓 복구 상태 저장 실패"})
                                         continue
 
                                     # 3. 스쿼드 보유 물량 시장가 매도
@@ -1906,18 +2021,29 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                             rem_sell_price = calculate_basket_sell_price(new_avg, is_bull=is_bull)
                                         else:
                                             rem_sell_price = adjust_price_to_tick(new_avg * sell_profit_margin, method="ceil")
-                                        if (state["bot_quantity"] * rem_sell_price) >= MIN_ORDER_KRW:
-                                            ask_order = submit_limit_order(upbit, market, "ask", rem_sell_price, state["bot_quantity"])
-                                            if ask_order:
-                                                state["basket_limit_ask"] = {"uuid": ask_order["uuid"], "price": rem_sell_price, "volume": state["bot_quantity"]}
-                                                print(f"[{market}]   - 잔여 포지션 바스켓 익절 매도 재등록: {rem_sell_price:,.0f}원, {state['bot_quantity']:.6f}")
+                                        safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, state["bot_quantity"], state)
+                                        if safe_basket_qty < 0 or state.pop("balance_query_failed", False):
+                                            halt_for_order_reconciliation(market, state, {"reason": "스쿼드 매도 후 잔여 바스켓 매도 전 잔고 조회 미확정"})
+                                            continue
+                                        if safe_basket_qty > 0 and (safe_basket_qty * rem_sell_price) >= MIN_ORDER_KRW:
+                                            ask_order = submit_limit_order(upbit, market, "ask", rem_sell_price, safe_basket_qty)
+                                            if ask_order and ask_order.get("uuid"):
+                                                state["basket_limit_ask"] = {"uuid": ask_order["uuid"], "price": rem_sell_price, "volume": safe_basket_qty}
+                                                print(f"[{market}]   - 잔여 포지션 바스켓 익절 매도 재등록: {rem_sell_price:,.0f}원, {safe_basket_qty:.6f}")
+                                            else:
+                                                halt_for_order_reconciliation(market, state, {"reason": "스쿼드 매도 후 잔여 바스켓 매도 주문 등록 실패"})
+                                                continue
+                                        else:
+                                            state.pop("basket_limit_ask", None)
                                     else:
                                         state["tranches"] = []
                                         state["bot_avg_price"] = 0.0
                                         state["bot_quantity"] = 0.0
                                         state.pop("basket_limit_ask", None)
 
-                                    save_strategy_state(market, state)
+                                    if save_strategy_state(market, state) is False:
+                                        halt_for_order_reconciliation(market, state, {"reason": "스쿼드 익절 후 상태 저장 실패"})
+                                        continue
 
                                     send_telegram_alert(
                                         f"🟢 <b>[익절 완료]</b> {market} (스쿼드 {sq_id} {'부분' if status == 'PARTIAL' else ''}익절)\n"
@@ -1965,7 +2091,35 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                     halt_for_order_reconciliation(market, state, {"reason": "차수 익절 전 잔고 조회 미확정"})
                                     continue
                                 if tot_sell_vol <= 0 or (tot_sell_vol * current_price) < MIN_ORDER_KRW:
-                                    print(f"[{market}] ℹ️ [매직스플릿] 취소 후 매도 가능 수량 부족 또는 최소주문금액 미만")
+                                    print(f"[{market}] ℹ️ [매직스플릿] 취소 후 매도 가능 수량 부족 또는 최소주문금액 미만; 잔여 바스켓 매도 복구 시도")
+                                    state.pop("basket_limit_ask", None)
+                                    rem_qty = float(state.get("bot_quantity", quantity) or 0.0)
+                                    rem_avg = float(state.get("bot_avg_price", avg_price) or 0.0)
+                                    if rem_qty > 0 and rem_avg > 0:
+                                        if is_adaptive_grid_enabled(market):
+                                            basket_p = calculate_basket_sell_price(rem_avg, is_bull=is_bull)
+                                        else:
+                                            basket_p = adjust_price_to_tick(rem_avg * sell_profit_margin, method="ceil")
+                                        safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, rem_qty, state)
+                                        if safe_basket_qty < 0 or state.pop("balance_query_failed", False):
+                                            halt_for_order_reconciliation(market, state, {"reason": "차수 익절 스킵 후 바스켓 복구 전 잔고 조회 미확정"})
+                                            continue
+                                        if safe_basket_qty > 0 and (safe_basket_qty * basket_p) >= MIN_ORDER_KRW:
+                                            restored_ask = submit_limit_order(upbit, market, "ask", basket_p, safe_basket_qty)
+                                            if restored_ask and restored_ask.get("uuid"):
+                                                state["basket_limit_ask"] = {
+                                                    "uuid": restored_ask["uuid"],
+                                                    "price": basket_p,
+                                                    "volume": safe_basket_qty
+                                                }
+                                                print(f"[{market}]   - [복구] 바스켓 매도 재등록 완료: {basket_p:,.0f}원, {safe_basket_qty:.6f}")
+                                            else:
+                                                halt_for_order_reconciliation(market, state, {"reason": "차수 익절 스킵 후 바스켓 복구 주문 등록 실패"})
+                                                continue
+                                        else:
+                                            state.pop("basket_limit_ask", None)
+                                    if save_strategy_state(market, state) is False:
+                                        halt_for_order_reconciliation(market, state, {"reason": "바스켓 복구 상태 저장 실패"})
                                     continue
 
                                 sell_result = submit_market_order_and_wait(upbit, market, "ask", tot_sell_vol)
@@ -2023,18 +2177,29 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         rem_sell_price = calculate_basket_sell_price(new_avg, is_bull=is_bull)
                                     else:
                                         rem_sell_price = adjust_price_to_tick(new_avg * sell_profit_margin, method="ceil")
-                                    if (state["bot_quantity"] * rem_sell_price) >= MIN_ORDER_KRW:
-                                        ask_order = submit_limit_order(upbit, market, "ask", rem_sell_price, state["bot_quantity"])
-                                        if ask_order:
-                                            state["basket_limit_ask"] = {"uuid": ask_order["uuid"], "price": rem_sell_price, "volume": state["bot_quantity"]}
-                                            print(f"[{market}]   - 잔여 포지션 바스켓 익절 매도 재등록: {rem_sell_price:,.0f}원, {state['bot_quantity']:.6f}")
+                                    safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, state["bot_quantity"], state)
+                                    if safe_basket_qty < 0 or state.pop("balance_query_failed", False):
+                                        halt_for_order_reconciliation(market, state, {"reason": "차수 매도 후 잔여 바스켓 매도 전 잔고 조회 미확정"})
+                                        continue
+                                    if safe_basket_qty > 0 and (safe_basket_qty * rem_sell_price) >= MIN_ORDER_KRW:
+                                        ask_order = submit_limit_order(upbit, market, "ask", rem_sell_price, safe_basket_qty)
+                                        if ask_order and ask_order.get("uuid"):
+                                            state["basket_limit_ask"] = {"uuid": ask_order["uuid"], "price": rem_sell_price, "volume": safe_basket_qty}
+                                            print(f"[{market}]   - 잔여 포지션 바스켓 익절 매도 재등록: {rem_sell_price:,.0f}원, {safe_basket_qty:.6f}")
+                                        else:
+                                            halt_for_order_reconciliation(market, state, {"reason": "차수 매도 후 잔여 바스켓 매도 주문 등록 실패"})
+                                            continue
+                                    else:
+                                        state.pop("basket_limit_ask", None)
                                 else:
                                     state["tranches"] = []
                                     state["bot_avg_price"] = 0.0
                                     state["bot_quantity"] = 0.0
                                     state.pop("basket_limit_ask", None)
 
-                                save_strategy_state(market, state)
+                                if save_strategy_state(market, state) is False:
+                                    halt_for_order_reconciliation(market, state, {"reason": "차수 익절 후 상태 저장 실패"})
+                                    continue
 
                                 steps_str = ", ".join([f"{s}차" for s in sold_steps])
                                 send_telegram_alert(
@@ -2084,15 +2249,34 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     if not isinstance(order, dict) or order.get("uuid") != ask_uuid:
                         halt_for_order_reconciliation(market, state, {"reason": "지정가 매도 주문 상태 미확정", "uuid": ask_uuid})
                         continue
-                    if order.get("state") != "done":
-                        halt_for_order_reconciliation(market, state, {"reason": f"지정가 매도 미종결 상태({order.get('state')})", "uuid": ask_uuid})
+                    order_st = order.get("state")
+                    if order_st not in ("done", "cancel"):
+                        halt_for_order_reconciliation(market, state, {"reason": f"지정가 매도 미종결 상태({order_st})", "uuid": ask_uuid})
                         continue
+
                     try:
                         exec_vol = float(order.get("executed_volume", 0.0) or 0.0)
                     except (TypeError, ValueError):
                         exec_vol = 0.0
-                    if exec_vol <= 0:
+
+                    if order_st == "done" and exec_vol <= 0:
                         halt_for_order_reconciliation(market, state, {"reason": "지정가 매도 체결 수량 0", "uuid": ask_uuid})
+                        continue
+
+                    if order_st == "cancel":
+                        if exec_vol > 0:
+                            if not _reconcile_ask_order_fill(upbit, market, state, order, exec_vol, action="LIMIT_ASK_CANCEL_FILL"):
+                                halt_for_order_reconciliation(market, state, {"reason": "취소 매도 주문 부분체결 정산 실패", "uuid": ask_uuid})
+                                continue
+                        else:
+                            state.setdefault("_reconciled_asks", {})[ask_uuid] = {"volume": 0.0, "funds": 0.0}
+
+                        state.pop("basket_limit_ask", None)
+                        if save_strategy_state(market, state) is False:
+                            halt_for_order_reconciliation(market, state, {"reason": "취소 매도 주문 상태 저장 실패", "uuid": ask_uuid})
+                            continue
+
+                        print(f"\n[{market}] ℹ️ [지정가 매도 취소 확인] UUID {ask_uuid} 취소 종결 (체결수량: {exec_vol}). 잔여 바스켓 재등록 준비.")
                         continue
 
                     trades = order.get("trades", [])
@@ -2294,13 +2478,29 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         sell_price = calculate_basket_sell_price(avg_price, is_bull=is_bull)
                     else:
                         sell_price = adjust_price_to_tick(avg_price * sell_profit_margin, method="ceil")
-                    if (quantity * sell_price) >= MIN_ORDER_KRW:
-                        ask_order = submit_limit_order(upbit, market, "ask", sell_price, quantity)
-                        if ask_order:
-                            state["basket_limit_ask"] = {"uuid": ask_order["uuid"], "price": sell_price, "volume": quantity}
-                            print(f"[{market}]   - 바스켓 익절 매도 주문: {sell_price:,.0f}원, 수량 {quantity}")
+                    safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, quantity, state)
+                    if safe_basket_qty < 0 or state.pop("balance_query_failed", False):
+                        print(f"[{market}] [CRITICAL] 잔고 조회 미확정으로 바스켓 매도 수량 계산 불가; 신규 주문 차단 및 거래 중단")
+                        halt_for_order_reconciliation(market, state, {"reason": "바스켓 매도 전 잔고 조회 미확정"})
+                        continue
+                    if safe_basket_qty > 0 and (safe_basket_qty * sell_price) >= MIN_ORDER_KRW:
+                        ask_order = submit_limit_order(upbit, market, "ask", sell_price, safe_basket_qty)
+                        if ask_order and ask_order.get("uuid"):
+                            state["basket_limit_ask"] = {"uuid": ask_order["uuid"], "price": sell_price, "volume": safe_basket_qty}
+                            if save_strategy_state(market, state) is False:
+                                halt_for_order_reconciliation(market, state, {"reason": "바스켓 매도 상태 저장 실패", "uuid": ask_order["uuid"]})
+                                continue
+                            print(f"[{market}]   - 바스켓 익절 매도 주문: {sell_price:,.0f}원, 수량 {safe_basket_qty}")
+                        else:
+                            print(f"[{market}] [CRITICAL] 바스켓 매도 주문 등록 실패; 신규 매수 차단 및 거래 중단")
+                            halt_for_order_reconciliation(market, state, {"reason": "바스켓 매도 주문 등록 실패"})
+                            continue
                     else:
-                        print(f"[{market}]   - [INFO] 바스켓 매도 평가액({quantity * sell_price:,.0f}원)이 최소주문(5,000원) 미만이므로 추가 물타기 체결 후 등록합니다.")
+                        state.pop("basket_limit_ask", None)
+                        if save_strategy_state(market, state) is False:
+                            halt_for_order_reconciliation(market, state, {"reason": "바스켓 매도 정리 상태 저장 실패"})
+                            continue
+                        print(f"[{market}]   - [INFO] 바스켓 매도 평가액({quantity * sell_price:,.0f}원)이 최소주문(5,000원) 미만이거나 가용수량 부족으로 추가 물타기 체결 후 등록합니다.")
                     time.sleep(0.2)
 
                     # 마틴게일 매수 주문 계획
@@ -2394,11 +2594,28 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         sell_price = calculate_basket_sell_price(avg_price, is_bull=is_bull)
                     else:
                         sell_price = adjust_price_to_tick(avg_price * sell_profit_margin, method="ceil")
-                    if (quantity * sell_price) >= MIN_ORDER_KRW:
-                        ask_order = submit_limit_order(upbit, market, "ask", sell_price, quantity)
-                        if ask_order:
-                            state["basket_limit_ask"] = {"uuid": ask_order["uuid"], "price": sell_price, "volume": quantity}
-                            print(f"[{market}]   - 새 바스켓 익절 매도: {sell_price:,.0f}원, 전량 {quantity:.6f}")
+                    safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, quantity, state)
+                    if safe_basket_qty < 0 or state.pop("balance_query_failed", False):
+                        print(f"[{market}] [CRITICAL] 잔고 조회 미확정으로 새 바스켓 매도 수량 계산 불가; 추가 물타기 차단 및 거래 중단")
+                        halt_for_order_reconciliation(market, state, {"reason": "새 바스켓 매도 전 잔고 조회 미확정"})
+                        continue
+                    if safe_basket_qty > 0 and (safe_basket_qty * sell_price) >= MIN_ORDER_KRW:
+                        ask_order = submit_limit_order(upbit, market, "ask", sell_price, safe_basket_qty)
+                        if ask_order and ask_order.get("uuid"):
+                            state["basket_limit_ask"] = {"uuid": ask_order["uuid"], "price": sell_price, "volume": safe_basket_qty}
+                            if save_strategy_state(market, state) is False:
+                                halt_for_order_reconciliation(market, state, {"reason": "새 바스켓 매도 상태 저장 실패", "uuid": ask_order["uuid"]})
+                                continue
+                            print(f"[{market}]   - 새 바스켓 익절 매도: {sell_price:,.0f}원, 전량 {safe_basket_qty:.6f}")
+                        else:
+                            print(f"[{market}] [CRITICAL] 새 바스켓 매도 주문 등록 실패; 추가 물타기 차단 및 거래 중단")
+                            halt_for_order_reconciliation(market, state, {"reason": "새 바스켓 매도 주문 등록 실패"})
+                            continue
+                    else:
+                        state.pop("basket_limit_ask", None)
+                        if save_strategy_state(market, state) is False:
+                            halt_for_order_reconciliation(market, state, {"reason": "새 바스켓 매도 정리 상태 저장 실패"})
+                            continue
                     time.sleep(0.2)
 
                     # 추가 매수 주문 계획 (최대 max_steps 차수 제한)
