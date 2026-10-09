@@ -54,6 +54,7 @@ class FakeExchange:
             return {"state": "cancel"}
         if identifier == "fake-buy":
             return {
+                "uuid": "fake-buy",
                 "state": "done",
                 "executed_volume": str(self.buy_volume),
                 "trades": [{"funds": str(self.buy_volume * self.price)}],
@@ -152,14 +153,21 @@ class TestAltOrderSafetyCandidates(unittest.TestCase):
                 get_upbit_client=lambda: exchange,
                 load_strategy_state=lambda market: state,
                 save_strategy_state=save_state,
+                load_trailing_exit_recovery=lambda market: None,
+                save_trailing_exit_recovery=lambda market, recovery: None,
                 check_krw_balance_alert=lambda *args, **kwargs: 100_000.0,
                 send_telegram_alert=lambda message: None,
                 safe_get_current_price=get_price,
                 get_hybrid_regime_and_signals=lambda market: {
+                    "candles_valid": True,
+                    "is_valid": True,
                     "is_bull": is_bull,
                     "signal": signal,
                     "ma5": price,
+                    "curr_price": price,
                 },
+                get_market_strategy=lambda market: "HYBRID",
+                is_adaptive_grid_enabled=lambda market: False,
                 log_real_trade=lambda **trade: logged.append(trade),
             ),
             patch.object(main.time, "sleep", side_effect=stop_after_decision),
@@ -223,6 +231,7 @@ class TestAltOrderSafetyCandidates(unittest.TestCase):
             "bot_quantity": existing_qty,
             "bot_avg_price": 100_000.0,
             "tranches": [{"step": 1, "volume": existing_qty, "buy_price": 100_000.0}],
+            "basket_limit_ask": {"uuid": "basket-1", "price": 110_000.0, "volume": existing_qty},
             "bear_limit_buys": {
                 uuid: {"units": 1, "executed_volume": 0.0, "executed_funds": 0.0, "state": "wait"}
                 for uuid in exchange.orders

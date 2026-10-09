@@ -22,16 +22,174 @@
 """
 
 import time
+import datetime
 import pyupbit
 import pandas as pd
-from typing import Dict, Any, Optional
+import numpy as np
+from typing import Dict, Any, Optional, Union
 from config import REGIME_SWITCH_BUFFER_PCT, REGIME_SWITCH_CONFIRMATION_CANDLES
 
 # API 호출 과다 방지용 메모리 캐시 (종목별 60초 TTL)
 _CANDLE_CACHE: Dict[str, Dict[str, Any]] = {}
+KST = datetime.timezone(datetime.timedelta(hours=9))
 
 
-def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+def validate_candles_numerical(df: Optional[pd.DataFrame]) -> None:
+    """
+    주문 판단에 필요한 캔들 수치의 유한성, 결측치(NaN), 양수 조건 및 OHLC 가격 관계를 공통 검증합니다.
+    유효하지 않은 데이터가 감지되면 ValueError를 발생시켜 상위 호출자에서 신규 주문을 차단하도록 합니다.
+    - 필수 수치 결측(NaN), 무한대(inf), 0 이하 비정상 가격 차단
+    - 기본 가격 관계: high >= low, high >= open, high >= close, low <= open, low <= close
+    - 거래량(volume): 음수, NaN, inf 차단
+    - 정상적인 0변동성(flat price: open=high=low=close > 0)은 허용
+    """
+    if df is None or len(df) == 0:
+        return
+
+    # 1. 필수 가격 열 확인 (최소 close 필요)
+    if 'close' not in df.columns:
+        raise ValueError("캔들 데이터에 필수 가격 열('close')이 없습니다.")
+
+    price_cols = [col for col in ['open', 'high', 'low', 'close'] if col in df.columns]
+
+    # 2. 각 가격 열의 결측/무한대/비양수(<=0) 검증
+    for col in price_cols:
+        vals = pd.to_numeric(df[col], errors='coerce')
+        if vals.isna().any():
+            raise ValueError(f"가격 열 '{col}'에 결측치(NaN)가 포함되어 있습니다.")
+        arr = vals.to_numpy()
+        if not np.isfinite(arr).all():
+            raise ValueError(f"가격 열 '{col}'에 무한대(inf) 값이 포함되어 있습니다.")
+        if (arr <= 0).any():
+            raise ValueError(f"가격 열 '{col}'에 0 이하의 비정상 가격이 포함되어 있습니다.")
+
+    # 3. OHLC 기본 가격 관계 정합성 검증 (부동소수점 오차 허용 1e-9)
+    if 'high' in df.columns and 'low' in df.columns:
+        high = pd.to_numeric(df['high'], errors='coerce').to_numpy()
+        low = pd.to_numeric(df['low'], errors='coerce').to_numpy()
+        if (high < low - 1e-9).any():
+            raise ValueError("고가(high)가 저가(low)보다 낮은 역전 현상이 발견되었습니다.")
+
+        if 'open' in df.columns:
+            open_p = pd.to_numeric(df['open'], errors='coerce').to_numpy()
+            if (high < open_p - 1e-9).any():
+                raise ValueError("고가(high)가 시가(open)보다 낮은 비정상 가격이 발견되었습니다.")
+            if (low > open_p + 1e-9).any():
+                raise ValueError("저가(low)가 시가(open)보다 높은 비정상 가격이 발견되었습니다.")
+
+        if 'close' in df.columns:
+            close_p = pd.to_numeric(df['close'], errors='coerce').to_numpy()
+            if (high < close_p - 1e-9).any():
+                raise ValueError("고가(high)가 종가(close)보다 낮은 비정상 가격이 발견되었습니다.")
+            if (low > close_p + 1e-9).any():
+                raise ValueError("저가(low)가 종가(close)보다 높은 비정상 가격이 발견되었습니다.")
+
+    # 4. 거래량(volume) 검증 (존재하는 경우)
+    if 'volume' in df.columns:
+        vol = pd.to_numeric(df['volume'], errors='coerce')
+        if vol.isna().any():
+            raise ValueError("거래량(volume) 열에 결측치(NaN)가 포함되어 있습니다.")
+        vol_arr = vol.to_numpy()
+        if not np.isfinite(vol_arr).all():
+            raise ValueError("거래량(volume) 열에 무한대(inf) 값이 포함되어 있습니다.")
+        if (vol_arr < 0).any():
+            raise ValueError("거래량(volume) 열에 음수 값이 포함되어 있습니다.")
+
+
+def filter_confirmed_candles(
+    df: Optional[pd.DataFrame],
+    obs_time: Optional[Union[float, int, datetime.datetime, pd.Timestamp]] = None,
+    interval_minutes: int = 60
+) -> Optional[pd.DataFrame]:
+    """
+    봉의 시작/종료 시각과 관측 시각을 비교하여 확정된 캔들만 반환합니다.
+    - 관측 시각 이전에 종료(close)된 봉만 확정봉으로 인정합니다 (candle_end <= obs_time).
+    - 현재 형성 중인 미완성봉 및 미래 봉(obs_time < candle_end)은 전체 행에서 필터링하여 제외합니다.
+    - 이미 확정된 데이터는 반복 필터링해도 마지막 봉이 중복 제거되지 않고 멱등성을 유지합니다.
+    - Datetime 정보가 전혀 없는 합성/테스트 데이터(RangeIndex 등)는 이미 확정된 데이터로 취급하여 보존합니다.
+    - 타임스탬프 정보가 명시되어 있으나 파싱 실패 또는 유효하지 않은 값이 포함된 경우 예외(ValueError)를 발생시킵니다.
+    - 확정된 캔들의 OHLCV 수치 결측/NaN/무한대/역전 등 비정상 값을 공통 검증(validate_candles_numerical)합니다.
+    """
+    if df is None or len(df) == 0:
+        return df
+
+    # 관측 시각을 KST 기준 naive pd.Timestamp로 정규화
+    if obs_time is None:
+        obs_dt = pd.Timestamp(datetime.datetime.fromtimestamp(time.time(), tz=KST).replace(tzinfo=None))
+    elif isinstance(obs_time, (int, float)):
+        obs_dt = pd.Timestamp(datetime.datetime.fromtimestamp(obs_time, tz=KST).replace(tzinfo=None))
+    elif isinstance(obs_time, (pd.Timestamp, datetime.datetime)):
+        if obs_time.tzinfo is not None:
+            obs_dt = pd.Timestamp(obs_time.astimezone(KST).replace(tzinfo=None))
+        else:
+            obs_dt = pd.Timestamp(obs_time)
+    else:
+        obs_dt = pd.to_datetime(obs_time)
+        if getattr(obs_dt, 'tzinfo', None) is not None:
+            obs_dt = pd.Timestamp(obs_dt.astimezone(KST).replace(tzinfo=None))
+        else:
+            obs_dt = pd.Timestamp(obs_dt)
+
+    starts = None
+    if isinstance(df.index, pd.DatetimeIndex):
+        if df.index.tz is not None:
+            starts = df.index.tz_convert(KST).tz_localize(None)
+        else:
+            starts = df.index
+        if starts.isna().any():
+            raise ValueError("DatetimeIndex에 유효하지 않은 타임스탬프(NaT)가 포함되어 있습니다.")
+    else:
+        ts_col = None
+        for col in ['candle_date_time_kst', 'candle_date_time_utc', 'dt', 'datetime', 'date']:
+            if col in df.columns:
+                ts_col = col
+                break
+        if ts_col is not None:
+            try:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    if ts_col == 'candle_date_time_utc':
+                        # UTC 열은 UTC로 파싱 후 KST로 변환
+                        parsed = pd.to_datetime(df[ts_col], utc=True, errors='coerce')
+                        starts = parsed.dt.tz_convert(KST).dt.tz_localize(None)
+                    else:
+                        parsed = pd.to_datetime(df[ts_col], errors='coerce')
+                        if getattr(parsed.dt, 'tz', None) is not None:
+                            starts = parsed.dt.tz_convert(KST).dt.tz_localize(None)
+                        else:
+                            starts = parsed
+            except Exception as e:
+                raise ValueError(f"타임스탬프 열 '{ts_col}' 파싱 실패: {e}")
+            if starts.isna().any():
+                raise ValueError(f"타임스탬프 열 '{ts_col}'에 유효하지 않은 값(NaT)이 포함되어 있습니다.")
+        else:
+            # 타임스탬프 정보가 없는 합성/테스트 데이터는 이미 확정된 것으로 취급하여 보존
+            confirmed = df.copy()
+            validate_candles_numerical(confirmed)
+            return confirmed
+
+    duration = pd.Timedelta(minutes=interval_minutes)
+    candle_ends = starts + duration
+
+    # 전체 행 대상 마감 여부 마스크 (candle_end <= obs_dt)
+    mask = (candle_ends <= obs_dt)
+    if hasattr(mask, 'to_numpy'):
+        mask = mask.to_numpy()
+    elif hasattr(mask, 'values'):
+        mask = mask.values
+
+    confirmed = df[mask].copy()
+    if len(confirmed) > 0:
+        validate_candles_numerical(confirmed)
+    return confirmed
+
+
+def get_hybrid_regime_and_signals(
+    market: str = "KRW-SOL",
+    df: Optional[pd.DataFrame] = None,
+    obs_time: Optional[Any] = None
+) -> Dict[str, Any]:
     """
     특정 마켓의 최근 1시간봉 지표를 바탕으로 현재 시장 국면과 하이브리드 매매 신호를 반환합니다.
     
@@ -41,6 +199,8 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
         대상 마켓 코드 (예: 'KRW-SOL', 'KRW-ETH')
     df : pd.DataFrame, optional
         이미 수집된 캔들 데이터프레임이 있을 경우 전달 (백테스트 및 테스트용)
+    obs_time : float, int, datetime, pd.Timestamp, optional
+        지표 판정 관측 기준 시각 (미지정 시 현재 시각)
 
     Returns
     -------
@@ -49,55 +209,77 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
         실시간 조회 시 진행 중인 1시간봉은 국면 판정에서 제외한다.
     """
     now = time.time()
+    obs_time_val = now if obs_time is None else obs_time
     
     # 1. 캔들 데이터 로드 (캐시 우선 확인)
-    if df is None:
-        if market in _CANDLE_CACHE and (now - _CANDLE_CACHE[market]["timestamp"]) < 50:
-            df = _CANDLE_CACHE[market]["df"].iloc[:-1].copy()
-        else:
-            try:
-                candles = pyupbit.get_ohlcv(market, interval="minute60", count=220)
-                if candles is not None and len(candles) >= 200 + REGIME_SWITCH_CONFIRMATION_CANDLES:
-                    _CANDLE_CACHE[market] = {"df": candles.copy(), "timestamp": now}
-                    df = candles.iloc[:-1].copy()
-                else:
-                    # 실패 시 이전 캐시가 있으면 재사용, 전혀 없으면 HOLD 리턴
+    try:
+        if df is None:
+            if market in _CANDLE_CACHE and (now - _CANDLE_CACHE[market]["timestamp"]) < 50:
+                df = filter_confirmed_candles(_CANDLE_CACHE[market]["df"], obs_time=obs_time_val)
+            else:
+                try:
+                    candles = pyupbit.get_ohlcv(market, interval="minute60", count=220)
+                    if candles is not None and len(candles) >= 200 + REGIME_SWITCH_CONFIRMATION_CANDLES:
+                        _CANDLE_CACHE[market] = {"df": candles.copy(), "timestamp": now}
+                        df = filter_confirmed_candles(candles, obs_time=obs_time_val)
+                    else:
+                        # 실패 시 이전 캐시가 있으면 재사용, 전혀 없으면 HOLD 리턴
+                        if market in _CANDLE_CACHE:
+                            df = filter_confirmed_candles(_CANDLE_CACHE[market]["df"], obs_time=obs_time_val)
+                        else:
+                            return {
+                                "market": market,
+                                "candles_valid": False,
+                                "is_valid": False,
+                                "regime": "HOLD",
+                                "regime_korean": "데이터 수집 대기 (HOLD)",
+                                "is_bull": None,
+                                "signal": "HOLD",
+                                "curr_price": 0.0,
+                                "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
+                                "distance_ma200_pct": 0.0,
+                                "reason": "시세 데이터 수집 지연으로 기존 상태 유지 및 관망 (HOLD)"
+                            }
+                except Exception as e:
                     if market in _CANDLE_CACHE:
-                        df = _CANDLE_CACHE[market]["df"].iloc[:-1].copy()
+                        df = filter_confirmed_candles(_CANDLE_CACHE[market]["df"], obs_time=obs_time_val)
                     else:
                         return {
                             "market": market,
+                            "candles_valid": False,
+                            "is_valid": False,
                             "regime": "HOLD",
-                            "regime_korean": "데이터 수집 대기 (HOLD)",
+                            "regime_korean": "조회 예외 대기 (HOLD)",
                             "is_bull": None,
                             "signal": "HOLD",
                             "curr_price": 0.0,
                             "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
                             "distance_ma200_pct": 0.0,
-                            "reason": "시세 데이터 수집 지연으로 기존 상태 유지 및 관망 (HOLD)"
+                            "reason": f"API 조회 오류({e}) - 관망 유지"
                         }
-            except Exception as e:
-                if market in _CANDLE_CACHE:
-                    df = _CANDLE_CACHE[market]["df"]
-                else:
-                    return {
-                        "market": market,
-                        "regime": "HOLD",
-                        "regime_korean": "조회 예외 대기 (HOLD)",
-                        "is_bull": None,
-                        "signal": "HOLD",
-                        "curr_price": 0.0,
-                        "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
-                        "distance_ma200_pct": 0.0,
-                        "reason": f"API 조회 오류({e}) - 관망 유지"
-                    }
-    else:
-        df = df.copy()
-
-    minimum_candles = 200 + REGIME_SWITCH_CONFIRMATION_CANDLES - 1
-    if len(df) < minimum_candles:
+        else:
+            df = filter_confirmed_candles(df, obs_time=obs_time_val)
+    except Exception as e:
         return {
             "market": market,
+            "candles_valid": False,
+            "is_valid": False,
+            "regime": "HOLD",
+            "regime_korean": "확정봉 필터링 실패 (HOLD)",
+            "is_bull": None,
+            "signal": "HOLD",
+            "curr_price": 0.0,
+            "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
+            "distance_ma200_pct": 0.0,
+            "reason": f"확정봉 필터링 실패({e}) - 신규 주문 방지"
+        }
+
+    minimum_candles = 200 + REGIME_SWITCH_CONFIRMATION_CANDLES - 1
+    if df is None or len(df) < minimum_candles:
+        return {
+            "market": market,
+            "candles_valid": False,
+            "is_valid": False,
             "regime": "HOLD",
             "regime_korean": "데이터 수집 대기 (HOLD)",
             "is_bull": None,
@@ -132,6 +314,21 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
     curr_ma20 = float(ma20.iloc[-1])
     prev_ma20 = float(ma20.iloc[-2])
     curr_ma200 = float(ma200.iloc[-1])
+
+    if curr_price <= 0 or not np.isfinite(curr_price) or curr_ma200 <= 0 or not np.isfinite(curr_ma200):
+        return {
+            "market": market,
+            "candles_valid": False,
+            "is_valid": False,
+            "regime": "HOLD",
+            "regime_korean": "지표 수치 이상 (HOLD)",
+            "is_bull": None,
+            "signal": "HOLD",
+            "curr_price": 0.0,
+            "ma5": 0.0, "ma20": 0.0, "ma200": 0.0,
+            "distance_ma200_pct": 0.0,
+            "reason": "현재가 또는 이동평균 수치가 비정상(NaN/무한대/0 이하)입니다"
+        }
 
     curr_bb_lower = float(bb_lower.iloc[-1]) if not pd.isna(bb_lower.iloc[-1]) else curr_price * 0.95
     curr_bb_mid = float(bb_mid.iloc[-1]) if not pd.isna(bb_mid.iloc[-1]) else curr_price
@@ -204,6 +401,8 @@ def get_hybrid_regime_and_signals(market: str = "KRW-SOL", df: Optional[pd.DataF
 
     return {
         "market": market,
+        "candles_valid": True,
+        "is_valid": True,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "curr_price": curr_price,
         "ma5": curr_ma5,

@@ -90,8 +90,11 @@ class TestP1BullEntry(unittest.TestCase):
                 send_telegram_alert=lambda message: None,
                 safe_get_current_price=get_price,
                 get_hybrid_regime_and_signals=lambda market: {
+                    "candles_valid": True,
+                    "is_valid": True,
                     "is_bull": is_bull,
                     "signal": signal,
+                    "curr_price": price,
                     "ma5": price + 500,
                     "ma20": price - 1000,
                     "ma200": price - 3000,
