@@ -286,53 +286,57 @@ def _get_or_create_sync_issue(repo: str, token: str) -> Optional[int]:
 def push_snapshot_to_cloud(snapshot: Optional[Dict[str, Any]] = None, account_data: Optional[Dict[str, Any]] = None) -> bool:
     """
     현재 스냅샷을 생성하여 로컬 파일에 저장하고, GitHub Issue에 암호화하여 푸시합니다.
+    진행 중인 동기화 작업이 있을 경우 블로킹되지 않고 즉시 스킵(Non-blocking Coalesce)합니다.
     """
-    with _SYNC_LOCK:
-        try:
-            if snapshot is None:
-                snapshot = create_dashboard_snapshot(account_data=account_data)
+    if not _SYNC_LOCK.acquire(blocking=False):
+        return False
+    try:
+        if snapshot is None:
+            snapshot = create_dashboard_snapshot(account_data=account_data)
 
-            # 1. 로컬 저장 (백업 및 로컬 오프라인 뷰어용)
-            save_local_snapshot(snapshot)
+        # 1. 로컬 저장 (백업 및 로컬 오프라인 뷰어용)
+        save_local_snapshot(snapshot)
 
-            # 2. 자격증명 확인
-            secret_key, gh_token, gh_repo = get_sync_credentials()
-            if not secret_key or not gh_token:
-                print("[SYNC] SYNC_SECRET_KEY 또는 GITHUB_TOKEN 부재로 클라우드 푸시를 건너뜁니다.")
-                return False
-
-            # 3. 페이로드 암호화
-            encrypted_token = encrypt_payload(snapshot, secret_key)
-
-            # 4. GitHub Issue 조회/생성
-            issue_num = _get_or_create_sync_issue(gh_repo, gh_token)
-            if not issue_num:
-                return False
-
-            # 5. Issue 본문 덮어쓰기 (PATCH) - 커밋 미생성
-            headers = {
-                "Authorization": f"token {gh_token}",
-                "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "AutoBot-Sync"
-            }
-            patch_url = f"https://api.github.com/repos/{gh_repo}/issues/{issue_num}"
-            patch_resp = requests.patch(patch_url, headers=headers, json={"body": encrypted_token}, timeout=25)
-
-            if patch_resp.status_code == 200:
-                return True
-            else:
-                global _LAST_PUSH_WARN_TIME
-                now = time.time()
-                if now - _LAST_PUSH_WARN_TIME > 300:  # 5분에 1회만 경고 출력
-                    _LAST_PUSH_WARN_TIME = now
-                    if patch_resp.status_code == 401:
-                        print(f"[WARN] 클라우드 동기화 실패 (401 Bad credentials): .env의 GITHUB_TOKEN이 만료되었습니다. 새 GitHub Token을 발급받아 갱신해주세요.")
-                    else:
-                        print(f"[WARN] 클라우드 동기화 실패 ({patch_resp.status_code}): {patch_resp.text[:200]}")
-                return False
-        except Exception as e:
-            print(f"[WARN] push_snapshot_to_cloud 예외 발생: {e}")
+        # 2. 자격증명 확인
+        secret_key, gh_token, gh_repo = get_sync_credentials()
+        if not secret_key or not gh_token:
+            print("[SYNC] SYNC_SECRET_KEY 또는 GITHUB_TOKEN 부재로 클라우드 푸시를 건너뜁니다.")
             return False
+
+        # 3. 페이로드 암호화
+        encrypted_token = encrypt_payload(snapshot, secret_key)
+
+        # 4. GitHub Issue 조회/생성
+        issue_num = _get_or_create_sync_issue(gh_repo, gh_token)
+        if not issue_num:
+            return False
+
+        # 5. Issue 본문 덮어쓰기 (PATCH) - 커밋 미생성
+        headers = {
+            "Authorization": f"token {gh_token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "AutoBot-Sync"
+        }
+        patch_url = f"https://api.github.com/repos/{gh_repo}/issues/{issue_num}"
+        patch_resp = requests.patch(patch_url, headers=headers, json={"body": encrypted_token}, timeout=25)
+
+        if patch_resp.status_code == 200:
+            return True
+        else:
+            global _LAST_PUSH_WARN_TIME
+            now = time.time()
+            if now - _LAST_PUSH_WARN_TIME > 300:  # 5분에 1회만 경고 출력
+                _LAST_PUSH_WARN_TIME = now
+                if patch_resp.status_code == 401:
+                    print(f"[WARN] 클라우드 동기화 실패 (401 Bad credentials): .env의 GITHUB_TOKEN이 만료되었습니다. 새 GitHub Token을 발급받아 갱신해주세요.")
+                else:
+                    print(f"[WARN] 클라우드 동기화 실패 ({patch_resp.status_code}): {patch_resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"[WARN] push_snapshot_to_cloud 예외 발생: {e}")
+        return False
+    finally:
+        _SYNC_LOCK.release()
 
 
 def fetch_snapshot_from_cloud() -> Tuple[Optional[Dict[str, Any]], str]:
