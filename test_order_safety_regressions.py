@@ -100,6 +100,7 @@ class TestOrderSafetyRegressions(unittest.TestCase):
                     "signal": "HOLD",
                     "ma5": price,
                 },
+                get_market_strategy=lambda market: "HYBRID",
                 log_real_trade=lambda **trade: logged.append(trade),
             ),
             patch.object(main.time, "sleep", side_effect=StopAfterOneIteration),
@@ -275,7 +276,7 @@ class TestOrderSafetyRegressions(unittest.TestCase):
             def get_order(self, market: str, state: str):
                 return []
 
-        self.assertTrue(main.cancel_all_orders(EmptyOrders(), "KRW-ETH"))
+        self.assertTrue(main.cancel_all_orders(EmptyOrders(), "KRW-ETH", state={}))
 
     def test_submit_market_order_handles_cancel_with_executed_volume(self):
         """Upbit market buy cancelled for dust remainder with executed_volume > 0 must be FILLED."""

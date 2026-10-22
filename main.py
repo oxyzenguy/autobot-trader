@@ -1,6 +1,15 @@
 import os
 import sys
+
+import signal
 import time
+
+# 터미널 창 닫힘 및 세션 종료(SIGHUP) 시 프로세스 강제 종료 원천 방지
+try:
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+except Exception:
+    pass
+
 import json
 import math
 from decimal import Decimal, ROUND_DOWN
@@ -637,7 +646,7 @@ def _get_db_cumulative_trades(order_uuid: str, side: str, market: str) -> Option
         return None
 
 
-def reconcile_bear_limit_buys(upbit_client, market: str, state: dict) -> bool:
+def reconcile_bear_limit_buys(upbit_client, market: str, state: dict, *, notify: bool = False) -> bool:
     """Credit only new cumulative UUID fills, including still-open partials."""
     for order_uuid, recorded in state.get("bear_limit_buys", {}).items():
         if recorded["state"] in ("done", "cancel"):
@@ -717,6 +726,14 @@ def reconcile_bear_limit_buys(upbit_client, market: str, state: dict) -> bool:
             # Terminal records survive tranche sales/restarts to prevent re-crediting.
             if save_strategy_state(market, state) is False:
                 return False
+            if notify and delta_volume > 0 and db_delta_vol > 1e-12:
+                send_telegram_alert(
+                    f"🔵 <b>[매수 체결]</b> {market} (지정가 체결 확인)\n"
+                    f"• 이번 체결: {db_delta_vol:.8f} {market.split('-')[1]} | 체결대금: {db_delta_funds:,.2f}원\n"
+                    f"• 체결단가: {db_delta_funds / db_delta_vol:,.0f}원 | 누적 체결: {executed:.8f}\n"
+                    f"• 봇 평단가: {state['bot_avg_price']:,.0f}원 | 봇 보유: {state['bot_quantity']:.8f}\n"
+                    f"• 주문 UUID: {order_uuid}"
+                )
     return True
 
 
@@ -1456,7 +1473,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             sell_profit_margin = get_profit_margin(market)
             regime_info = get_hybrid_regime_and_signals(market)
             confirmed_is_bull = regime_info.get("is_bull")
-            candles_valid = bool(regime_info.get("candles_valid", False)) and (confirmed_is_bull is not None)
+            candles_valid = bool(regime_info.get("candles_valid", False))
             prev_regime = state.get("current_regime", "BEAR")
             if market_strat == "PURE_MARTINGALE":
                 # PURE_MARTINGALE 모드에서는 상승장(BULL) 경로 및 손절/국면전환 청산을 전면 배제합니다.
@@ -1793,7 +1810,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                 # Reconcile even when a partial bid still counts as an open order.
                 if state.get("bear_limit_buys"):
-                    if not reconcile_bear_limit_buys(upbit, market, state):
+                    if not reconcile_bear_limit_buys(upbit, market, state, notify=True):
                         continue
                     avg_price, quantity = get_bot_balance(upbit, market, ticker, state)
                     if state.pop("balance_query_failed", False):
@@ -1908,21 +1925,29 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         halt_for_order_reconciliation(market, state, {"reason": "기존 매도 주문 취소 미확정"})
                                         continue
 
-                                    # 2. 해당 스쿼드의 미체결 매수 주문만 취소 (다른 스쿼드는 미체결 유지)
+                                    # 2. 해당 스쿼드의 미체결 매수 주문 취소 + 보유 트랜치가 없는 더 깊은 스쿼드의 고립 주문도 함께 취소
+                                    held_squad_ids = set(
+                                        tr.get("squad_id") for tr in state.get("tranches", [])
+                                        if tr.get("squad_id") is not None and tr.get("squad_id") != sq_id
+                                    )
                                     squad_buys_to_cancel = [
                                         uuid for uuid, rec in state.get("bear_limit_buys", {}).items()
-                                        if rec.get("squad_id") == sq_id and rec.get("state") == "wait"
+                                        if rec.get("state") == "wait" and (
+                                            rec.get("squad_id") == sq_id
+                                            or (rec.get("squad_id") is not None and rec.get("squad_id") > sq_id and rec.get("squad_id") not in held_squad_ids)
+                                        )
                                     ]
                                     cancel_buys_ok = True
                                     for b_uuid in squad_buys_to_cancel:
                                         if cancel_order_and_wait(upbit, b_uuid, market=market, state=state):
                                             if state.get("bear_limit_buys", {}).get(b_uuid, {}).get("state") != "done":
                                                 state["bear_limit_buys"][b_uuid]["state"] = "cancel"
-                                            print(f"[{market}]   - 스쿼드 {sq_id} 미체결 매수 주문 취소 완료: {b_uuid}")
+                                            cancelled_sq = state.get("bear_limit_buys", {}).get(b_uuid, {}).get("squad_id", sq_id)
+                                            print(f"[{market}]   - 스쿼드 {cancelled_sq} 미체결 매수 주문 취소 완료: {b_uuid}")
                                         else:
                                             cancel_buys_ok = False
                                     if not cancel_buys_ok:
-                                        halt_for_order_reconciliation(market, state, {"reason": f"스쿼드 {sq_id} 매수 주문 취소 미확정"})
+                                        halt_for_order_reconciliation(market, state, {"reason": f"스쿼드 {sq_id} 관련 매수 주문 취소 미확정"})
                                         continue
 
                                     # Refresh bot balance after cancellations to reflect any cancel-fills
@@ -2039,7 +2064,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         state["tranches"] = []
                                         state["bot_avg_price"] = 0.0
                                         state["bot_quantity"] = 0.0
-                                        state.pop("basket_limit_ask", None)
+                                    # 스쿼드 익절 후 잔여 매수 호가 재정렬 및 박스권 재진입 트리거
+                                    state["bear_buy_rebalance_pending"] = True
 
                                     if save_strategy_state(market, state) is False:
                                         halt_for_order_reconciliation(market, state, {"reason": "스쿼드 익절 후 상태 저장 실패"})
@@ -2225,6 +2251,44 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 current_steps = len(state.get("tranches", []))
                 expected_open_buys = 0 if max_squad_cap_reached else max(0, min(3, max_steps - len(active_stages)))
 
+                # 그리드 이탈 방지: 시장가가 최고 매수가보다 크게 상승하여 박스권을 이탈한 경우 고립 주문 취소 및 재배치
+                if buy_orders and not max_squad_cap_reached:
+                    max_bid_price = max(float(o['price']) for o in buy_orders)
+                    drift_threshold = 0.04
+                    if is_adaptive_grid_enabled(market):
+                        try:
+                            from strategy.adaptive_grid import get_recent_candles
+                            df_c = get_recent_candles(market)
+                            reg_data_tmp = get_market_regime_and_natr(df_c)
+                            c_natr = reg_data_tmp.get("curr_natr")
+                            if c_natr:
+                                drift_threshold = max(0.04, c_natr * 2.5)
+                        except Exception:
+                            drift_threshold = 0.04
+                    if current_price > max_bid_price * (1.0 + drift_threshold):
+                        held_squad_ids = set(t.get("squad_id") for t in state.get("tranches", []) if t.get("squad_id") is not None)
+                        orphan_orders_to_cancel = [
+                            o for o in buy_orders
+                            if state.get("bear_limit_buys", {}).get(o['uuid'], {}).get("squad_id") not in held_squad_ids
+                        ]
+                        if orphan_orders_to_cancel:
+                            print(f"[{market}] 🔄 [그리드 이탈 감지] 현재가({current_price:,.0f}원)가 최고 매수가({max_bid_price:,.0f}원) 대비 +{((current_price / max_bid_price) - 1.0)*100:.1f}% 괴리 (임계치 {drift_threshold*100:.1f}% 초과).")
+                            print(f"[{market}]   - 고립된 미체결 매수 주문 {len(orphan_orders_to_cancel)}건 취소 및 박스권 재정렬 착수.")
+                            cancel_drift_ok = True
+                            for o in orphan_orders_to_cancel:
+                                if cancel_order_and_wait(upbit, o['uuid'], market=market, state=state):
+                                    if o['uuid'] in state.get("bear_limit_buys", {}):
+                                        state["bear_limit_buys"][o['uuid']]["state"] = "cancel"
+                                else:
+                                    cancel_drift_ok = False
+                            if not cancel_drift_ok:
+                                halt_for_order_reconciliation(market, state, {"reason": "그리드 이탈 매수 주문 취소 미확정"})
+                                continue
+                            state["bear_buy_rebalance_pending"] = True
+                            save_strategy_state(market, state)
+                            buy_orders = [o for o in buy_orders if o['uuid'] not in [x['uuid'] for x in orphan_orders_to_cancel]]
+                            num_buy = len(buy_orders)
+
                 # SOL 4개 스쿼드(16차수) 등 최대 차수 도달 시 잔여 매수 주문 자동 취소 및 홀딩 관리
                 if (current_steps >= max_steps or max_squad_cap_reached) and num_buy > 0:
                     print(f"[{market}] 🛑 마틴게일 최대 차수({max_steps}차수 / 4개 스쿼드 32U) 도달로 잔여 매수 주문 {num_buy}건 취소.")
@@ -2378,6 +2442,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                 # Case 3: 매도 완료 (또는 신규 진입) → 매도 주문 0건
                 elif num_sell == 0:
+                    initial_buy_result = None
                     if not all(cancel_order_and_wait(upbit, order['uuid'], market=market, state=state) for order in buy_orders):
                         halt_for_order_reconciliation(market, state, {"reason": "기존 매수 주문 취소 미확정"})
                         continue
@@ -2425,6 +2490,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             halt_for_order_reconciliation(market, state, buy_result)
                             continue
 
+                        initial_buy_result = buy_result
                         filled_quantity = float(buy_result["volume"])
                         filled_price = float(buy_result["price"])
                         previous_quantity = quantity
@@ -2522,8 +2588,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             print(f"[{market}] ⚠️ [캔들 데이터 검증 대기] 적응형 지표 확정 캔들 검증 실패로 신규 매수 주문 등록 보류 (신규 매수 0건).")
                             new_orders = []
                         else:
+                            base_p = min(current_price, avg_price) if avg_price > 0 else current_price
                             new_orders = calculate_adaptive_buy_prices(
-                                base_price=avg_price,
+                                base_price=base_p,
                                 natr=cur_natr,
                                 current_step=len(state.get("tranches", [])),
                                 num_orders=3,
@@ -2562,21 +2629,23 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         state["bear_buy_rebalance_pending"] = False
                     else:
                         state["bear_buy_rebalance_pending"] = True
-                    save_strategy_state(market, state)
+                    state_saved = save_strategy_state(market, state)
                     label_desc = "순수 마틴게일 1차수" if market_strat == "PURE_MARTINGALE" else "하락 방어 1차수"
-                    send_telegram_alert(
-                        f"🔵 <b>[매수 체결]</b> {market} ({label_desc})\n"
-                        f"• 체결가: {avg_price:,.0f}원 ({unit_krw:,}원)\n"
-                        f"• 평단가: {avg_price:,.0f}원 | 수량: {quantity:.6f} {ticker}\n"
-                        f"• 바스켓 목표: {sell_price:,.0f}원 (+{(sell_profit_margin - 1) * 100:.2f}%)"
-                    )
+                    if initial_buy_result is not None and state_saved is not False:
+                        send_telegram_alert(
+                            f"🔵 <b>[매수 체결]</b> {market} ({label_desc})\n"
+                            f"• 체결가: {filled_price:,.0f}원 | 이번 체결: {filled_quantity:.8f} {ticker}\n"
+                            f"• 평단가: {avg_price:,.0f}원 | 수량: {quantity:.6f} {ticker}\n"
+                            f"• 바스켓 목표: {sell_price:,.0f}원 (+{(sell_price / avg_price - 1) * 100:.2f}%)\n"
+                            f"• 주문 UUID: {initial_buy_result['uuid']}"
+                        )
 
                 # Case 4: 물타기 매수 체결 감지
                 elif num_sell == 1 and num_buy < expected_open_buys:
                     if not state.get("bear_buy_rebalance_pending", False):
                         time.sleep(5)
                         continue
-                    print(f"\n[{time.strftime('%H:%M:%S')}] [{market}] [하락장 방어] Case 4: 물타기 매수 체결 감지. 포지션 재조정.")
+                    print(f"\n[{time.strftime('%H:%M:%S')}] [{market}] [하락장 방어] Case 4: 대기 주문 재배치. 신규 체결 여부는 UUID 정산으로만 판정.")
 
                     if not all(cancel_order_and_wait(upbit, order['uuid'], market=market, state=state) for order in sell_orders):
                         halt_for_order_reconciliation(market, state, {"reason": "기존 매도 주문 취소 미확정"})
@@ -2643,7 +2712,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             additional_orders = []
                         else:
                             remaining_orders = max(0, 3 - len(buy_orders))
-                            lowest_bid = min(float(o['price']) for o in buy_orders) if buy_orders else avg_price
+                            lowest_bid = min(float(o['price']) for o in buy_orders) if buy_orders else (min(current_price, avg_price) if avg_price > 0 else current_price)
                             additional_orders = calculate_adaptive_buy_prices(
                                 base_price=lowest_bid,
                                 natr=cur_natr,
@@ -2703,12 +2772,6 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     else:
                         state["bear_buy_rebalance_pending"] = True
                     save_strategy_state(market, state)
-                    max_steps_str = f"{max_steps}차수" if max_steps < 900 else "무제한"
-                    send_telegram_alert(
-                        f"🔵 <b>[매수 체결]</b> {market} (하락 방어 {len(state['tranches'])}/{max_steps_str})\n"
-                        f"• 새 평단가: {avg_price:,.0f}원 | 총 보유: {quantity:.6f} {ticker}\n"
-                        f"• 바스켓 목표: {sell_price:,.0f}원 (+{(sell_profit_margin - 1) * 100:.2f}%)"
-                    )
 
             # =========================================================================
             # [분기 B] 상승 국면 (BULL): 5/20 MA 추세추종 & 트레일링 스탑 모드
@@ -3265,6 +3328,24 @@ def send_telegram_status_briefing():
             f"• 주문가능 예수금: <b>{krw_bal:,.0f}원</b>",
         ]
 
+        # G60 서브포켓 요약 한 줄
+        try:
+            s_files = [f"pocket_grid_state_{m}.json" for m in ["KRW_ETH", "KRW_SOL", "KRW_XRP"]]
+            p_pnls = 0.0
+            p_wins = 0
+            p_grids = 0
+            for sf in s_files:
+                sp = os.path.join(BASE_DIR, sf)
+                if os.path.exists(sp):
+                    with open(sp, "r", encoding="utf-8") as f:
+                        sd = json.load(f)
+                        p_pnls += float(sd.get("realized_pnl", 0.0) or 0.0)
+                        p_wins += int(sd.get("win_count", 0) or 0)
+                        p_grids += len(sd.get("active_grids", []))
+            lines.append(f"• ⚡ G60 서브포켓: 실현 <b>{p_pnls:+,.0f}원</b> ({p_wins}회 익절 | 보유 {p_grids}단) (상세: <code>/60</code>)")
+        except Exception:
+            pass
+
         if ai_commentary:
             lines.extend([
                 "",
@@ -3361,6 +3442,140 @@ def send_telegram_status_briefing():
         print(f"[WARN] 텔레그램 정기 브리핑 생성 오류: {e}")
 
 
+def send_telegram_g60_briefing(filter_market: Optional[str] = None):
+    """
+    G60 서브포켓 스쿼드 그리드 3종(이더리움 · 솔라나 · 리플) 실시간 포지션 및 매매 현황을 텔레그램으로 브리핑 (/60 명령어)
+    """
+    try:
+        from utils.pocket_api import UpbitPocketClient
+
+        pocket_client = UpbitPocketClient()
+        try:
+            krw_bal = pocket_client.get_balance("KRW")
+        except Exception:
+            krw_bal = 0.0
+
+        pocket_db = os.path.join(BASE_DIR, "pocket_trade_history.db")
+        markets_cfg = [
+            {"market": "KRW-ETH", "ticker": "ETH", "name": "이더리움", "icon": "💎"},
+            {"market": "KRW-SOL", "ticker": "SOL", "name": "솔라나", "icon": "🟣"},
+            {"market": "KRW-XRP", "ticker": "XRP", "name": "리플", "icon": "🌊"}
+        ]
+        if filter_market:
+            filter_up = filter_market.upper()
+            if not filter_up.startswith("KRW-"):
+                filter_up = f"KRW-{filter_up}"
+            matched = [m for m in markets_cfg if m["market"] == filter_up]
+            if matched:
+                markets_cfg = matched
+
+        # 최근 체결 내역 조회
+        recent_trades = {}
+        if os.path.exists(pocket_db):
+            try:
+                conn = sqlite3.connect(pocket_db, timeout=2.0)
+                conn.row_factory = sqlite3.Row
+                c = conn.cursor()
+                for m in markets_cfg:
+                    c.execute(
+                        "SELECT * FROM pocket_trades WHERE market = ? ORDER BY id DESC LIMIT 1",
+                        (m["market"],)
+                    )
+                    row = c.fetchone()
+                    if row:
+                        recent_trades[m["market"]] = dict(row)
+                conn.close()
+            except Exception as e_db:
+                print(f"[WARN] G60 DB 조회 실패: {e_db}")
+
+        tot_budget = 300_000.0 * len(markets_cfg)
+        tot_pnl = 0.0
+        tot_fees = 0.0
+        tot_wins = 0
+        tot_trades = 0
+        tot_cost = 0.0
+        tot_eval = 0.0
+
+        market_blocks = []
+        for m in markets_cfg:
+            m_key = m["market"]
+            ticker = m["ticker"]
+            state_file = os.path.join(BASE_DIR, f"pocket_grid_state_{m_key.replace('-', '_')}.json")
+            state = {}
+            if os.path.exists(state_file):
+                try:
+                    with open(state_file, "r", encoding="utf-8") as f:
+                        state = json.load(f)
+                except Exception:
+                    pass
+
+            curr_p = pyupbit.get_current_price(m_key) or 0.0
+            base_p = float(state.get("base_price", 0.0) or 0.0)
+            pnl = float(state.get("realized_pnl", 0.0) or 0.0)
+            fees = float(state.get("total_fees", 0.0) or 0.0)
+            wins = int(state.get("win_count", 0) or 0)
+            trades = int(state.get("total_trades", 0) or 0)
+            active_grids = state.get("active_grids", [])
+
+            vol = sum(float(g.get("vol", 0.0) or 0.0) for g in active_grids)
+            cost = sum(float(g.get("cost", 0.0) or 0.0) for g in active_grids)
+            eval_val = vol * curr_p
+            unreal_pnl = eval_val - cost
+            unreal_pct = (unreal_pnl / cost * 100.0) if cost > 0 else 0.0
+            dist_base = ((curr_p - base_p) / base_p * 100.0) if base_p > 0 else 0.0
+
+            tot_pnl += pnl
+            tot_fees += fees
+            tot_wins += wins
+            tot_trades += trades
+            tot_cost += cost
+            tot_eval += eval_val
+
+            curr_p_str = f"{curr_p:,.0f}원" if curr_p >= 100 else f"{curr_p:,.2f}원"
+            base_p_str = f"{base_p:,.0f}원" if base_p >= 100 else f"{base_p:,.2f}원"
+
+            b_lines = [
+                f"{m['icon']} <b>{m['name']} ({ticker})</b>",
+                f"• 현재가: <b>{curr_p_str}</b> (기준가 {base_p_str} | {dist_base:+.2f}%)",
+                f"• 보유 그리드: <b>{len(active_grids)}/30단</b> ({vol:.4f} {ticker})",
+                f"• 투입원가: {cost:,.0f}원 | 평가금액: {eval_val:,.0f}원 ({unreal_pnl:+,.0f}원, {unreal_pct:+.2f}%)",
+                f"• 누적 실현손익: <b>{pnl:+,.1f}원</b> ({wins}회 익절 | 수수료 {fees:,.1f}원)"
+            ]
+
+            # 최근 체결 내역
+            r_tr = recent_trades.get(m_key)
+            if r_tr:
+                side_tag = "🔵 매수" if r_tr["side"] == "bid" else "🟢 익절"
+                tr_time = r_tr["timestamp"][11:19]
+                if r_tr["side"] == "ask":
+                    b_lines.append(f"• 최근 체결: {side_tag} Lvl {r_tr['level']} (손익: {r_tr['pnl']:+,.1f}원 | {tr_time})")
+                else:
+                    tr_p = float(r_tr['price'])
+                    tr_p_str = f"{tr_p:,.0f}원" if tr_p >= 100 else f"{tr_p:,.2f}원"
+                    b_lines.append(f"• 최근 체결: {side_tag} Lvl {r_tr['level']} ({tr_p_str} | {tr_time})")
+
+            market_blocks.append("\n".join(b_lines))
+
+        tot_unreal = tot_eval - tot_cost
+        tot_unreal_pct = (tot_unreal / tot_cost * 100.0) if tot_cost > 0 else 0.0
+
+        header_lines = [
+            "⚡ <b>[G60 서브포켓 스쿼드 그리드 실거래 현황]</b>",
+            f"• 서브포켓 예수금: <b>{krw_bal:,.0f}원</b>",
+            f"• 총 배정예산: <b>{tot_budget:,.0f}원</b> (마켓당 30만 원)",
+            f"• 총 실현손익: <b>{tot_pnl:+,.1f}원</b> ({tot_wins}회 익절 | 수수료 {tot_fees:,.1f}원)",
+            f"• 총 투입원가: <b>{tot_cost:,.0f}원</b> | 평가손익: <b>{tot_unreal:+,.0f}원</b> ({tot_unreal_pct:+.2f}%)",
+            ""
+        ]
+
+        full_msg = "\n".join(header_lines) + "\n\n".join(market_blocks)
+        send_telegram_alert(full_msg.strip())
+        print(f"[{time.strftime('%H:%M:%S')}] [G60] 텔레그램 G60 현황 브리핑 발송 완료.")
+    except Exception as e:
+        print(f"[WARN] 텔레그램 G60 현황 브리핑 오류: {e}")
+        send_telegram_alert(f"⚠️ G60 브리핑 생성 오류: {e}")
+
+
 def telegram_hourly_briefing_worker():
     """
     지정된 정기 시각(09:30, 12:40, 16:40, 19:00 KST, 하루 4회)에
@@ -3427,6 +3642,16 @@ def telegram_command_listener_worker():
 
                         if cmd in ["/status", "/상태", "상태", "/현황", "현황", "/잔고", "잔고", "/check"]:
                             send_telegram_status_briefing()
+                        elif (
+                            cmd in ["/60", "60", "/g60", "g60", "/포켓", "포켓", "/서브포켓", "서브포켓"] or
+                            cmd.startswith("/60 ") or cmd.startswith("60 ") or
+                            cmd.startswith("/g60 ") or cmd.startswith("g60 ")
+                        ):
+                            filter_m = None
+                            parts = text.strip().split()
+                            if len(parts) >= 2:
+                                filter_m = parts[1].strip()
+                            send_telegram_g60_briefing(filter_market=filter_m)
                         elif cmd in ["/tqqq", "tqqq", "/미국주식", "미국주식", "/주식", "주식"]:
                             try:
                                 import subprocess
@@ -3453,6 +3678,8 @@ def telegram_command_listener_worker():
                             help_msg = (
                                 "🤖 <b>[Trader 통합 컨트롤 명령어]</b>\n\n"
                                 "• <code>/상태</code> : 실시간 가상자산 계좌 및 봇 포지션/주문 확인\n"
+                                "• <code>/60</code> : ⚡ G60 서브포켓 스쿼드 그리드 3종(ETH·SOL·XRP) 실거래 현황\n"
+                                "• <code>/재기동</code> : 실거래 봇(main.py) 안전 재기동 (옵션: <code>포켓</code>, <code>가상</code>, <code>대시보드</code>, <code>전체</code>)\n"
                                 "• <code>/tqqq</code> : 라오어 TQQQ 무한매수 4.0 및 미국주식(JEPI/SPMO) 실시간 브리핑\n"
                                 "• <code>/국장</code> : 국내주식(498410/498400) 스마트 분할 매도봇 현황 브리핑\n"
                                 "• <code>/전략검토</code> : 퀀트 전략 리뷰 및 백테스트 최적화 제안서 확인\n"
@@ -3464,6 +3691,23 @@ def telegram_command_listener_worker():
                                 "💡 정기 감사: 06:00, 14:00, 22:00 (8시간 주기)"
                             )
                             send_telegram_alert(help_msg)
+                        elif (
+                            cmd in ["/재기동", "재기동", "/restart", "restart", "/reboot", "reboot", "/재시작", "재시작"] or
+                            cmd.startswith("/재기동 ") or cmd.startswith("재기동 ") or
+                            cmd.startswith("/restart ") or cmd.startswith("restart ") or
+                            cmd.startswith("/reboot ") or cmd.startswith("reboot ")
+                        ):
+                            try:
+                                from utils.process_manager import handle_restart_command
+                                handle_restart_command(
+                                    text=text,
+                                    token=TOKEN,
+                                    chat_id=CHAT_ID,
+                                    offset=offset,
+                                    send_alert_fn=send_telegram_alert
+                                )
+                            except Exception as re:
+                                send_telegram_alert(f"⚠️ 재기동 명령 처리 실패: {re}")
                         elif cmd in ["/전략", "/전략검토", "전략", "전략검토"]:
                             send_telegram_alert("🧭 <b>[전략 봇]</b> 최근 시장 변동성 및 백테스트 최적화 탐색을 시작합니다. (약 10~15초 소요)")
                             try:
@@ -3588,8 +3832,35 @@ def start_bot(market: str):
         run_trading_strategy(market)
 
 
+MAIN_GLOBAL_LOCK_FILE = None
+
+
+def acquire_main_global_lock() -> bool:
+    """main.py 전체의 단일 실행을 보장하는 글로벌 파일 락입니다."""
+    global MAIN_GLOBAL_LOCK_FILE
+    lock_path = os.path.join(tempfile.gettempdir(), "autotrade_main_global.lock")
+    try:
+        MAIN_GLOBAL_LOCK_FILE = open(lock_path, "w")
+        fcntl.flock(MAIN_GLOBAL_LOCK_FILE.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        MAIN_GLOBAL_LOCK_FILE.write(f"{os.getpid()}\n")
+        MAIN_GLOBAL_LOCK_FILE.flush()
+        return True
+    except (BlockingIOError, OSError):
+        if MAIN_GLOBAL_LOCK_FILE:
+            try:
+                MAIN_GLOBAL_LOCK_FILE.close()
+            except Exception:
+                pass
+            MAIN_GLOBAL_LOCK_FILE = None
+        return False
+
+
 # --- 엔트리포인트 (멀티 코인/전략 동시 실행 지원) ---
 if __name__ == "__main__":
+    if not acquire_main_global_lock():
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] main.py 프로세스가 이미 실행 중입니다. 중복 기동을 방지하고 안전하게 종료합니다.")
+        sys.exit(0)
+
     if len(sys.argv) > 1:
         target_markets = [m.strip() for m in sys.argv[1].split(",") if m.strip()]
     else:
@@ -3637,6 +3908,16 @@ if __name__ == "__main__":
         t_cmd.start()
     except Exception as e:
         print(f"[WARN] 텔레그램 명령어 리스너 스레드 초기화 실패: {e}")
+
+    try:
+        send_telegram_alert(
+            f"🚀 <b>[AutoBot 실거래 엔진 가동]</b> PID: <code>{os.getpid()}</code>\n"
+            f"• 대상 마켓: {', '.join(target_markets)}\n"
+            f"• 텔레그램 리스너: 활성화 (<code>/상태</code>, <code>/재기동</code> 지원)\n"
+            f"• 정상 동기화 완료"
+        )
+    except Exception as e:
+        print(f"[WARN] 텔레그램 가동 알림 전송 실패: {e}")
 
     if len(target_markets) == 1:
         start_bot(target_markets[0])

@@ -55,6 +55,10 @@ from config import (
     BTC_UNIT_KRW,
     BTC_DCA_CLOSING_CHECK_HOUR,
     BTC_UPBIT_DCA_HOUR,
+    MARKET_STRATEGIES,
+    get_market_strategy,
+    get_magic_split_down_pct,
+    get_magic_split_tranche_profit,
 )
 from strategy.matingale2x_logic import (
     adjust_price_to_tick as modern_adjust_price_to_tick,
@@ -170,6 +174,18 @@ def load_historical_candles(market: str) -> pd.DataFrame:
         (close < df['bb_lower'] * 0.985) &
         (volume < df['vol_mean30'].shift(1) * 20.0)
     )
+
+    # 트레이딩뷰(TradingView) 명품 지표 계산 (SuperTrend, WaveTrend, TTM Squeeze)
+    try:
+        from strategy.tradingview_indicators import add_tradingview_indicators
+        df = add_tradingview_indicators(df)
+    except Exception as e:
+        df['supertrend'] = df['close']
+        df['supertrend_dir'] = 1
+        df['wt1'] = 0.0
+        df['wt2'] = 0.0
+        df['is_wt_oversold_cross'] = False
+        df['is_squeeze_on'] = False
 
     return df
 
@@ -316,16 +332,32 @@ def simulate_hybrid_squad(
     df: pd.DataFrame,
     initial_capital: int = 1_000_000,
     unit_krw: int = 10_000,
-    fee_rate: float = FEE_RATE
+    fee_rate: float = FEE_RATE,
+    custom_profit_margin: Optional[float] = None,
+    custom_down_pct: Optional[float] = None,
+    custom_tranche_profit: Optional[float] = None,
+    custom_market_strat: Optional[str] = None,
+    custom_max_steps: Optional[int] = None,
+    custom_squad_multipliers: Optional[List[int]] = None,
+    custom_trend_indicator: Optional[str] = None,
+    custom_dip_indicator: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     이더리움 및 솔라나 200 MA 하이브리드 스쿼드 마틴게일 시뮬레이션
     - config.py의 실전 파라미터(손절율, 스쿼드 스케줄, 익절선, 동적 TS) 100% 동기화
+    - 전략 최적화 시뮬레이션을 위한 커스텀 파라미터 오버라이드 지원
+    - 트레이딩뷰 명품 지표(SuperTrend, WaveTrend) 백테스트 탐색 지원
     """
-    profit_margin = PROFIT_MARGINS.get(market, 1.005)
+    profit_margin = custom_profit_margin if custom_profit_margin is not None else PROFIT_MARGINS.get(market, 1.005)
     regime_liquidation_pct = REGIME_SWITCH_LIQUIDATION_PCT.get(market, 0.70)
-    squad_multipliers = MARTINGALE_SCHEDULE.get(market, [1, 1, 2, 4])
-    max_steps = MARTINGALE_MAX_STEPS.get(market, 16)
+    squad_multipliers = custom_squad_multipliers if custom_squad_multipliers is not None else MARTINGALE_SCHEDULE.get(market, [1, 1, 2, 4])
+    max_steps = custom_max_steps if custom_max_steps is not None else MARTINGALE_MAX_STEPS.get(market, 16)
+    market_strat = custom_market_strat if custom_market_strat is not None else get_market_strategy(market)
+    down_pct = custom_down_pct if custom_down_pct is not None else get_magic_split_down_pct(market)
+    tranche_profit_pct = custom_tranche_profit if custom_tranche_profit is not None else get_magic_split_tranche_profit(market)
+    trend_mode = custom_trend_indicator or "MA200"
+    dip_mode = custom_dip_indicator or "CLUC"
+
     
     krw = initial_capital
     equity_curve = []
@@ -370,7 +402,19 @@ def simulate_hybrid_squad(
         ma200 = df['ma200'].iloc[i]
         is_cluc_dip = df['is_cluc_dip'].iloc[i]
 
-        is_bull = (c > ma200)
+        # 국면 판정 (MA200 vs TradingView SuperTrend)
+        if market_strat == "PURE_MARTINGALE":
+            is_bull = False
+        elif trend_mode == "SUPERTREND" and 'supertrend_dir' in df.columns:
+            is_bull = bool(df['supertrend_dir'].iloc[i] == 1)
+        else:
+            is_bull = bool(c > ma200)
+
+        # 하락장 과매도 낙주 판정 (ClucMay vs TradingView WaveTrend)
+        if dip_mode == "WAVETREND" and 'is_wt_oversold_cross' in df.columns:
+            has_dip_signal = bool(df['is_wt_oversold_cross'].iloc[i])
+        else:
+            has_dip_signal = bool(is_cluc_dip)
 
         # 총 자산 가치 기록
         tot_v = sum(t['vol'] for t in bull_tranches) + sum(t['vol'] for t in active_bear_tranches)
@@ -401,10 +445,10 @@ def simulate_hybrid_squad(
                     active_bear_tranches = []
                     last_bear_buy_p = 0.0
                 else:
-                    # 개별 차수 매직스플릿 반등 익절 (+3.0%)
+                    # 개별 차수 매직스플릿 반등 익절
                     rem = []
                     for t in active_bear_tranches:
-                        target_s = t['buy_price'] * (1 + MAGIC_SPLIT_TRANCHE_PROFIT)
+                        target_s = t['buy_price'] * (1 + tranche_profit_pct)
                         if h >= target_s:
                             exec_p = target_s
                             rev = t['vol'] * exec_p * (1 - fee_rate)
@@ -580,10 +624,10 @@ def simulate_hybrid_squad(
                     active_bear_tranches = []
                     last_bear_buy_p = 0.0
                 else:
-                    # 2) 개별 차수 매직스플릿 반등 익절 (+3.0%)
+                    # 2) 개별 차수 매직스플릿 반등 익절
                     rem = []
                     for t in active_bear_tranches:
-                        target_s = t['buy_price'] * (1 + MAGIC_SPLIT_TRANCHE_PROFIT)
+                        target_s = t['buy_price'] * (1 + tranche_profit_pct)
                         if h >= target_s:
                             exec_p = target_s
                             rev = t['vol'] * exec_p * (1 - fee_rate)
@@ -598,7 +642,7 @@ def simulate_hybrid_squad(
                             rem.append(t)
                     active_bear_tranches = rem
 
-                    # 3) 추가 스쿼드 마틴게일 물타기 (-4% 하락 간격)
+                    # 3) 추가 스쿼드 마틴게일 물타기
                     curr_step = len(active_bear_tranches)
                     if curr_step < max_steps:
                         pattern_idx = curr_step % len(squad_multipliers)
@@ -606,7 +650,7 @@ def simulate_hybrid_squad(
                         req_krw = unit_krw * mult
 
                         ref_p = last_bear_buy_p if last_bear_buy_p > 0 else avg_p
-                        if c <= ref_p * (1.0 - MAGIC_SPLIT_DOWN_PCT):
+                        if c <= ref_p * (1.0 - down_pct):
                             if krw >= req_krw * (1 + fee_rate):
                                 buy_p = c
                                 v = (req_krw * (1 - fee_rate)) / buy_p
@@ -621,8 +665,11 @@ def simulate_hybrid_squad(
                                 last_bear_buy_p = buy_p
                                 step_frequency[curr_step] = step_frequency.get(curr_step, 0) + 1
             else:
-                # 미보유 시 Cluc 과매도 투매 발생 시 1차(1U) 진입
-                if is_cluc_dip:
+                # 미보유 시
+                # PURE_MARTINGALE: 상시 1-1-2-4 순환으로 즉시 1차(1U) 진입하여 새 사이클 가동
+                # HYBRID: Cluc 또는 WaveTrend 과매도 투매 발생 시 1차(1U) 진입
+                should_enter = (market_strat == "PURE_MARTINGALE") or has_dip_signal
+                if should_enter:
                     if krw >= unit_krw * (1 + fee_rate):
                         buy_p = c
                         v = (unit_krw * (1 - fee_rate)) / buy_p
@@ -632,7 +679,7 @@ def simulate_hybrid_squad(
                             'buy_price': buy_p,
                             'vol': v,
                             'cost': unit_krw,
-                            'source': 'CLUC_INITIAL'
+                            'source': 'MARTINGALE_INITIAL' if market_strat == "PURE_MARTINGALE" else 'CLUC_INITIAL'
                         }]
                         last_bear_buy_p = buy_p
                         step_frequency[0] = step_frequency.get(0, 0) + 1
@@ -658,7 +705,8 @@ def simulate_hybrid_squad(
 
     return {
         "market": market,
-        "name": f"{market} 200 MA 하이브리드",
+        "name": f"{market} 순수 마틴게일" if market_strat == "PURE_MARTINGALE" else f"{market} 200 MA 하이브리드",
+        "market_strat": market_strat,
         "initial_capital": initial_capital,
         "final_capital": krw,
         "net_profit": tot_pnl,
@@ -759,11 +807,14 @@ def run_unified_portfolio_backtest(
             print(f" • 최종 평가 자산:     {r['final_capital']:>12,.0f}원")
             print(f" • 누적 순손익:         {r['net_profit']:>+12,.0f}원 ({r['return_pct']:+.2f}%)")
             print(f" • 최대 낙폭 (MDD):     {r['mdd_pct']:>11.2f}%")
-            print(f" • [상승장 추세 엔진 (BULL)]")
-            print(f"   - 포지션 청산 횟수:  {r['bull_trades']}회 (승률: {r['bull_win_rate']:.1f}%)")
-            print(f"   - 트레일링 익절:     {r['bull_ts_exits']}회 | 긴급 손절: {r['bull_sl_exits']}회")
-            print(f"   - 200선 이탈 부분손절: {r['regime_switches']}회 (손절률: {REGIME_SWITCH_LIQUIDATION_PCT.get(m, 0.7)*100:.0f}%)")
-            print(f" • [하락장 방어 엔진 (BEAR)]")
+            if r.get("market_strat") != "PURE_MARTINGALE":
+                print(f" • [상승장 추세 엔진 (BULL)]")
+                print(f"   - 포지션 청산 횟수:  {r['bull_trades']}회 (승률: {r['bull_win_rate']:.1f}%)")
+                print(f"   - 트레일링 익절:     {r['bull_ts_exits']}회 | 긴급 손절: {r['bull_sl_exits']}회")
+                print(f"   - 200선 이탈 부분손절: {r['regime_switches']}회 (손절률: {REGIME_SWITCH_LIQUIDATION_PCT.get(m, 0.7)*100:.0f}%)")
+                print(f" • [하락장 방어 엔진 (BEAR)]")
+            else:
+                print(f" • [1-1-2-4 순환 마틴게일 & 매직스플릿]")
             print(f"   - 바스켓 일괄 익절:   {r['bear_basket_exits']}회")
             print(f"   - 매직스플릿 개별익절: {r['bear_tranche_exits']}회")
             print(f"   - 최대 투입 금액:    {r['max_bear_capital']:,.0f}원 (최대 도달 차수: {r['max_bear_steps']}차)")

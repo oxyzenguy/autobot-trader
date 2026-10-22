@@ -27,6 +27,7 @@ class TestStopLossRecovery(unittest.TestCase):
         with open(self.state_path, "w", encoding="utf-8") as handle:
             json.dump({
                 "market": "KRW-ETH",
+                "strategy_engine": "LEGACY",
                 "current_regime": "BULL",
                 "initial_entry_done": True,
                 "bot_quantity": 0.1,
@@ -66,6 +67,8 @@ class TestStopLossRecovery(unittest.TestCase):
                 get_hybrid_regime_and_signals=lambda market: {
                     "is_bull": True, "signal": signal, "ma5": self.exchange.price,
                 },
+                get_market_strategy=lambda market: "HYBRID",
+                is_adaptive_grid_enabled=lambda market: False,
             ),
             patch.object(db_logger, "DB_PATH", self.db_path),
             patch.object(main.os, "replace", side_effect=replace),

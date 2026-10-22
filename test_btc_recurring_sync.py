@@ -190,6 +190,31 @@ class TestBtcRecurringSync(unittest.TestCase):
         conn.close()
         self.assertEqual(count, 2)
 
+    def test_sync_preserves_unsettled_fallback_checkpoint(self):
+        """정기 동기화는 미확정 주문의 보조 영속 체크포인트를 삭제하지 않아야 합니다."""
+        from strategy import btc_accumulator as btc
+        from pathlib import Path
+        cp_path = btc._get_btc_checkpoint_path()
+
+        # 보조 체크포인트 생성 (미확정 주문 존재 상태)
+        btc._save_btc_fallback_checkpoint({
+            "date": "2026-10-05",
+            "pending_buy_order": {"uuid": "unsettled-uuid", "tier": 1}
+        })
+        self.assertTrue(Path(cp_path).exists())
+
+        # 정기 동기화 실행 (orders=[])
+        sync_upbit_btc_recurring_buys(upbit_client=None, start_date="2026-09-24", orders=[])
+
+        # 동기화 후에도 보조 체크포인트가 보존되어야 함
+        self.assertTrue(Path(cp_path).exists())
+        state = load_btc_state()
+        self.assertIsNotNone(state.get("pending_buy_order"))
+        self.assertEqual(state["pending_buy_order"]["uuid"], "unsettled-uuid")
+
+        # 정리
+        btc._clear_btc_fallback_checkpoint()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -296,16 +296,17 @@ def calculate_adaptive_buy_prices(
         s_id = s_info["squad_id"]
         s_stg = s_info["squad_stage"]
         units = s_info.get("units", multipliers[(s_stg - 1) % len(multipliers)])
-        step_idx = legacy_count + (s_id - 1) * 4 + (s_stg - 1)
+        stage_idx = (s_stg - 1)
+        step_idx = stage_idx
 
-        # Step Scale 적용 (차수가 깊어질수록 1.25배씩 간격 확장)
+        # Step Scale 적용 (스쿼드 내 차수가 깊어질수록 1.25배씩 간격 확장)
         try:
-            scale_factor = (step_scale ** step_idx) if step_scale > 1.0 else 1.0
+            scale_factor = (step_scale ** stage_idx) if step_scale > 1.0 else 1.0
         except OverflowError:
             scale_factor = float('inf')
 
         # Crisis Guard (비상용 재고 가중치 보존 훅)
-        inv_factor = (1.0 + step_idx * 0.05) if inventory_guard else 1.0
+        inv_factor = (1.0 + stage_idx * 0.05) if inventory_guard else 1.0
 
         eff_drop = min(max_drop_pct, base_drop * scale_factor * inv_factor)
         cum_price = cum_price * (1.0 - eff_drop)

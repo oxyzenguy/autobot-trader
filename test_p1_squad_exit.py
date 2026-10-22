@@ -155,6 +155,8 @@ class TestSquadExit(unittest.TestCase):
                 get_upbit_client=lambda: exchange,
                 load_strategy_state=lambda m: state,
                 save_strategy_state=save_state,
+                load_trailing_exit_recovery=lambda m: None,
+                save_trailing_exit_recovery=lambda m, r: None,
                 check_krw_balance_alert=lambda *args, **kwargs: 1_000_000.0,
                 send_telegram_alert=lambda msg: None,
                 safe_get_current_price=get_price,
@@ -163,6 +165,7 @@ class TestSquadExit(unittest.TestCase):
                     "signal": signal,
                     "ma5": price,
                 },
+                is_adaptive_grid_enabled=lambda m: False,
                 log_real_trade=lambda **trade: logged.append(trade),
             ),
             patch.object(main.time, "sleep", side_effect=stop_after_decision),
@@ -321,6 +324,7 @@ class TestSquadExit(unittest.TestCase):
             "initial_entry_done": True,
             "bot_quantity": 0.3,
             "bot_avg_price": 106_666.67,
+            "basket_limit_ask": {"uuid": "basket-old", "price": 107_520.0, "volume": 0.3},
             "tranches": [
                 {"tranche_id": 1, "step": 1, "squad_id": 1, "squad_stage": 1, "volume": 0.1, "buy_price": 100_000.0},
                 {"tranche_id": 2, "step": 2, "squad_id": 1, "squad_stage": 2, "volume": 0.1, "buy_price": 100_000.0},
@@ -432,7 +436,8 @@ class TestSquadExit(unittest.TestCase):
             "trades": [{"funds": "4750.0"}],  # 0.05 @ 95,000
         }
 
-        with patch.object(main, "save_strategy_state", return_value=True):
+        with patch.object(main, "save_strategy_state", return_value=True), \
+             patch.object(main, "log_real_trade", return_value=None):
             # First reconcile: partial fill of 0.05
             ok = main.reconcile_bear_limit_buys(client, "KRW-ETH", state)
             self.assertTrue(ok)
@@ -519,6 +524,150 @@ class TestSquadExit(unittest.TestCase):
         )
         self.assertEqual("BASKET", decision_basket["exit_type"])
 
+    def test_limit_exit_buy_cancel_race_preserves_new_buy_fill(self):
+        """지정가 익절 체결 감지 후 잔여 매수 주문 취소 중 체결된 신규 매수분은 장부에 보존되어야 합니다."""
+        class CancelBuyRaceExchange(SquadFakeExchange):
+            def cancel_order(self, identifier):
+                if identifier == "open-bid":
+                    self.holdings += 0.05
+                    self.orders[identifier].update(executed_volume="0.05", trades=[{"funds": "4500"}])
+                return super().cancel_order(identifier)
+
+        for market in ("KRW-ETH", "KRW-SOL"):
+            protected = main.PROTECTED_BALANCES[market]
+            exchange = CancelBuyRaceExchange(protected, 99000.0, market)
+            bid = {"uuid": "open-bid", "side": "bid", "price": "90000", "state": "wait", "executed_volume": "0", "trades": []}
+            exchange.open_orders = [copy.deepcopy(bid)]
+            exchange.orders = {
+                "open-bid": bid,
+                "filled-ask": {
+                    "uuid": "filled-ask", "side": "ask", "state": "done",
+                    "executed_volume": "0.1", "trades": [{"funds": "10500"}]
+                }
+            }
+            state = {
+                "market": market, "current_regime": "BEAR", "bot_quantity": 0.1, "bot_avg_price": 100000.0,
+                "initial_entry_done": True, "basket_limit_ask": {"uuid": "filled-ask", "price": 105000.0, "volume": 0.1},
+                "tranches": [{"tranche_id": 1, "step": 1, "squad_id": 1, "squad_stage": 1, "volume": 0.1, "buy_price": 100000.0}],
+                "bear_limit_buys": {"open-bid": {"state": "wait", "units": 1, "squad_id": 1, "squad_stage": 2, "executed_volume": 0.0, "executed_funds": 0.0}}
+            }
+            _, logged, _ = self.run_strategy_tick(exchange, state, 99000.0, market=market)
+
+            self.assertEqual(state["bot_quantity"], 0.05)
+            self.assertEqual(len(state["tranches"]), 1)
+            self.assertEqual(state["tranches"][0]["volume"], 0.05)
+            self.assertFalse(state.get("trading_halted", False))
+            logged_ask_vol = sum(t["volume"] for t in logged if t["side"] == "ask")
+            self.assertEqual(logged_ask_vol, 0.1)
+
+    def test_limit_exit_and_buy_fill_concurrently_before_tick(self):
+        """점검 전 지정가 매도 0.1개와 지정가 매수 0.05개가 모두 체결된 경우(잔고 0.05 != 0), 매도와 매수가 모두 정상 정산되어 장부가 0.05로 일치해야 합니다."""
+        for market in ("KRW-ETH", "KRW-SOL"):
+            protected = main.PROTECTED_BALANCES[market]
+            exchange = SquadFakeExchange(protected + 0.05, 99000.0, market)
+            exchange.open_orders = []
+            exchange.orders = {
+                "filled-bid": {
+                    "uuid": "filled-bid", "side": "bid", "price": "90000", "state": "done",
+                    "executed_volume": "0.05", "trades": [{"funds": "4500"}]
+                },
+                "filled-ask": {
+                    "uuid": "filled-ask", "side": "ask", "price": "105000", "state": "done",
+                    "executed_volume": "0.1", "trades": [{"funds": "10500"}]
+                }
+            }
+            state = {
+                "market": market, "current_regime": "BEAR", "bot_quantity": 0.1, "bot_avg_price": 100000.0,
+                "initial_entry_done": True, "basket_limit_ask": {"uuid": "filled-ask", "price": 105000.0, "volume": 0.1},
+                "tranches": [{"tranche_id": 1, "step": 1, "squad_id": 1, "squad_stage": 1, "volume": 0.1, "buy_price": 100000.0}],
+                "bear_limit_buys": {"filled-bid": {"state": "wait", "units": 1, "squad_id": 1, "squad_stage": 2, "executed_volume": 0.0, "executed_funds": 0.0}}
+            }
+            _, logged, _ = self.run_strategy_tick(exchange, state, 99000.0, market=market)
+
+            self.assertEqual(state["bot_quantity"], 0.05)
+            self.assertEqual(len(state["tranches"]), 1)
+            self.assertEqual(state["tranches"][0]["volume"], 0.05)
+            self.assertFalse(state.get("trading_halted", False))
+            logged_ask_vol = sum(t["volume"] for t in logged if t["side"] == "ask")
+            self.assertEqual(logged_ask_vol, 0.1)
+            self.assertNotIn("basket_limit_ask", state)
+
+
+    def test_squad_exit_cancels_unheld_deeper_squad_buys_and_sets_rebalance(self):
+        """When Squad 1 hits VWAP target and exits, deeper squad buys with NO held tranches must be cancelled, and rebalance flag set."""
+        for market in ("KRW-ETH", "KRW-SOL"):
+            protected = main.PROTECTED_BALANCES[market]
+            # Squad 1 held (vol 0.1 at 100k, target 103k).
+            # Legacy tranche held (vol 0.1 at 120k).
+            # Avg price = 110k -> basket target 110,880 (not reached at 104k).
+            # Squad 2 has NO held tranches, but has an open buy order at 80,000.
+            exchange = SquadFakeExchange(protected + 0.2, 104_000.0, market)
+            exchange.orders["basket-old"] = {"uuid": "basket-old", "state": "wait"}
+            exchange.orders["sq1-open-buy"] = {"uuid": "sq1-open-buy", "state": "wait", "executed_volume": "0", "trades": []}
+            exchange.orders["sq2-open-buy"] = {"uuid": "sq2-open-buy", "state": "wait", "executed_volume": "0", "trades": []}
+            exchange.open_orders = [
+                {"uuid": "basket-old", "side": "ask", "price": "110880"},
+                {"uuid": "sq1-open-buy", "side": "bid", "price": "90000"},
+                {"uuid": "sq2-open-buy", "side": "bid", "price": "80000"},
+            ]
+
+            state = {
+                "market": market,
+                "current_regime": "BEAR",
+                "initial_entry_done": True,
+                "bot_quantity": 0.2,
+                "bot_avg_price": 110_000.0,
+                "basket_limit_ask": {"uuid": "basket-old", "price": 110_880.0, "volume": 0.2},
+                "tranches": [
+                    {"tranche_id": 1, "step": 1, "squad_id": 1, "squad_stage": 1, "volume": 0.1, "buy_price": 100_000.0},
+                    {"tranche_id": 2, "step": 0, "volume": 0.1, "buy_price": 120_000.0},
+                ],
+                "bear_limit_buys": {
+                    "sq1-open-buy": {"state": "wait", "units": 1, "squad_id": 1, "squad_stage": 2, "executed_volume": 0.0, "executed_funds": 0.0},
+                    "sq2-open-buy": {"state": "wait", "units": 1, "squad_id": 2, "squad_stage": 1, "executed_volume": 0.0, "executed_funds": 0.0},
+                }
+            }
+
+            self.run_strategy_tick(exchange, state, 104_000.0, market=market)
+
+            # Both sq1-open-buy (exited squad) and sq2-open-buy (unheld deeper squad) must be cancelled
+            self.assertIn("sq1-open-buy", exchange.cancelled)
+            self.assertIn("sq2-open-buy", exchange.cancelled)
+            self.assertEqual(state["bear_limit_buys"]["sq1-open-buy"]["state"], "cancel")
+            self.assertEqual(state["bear_limit_buys"]["sq2-open-buy"]["state"], "cancel")
+            # Rebalance flag must be set to True
+            self.assertTrue(state.get("bear_buy_rebalance_pending", False))
+
+    def test_adaptive_buy_prices_squad_scaling_independent(self):
+        """New squads (e.g. Squad 8 Stage 1) must start with base_drop (stage_idx = 0), not explode with squad index."""
+        from strategy.adaptive_grid import calculate_adaptive_buy_prices
+        base_p = 3_400_000.0
+        natr = 0.015  # 1.5% -> base_drop = 1.35%
+        state_sq8 = {
+            "tranches": [],
+            "bear_limit_buys": {}
+        }
+        # Simulate planned stages starting after Squad 7 Stage 4
+        orders = calculate_adaptive_buy_prices(
+            base_price=base_p,
+            natr=natr,
+            current_step=0,
+            num_orders=3,
+            max_steps=9999,
+            step_scale=1.25,
+            state=state_sq8,
+            existing_stages=[(7, 4)]  # next will be Squad 8 Stage 1
+        )
+        self.assertEqual(len(orders), 3)
+        self.assertEqual(orders[0]["squad_id"], 8)
+        self.assertEqual(orders[0]["squad_stage"], 1)
+        # Stage 1 drop should be base_drop (0.0135), NOT capped at 0.05
+        self.assertAlmostEqual(orders[0]["drop_pct"], 0.0135, places=4)
+        # Stage 2 drop should be base_drop * 1.25 = 0.016875
+        self.assertAlmostEqual(orders[1]["drop_pct"], 0.0135 * 1.25, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

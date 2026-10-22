@@ -1,8 +1,10 @@
 import requests
 from api.auth import build_query_string, get_headers
 from config import BASE_URL
+from utils.account_coordination import raw_mutation_guard
 
 
+@raw_mutation_guard
 def create_order(market: str, side: str, volume: str, price: str, ord_type: str):
     """주문 생성 (side: bid/ask, ord_type: limit/price/market)"""
     body = {
@@ -40,6 +42,7 @@ def get_open_orders(market: str):
     return None
 
 
+@raw_mutation_guard
 def cancel_orders(uuids: list):
     """미체결 주문 취소 (uuid 목록)"""
     results = []

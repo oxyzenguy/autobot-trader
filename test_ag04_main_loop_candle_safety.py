@@ -545,6 +545,39 @@ class TestAG04MainLoopCandleSafety(unittest.TestCase):
         self.assertEqual(1, len(ex.limit_sells))
         self.assertTrue(state.get("bear_buy_rebalance_pending", False))
 
+    def test_valid_candles_in_buffer_zone_allows_buying(self):
+        """200MA 완충구간(is_bull=None, regime=HOLD)에서도 정상 캔들이면 PURE_MARTINGALE 매수 주문이 차단되지 않아야 합니다."""
+        market = "KRW-ETH"
+        price = 3_700_000.0
+        prot = main.PROTECTED_BALANCES[market]
+
+        # Flat candles: exactly on 200 MA (distance 0.0% -> buffer zone -> is_bull is None)
+        buffer_df = make_sample_candle_df(220, base_price=price, corrupt_last=False)
+        for col in ["open", "high", "low", "close"]:
+            buffer_df[col] = price
+        _CANDLE_CACHE[market] = {"df": buffer_df, "timestamp": time.time()}
+
+        state = {
+            "market": market,
+            "current_regime": "BEAR",
+            "initial_entry_done": True,
+            "strategy_engine": "ADAPTIVE_GRID_C_E",
+            "bot_quantity": 0.10,
+            "bot_avg_price": 4_000_000.0,
+            "tranches": [
+                {"tranche_id": 1, "step": 1, "squad_id": 1, "squad_stage": 1, "units": 1, "volume": 0.10, "buy_price": 4_000_000.0}
+            ],
+            "bear_limit_buys": {},
+            "basket_limit_ask": None,
+        }
+
+        ex = SquadFakeExchange(prot + 0.10, price, market=market)
+        self.run_single_tick(market, ex, state, price)
+
+        # Buffer zone should NOT block buying when candles are numerically valid
+        self.assertEqual(3, len(ex.limit_buys), f"Expected 3 limit buys in buffer zone, got {len(ex.limit_buys)}")
+        self.assertFalse(state.get("bear_buy_rebalance_pending", True))
+
 
 if __name__ == "__main__":
     unittest.main()

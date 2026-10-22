@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import copy
+import os
 import sys
+import tempfile
 import types
 import unittest
 from datetime import datetime
 from unittest.mock import Mock, patch
 
 from strategy import btc_accumulator
+from utils import db_logger
 
 
 class DueDatetime(datetime):
@@ -68,6 +71,16 @@ class FakeExchange:
 
 class TestP1BtcFillReproduction(unittest.TestCase):
     def setUp(self):
+        # 운영 trade_history.db 격리: 테스트마다 새 임시 SQLite만 사용한다.
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        self.db_path = os.path.join(temp_dir.name, "isolated.db")
+        isolated = patch.object(db_logger, "DB_PATH", self.db_path)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+        isolated_btc = patch.object(btc_accumulator, "DB_PATH", self.db_path)
+        isolated_btc.start()
+        self.addCleanup(isolated_btc.stop)
         self.initial_state = {
             "last_buy_date": None,
             "last_buy_amount": 0,

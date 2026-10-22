@@ -1,12 +1,19 @@
+from utils.account_coordination import raw_mutation_guard
+
+
+@raw_mutation_guard
 def buy_market(upbit, ticker, amount):
     return upbit.buy_market_order(ticker, amount)
 
+@raw_mutation_guard
 def sell_market(upbit, ticker, volume):
     return upbit.sell_market_order(ticker, volume)
 
+@raw_mutation_guard
 def buy_limit(upbit, ticker, price, volume):
     return upbit.buy_limit_order(ticker, price, volume)
 
+@raw_mutation_guard
 def sell_limit(upbit, ticker, price, volume):
     return upbit.sell_limit_order(ticker, price, volume)
 

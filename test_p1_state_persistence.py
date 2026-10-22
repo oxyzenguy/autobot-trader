@@ -21,6 +21,7 @@ class TestStateSaveFailure(unittest.TestCase):
         protected = main.PROTECTED_BALANCES["KRW-ETH"]
         original_state = {
             "market": "KRW-ETH",
+            "strategy_engine": "LEGACY",
             "current_regime": "BULL",
             "trailing_stop_active": True,
             "trend_peak_price": 120_000.0,
@@ -66,6 +67,8 @@ class TestStateSaveFailure(unittest.TestCase):
                         "signal": "HOLD",
                         "ma5": 115_000.0,
                     },
+                    get_market_strategy=lambda market: "HYBRID",
+                    is_adaptive_grid_enabled=lambda market: False,
                     log_real_trade=lambda **trade: logged.append(trade),
                 ),
                 patch.dict(main._last_saved_state_strings, {}, clear=True),
@@ -103,6 +106,7 @@ class TestTrailingExitRecovery(unittest.TestCase):
         with open(self.state_path, "w", encoding="utf-8") as handle:
             json.dump({
                 "market": "KRW-ETH",
+                "strategy_engine": "LEGACY",
                 "current_regime": "BULL",
                 "trailing_stop_active": True,
                 "trend_peak_price": 120_000.0,
@@ -140,6 +144,8 @@ class TestTrailingExitRecovery(unittest.TestCase):
                 get_hybrid_regime_and_signals=lambda market: {
                     "is_bull": True, "signal": "HOLD", "ma5": 115_000.0,
                 },
+                get_market_strategy=lambda market: "HYBRID",
+                is_adaptive_grid_enabled=lambda market: False,
             ),
             patch.object(db_logger, "DB_PATH", self.db_path),
             patch.object(main.os, "replace", side_effect=replace),

@@ -480,9 +480,9 @@ def get_all_active_strategies() -> List[Dict[str, Any]]:
     # 전략별 맞춤 명칭
     strat_names = {
         "KRW-BTC": "비트코인(BTC) 계층형 가중 적립",
-        "KRW-ETH": "이더리움(ETH) 하이브리드 전략",
+        "KRW-ETH": "이더리움(ETH) 1-1-2-4 순환 마틴게일 매직스플릿",
         "KRW-SOL": "솔라나(SOL) 하이브리드 전략",
-        "KRW-XRP": "리플(XRP) 마틴게일 물타기"
+        "KRW-XRP": "리플(XRP) 그리드 스캘퍼 & 곰마파"
     }
 
     for market in configured_markets:

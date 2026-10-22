@@ -1,4 +1,5 @@
 import os
+
 from pathlib import Path
 import pyupbit
 from dotenv import load_dotenv
@@ -86,17 +87,108 @@ MAX_PYRAMID_STEPS = 20               # 최대 누적 차수
 REGIME_SWITCH_BUFFER_PCT = 0.003      # 200 MA 기준 ±0.3% 완충 구간 (이전 0.1% → 잔파동 오판 방지 강화)
 REGIME_SWITCH_CONFIRMATION_CANDLES = 3  # 확정 1시간봉 3개 연속 확인 필요 (이전 2개 → 최소 3시간 연속 하회 시만 BEAR 전환)
 
-# 하이브리드 하락장(BEAR) 마틴게일 매직스플릿 방어 설정 (Dual Exit: 바스켓 +0.5% OR 개별 +3%)
+# 하이브리드 하락장(BEAR) 마틴게일 매직스플릿 방어 설정 (Dual Exit: 바스켓 익절 OR 개별 차수 반등 익절)
 USE_MAGIC_SPLIT_DEFENSE = True       # 매직스플릿 개별 익절 병행 방어 모드
-MAGIC_SPLIT_TRANCHE_PROFIT = 0.03   # 개별 차수 반등 시 단독 익절 목표 마진 (+3.0%)
-MAGIC_SPLIT_DOWN_PCT = 0.04         # 추가 차수 물타기 간격 (-4.0%)
+MAGIC_SPLIT_DOWN_PCTS = {
+    "KRW-ETH": 0.007,  # 이더리움: 초미세 마틴게일 단타형 (-0.7% 빠른 물타기 간격)
+    "KRW-SOL": 0.040,  # 솔라나: (-4.0% 안전 간격)
+}
+MAGIC_SPLIT_TRANCHE_PROFITS = {
+    "KRW-ETH": 0.012,  # 이더리움: 초미세 마틴게일 단타형 (+1.2% 개별 차수 반등 단독 익절)
+    "KRW-SOL": 0.030,  # 솔라나: (+3.0% 개별 차수 반등 단독 익절)
+}
+MAGIC_SPLIT_TRANCHE_PROFIT = 0.03   # 기본 하위 호환용 개별 차수 반등 시 단독 익절 목표 마진 (+3.0%)
+MAGIC_SPLIT_DOWN_PCT = 0.04         # 기본 하위 호환용 추가 차수 물타기 간격 (-4.0%)
 MARTINGALE_MULTIPLIERS = [1, 1, 2, 4]  # 기본 마틴게일 투입 스케줄 (1-1-2-4)
 
+import ast
+
+_last_config_mtime = 0.0
+
+def _sync_config_from_disk():
+    global _last_config_mtime, PROFIT_MARGINS, MAGIC_SPLIT_DOWN_PCTS, MAGIC_SPLIT_TRANCHE_PROFITS, MARKET_STRATEGIES
+    try:
+        cfg_path = os.environ.get("AUTOTRADE_CONFIG_PATH") or os.path.abspath(__file__)
+        if not os.path.exists(cfg_path):
+            return
+        mtime = os.path.getmtime(cfg_path)
+        if mtime <= _last_config_mtime:
+            return
+        _last_config_mtime = mtime
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=cfg_path)
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        if target.id in ("PROFIT_MARGINS", "MAGIC_SPLIT_DOWN_PCTS", "MAGIC_SPLIT_TRANCHE_PROFITS", "MARKET_STRATEGIES"):
+                            try:
+                                val = ast.literal_eval(node.value)
+                                globals()[target.id] = val
+                            except Exception:
+                                pass
+    except Exception:
+        pass
+
+def get_magic_split_down_pct(market: str) -> float:
+    """해당 마켓의 마틴게일 매직스플릿 물타기 간격을 반환합니다."""
+    _sync_config_from_disk()
+    return MAGIC_SPLIT_DOWN_PCTS.get(market, MAGIC_SPLIT_DOWN_PCT)
+
+def get_magic_split_tranche_profit(market: str) -> float:
+    """해당 마켓의 매직스플릿 개별 차수 단독 익절 마진을 반환합니다."""
+    _sync_config_from_disk()
+    return MAGIC_SPLIT_TRANCHE_PROFITS.get(market, MAGIC_SPLIT_TRANCHE_PROFIT)
+
+# 마켓별 운용 전략 모델 설정
+# - "HYBRID": 200 MA 기반 상승장(추세/적립/트레일링) + 하락장(마틴게일 매직스플릿) 국면전환 전략
+# - "PURE_MARTINGALE": 국면전환/손절 없이 24시간 1-1-2-4 무제한 순환 마틴게일 매직스플릿 (이더리움 최적화)
+MARKET_STRATEGIES = {
+    "KRW-ETH": "PURE_MARTINGALE",
+    "KRW-SOL": "HYBRID",
+}
+
+def get_market_strategy(market: str) -> str:
+    """해당 마켓의 운용 전략 모델을 반환합니다."""
+    _sync_config_from_disk()
+    return MARKET_STRATEGIES.get(market, "HYBRID")
+
+# C-E 적응형 그리드(Adaptive Grid) 전략 실전 활성화 Feature Flag
+# 주의: 전략 간 혼선 및 사이클 내 전략 뒤섞임 방지를 위해 무중단 동적 동기화에서 배제되며, 반드시 프로세스 재시작 시에만 반영됩니다.
+USE_ADAPTIVE_GRID = {
+    "KRW-BTC": False,
+    "KRW-ETH": True,   # ETH C-E 실전 엔진 활성화
+    "KRW-SOL": True,   # SOL C-E 실전 엔진 활성화 (동적 변동성 그리드 전환)
+}
+
+# C-E 적응형 그리드 섀도우 모드(Shadow Mode) 활성화 플래그
+# - 실제 매매는 기존 전략으로 100% 집행하되, C-E 신호를 백그라운드에서 병행 계산하여 로그 대조 기록
+# (프로세스 기동 시 로드)
+ENABLE_ADAPTIVE_GRID_SHADOW = {
+    "KRW-BTC": False,
+    "KRW-ETH": False,  # ETH 실전 전환 완료 (섀도우 OFF)
+    "KRW-SOL": False,
+}
+
+def is_adaptive_grid_enabled(market: str) -> bool:
+    """
+    해당 마켓의 C-E 적응형 그리드 전략 실전 활성화 여부를 반환합니다.
+    (안전 원칙: 봇 재기동 시에만 새 설정이 적용되며 무중단 핫스왑은 차단됩니다)
+    """
+    return USE_ADAPTIVE_GRID.get(market, False)
+
+def is_adaptive_grid_shadow_enabled(market: str) -> bool:
+    """
+    해당 마켓의 C-E 적응형 그리드 섀도우 모드 활성화 여부를 반환합니다.
+    (안전 원칙: 봇 재기동 시에만 새 설정이 적용됩니다)
+    """
+    return ENABLE_ADAPTIVE_GRID_SHADOW.get(market, False)
+
 # 국면 전환 (BULL ➔ BEAR: 200 MA 하향 돌파 시) 부분 손절 비율
-# ETH: 50% 부분 손절 후 남은 50%는 마틴게일로 인계하여 물타기 탈출
+# ETH: 순수 마틴게일 모드로 200선 국면전환 손절 배제 (0.00)
 # SOL: 70% 부분 손절 후 남은 30%만 마틴게일로 인계하여 폭락 리스크 차단
 REGIME_SWITCH_LIQUIDATION_PCT = {
-    "KRW-ETH": 0.50,  # 이더리움: 50% 손절
+    "KRW-ETH": 0.00,  # 이더리움: 국면전환 손절 없음 (순수 마틴게일 100% 방어)
     "KRW-SOL": 0.70,  # 솔라나: 70% 손절
 }
 
@@ -117,16 +209,24 @@ MARTINGALE_MAX_STEPS = {
 # 종목별 맞춤 익절 마진 (1단계 추천 적용: SOL 0.5%, ETH 0.8%)
 PROFIT_MARGINS = {
     "KRW-SOL": 1.005,  # 솔라나: +0.5% (초단타 빠른 회전)
-    "KRW-ETH": 1.008,  # 이더리움: +0.8% (추세 반영 최적 마진)
+    "KRW-ETH": 1.005,  # 이더리움: +0.5% (초단타 빠른 회전)
     "KRW-BTC": 1.005,  # 비트코인: +0.5%
 }
 
 # 텔레그램 정기 현황 브리핑 발송 시각 (KST 기준 하루 4회: 09:30, 12:40, 16:40, 19:00)
 TELEGRAM_BRIEFING_SCHEDULE = ["09:30", "12:40", "16:40", "19:00"]
 
+# 텔레그램 정기 시스템 감사 리포트 발송 시각 (KST 기준 하루 2회: 08:00, 17:00)
+AUDITOR_SCHEDULE = ["08:00", "17:00"]
+AUDITOR_SILENT_WATCHDOG_INTERVAL_SEC = 60      # 비상 생존 감시 주기 (1분)
+AUDITOR_HEARTBEAT_STALL_TIMEOUT_SEC = 2400     # 하트비트 스톨 기준 시간 (40분)
+MAX_AUTO_HEAL_ATTEMPTS_PER_HOUR = 3            # 1시간 내 최대 자동 재기동 횟수 (무한 루프 방지)
+
+
 
 def get_profit_margin(market: str) -> float:
     """해당 마켓의 익절 목표 마진을 반환합니다."""
+    _sync_config_from_disk()
     return PROFIT_MARGINS.get(market, 1.005)
 
 
@@ -176,7 +276,14 @@ def get_upbit_client():
     ak, sk = get_upbit_keys()
     if not ak or not sk:
         raise ValueError("업비트 API 키가 설정되지 않았습니다. .env 파일 또는 Streamlit Secrets를 확인해주세요.")
-    return pyupbit.Upbit(ak, sk)
+    from pathlib import Path
+    import sys
+    from utils.account_coordination import CoordinatedUpbit, register_legacy_process
+    client = CoordinatedUpbit(pyupbit.Upbit(ak, sk))
+    entry = getattr(sys.modules.get("__main__"), "__file__", "")
+    if entry and Path(entry).resolve() == Path(__file__).resolve().parent / "main.py":
+        register_legacy_process()
+    return client
 
 
 def load_investments():
