@@ -3578,7 +3578,7 @@ def send_telegram_g60_briefing(filter_market: Optional[str] = None):
 
 def telegram_hourly_briefing_worker():
     """
-    지정된 정기 시각(09:30, 12:40, 16:40, 19:00 KST, 하루 4회)에
+    지정된 정기 시각(08:30, 18:00 KST, 하루 2회)에
     계좌 및 전략 현황 브리핑을 텔레그램으로 자동 발송하는 백그라운드 워커
     """
     schedule_str = ", ".join(TELEGRAM_BRIEFING_SCHEDULE)
@@ -3686,7 +3686,7 @@ def telegram_command_listener_worker():
                                 "• <code>/전략승인 SOL</code> : 제안된 솔라나 최적화 파라미터 승인 및 반영\n"
                                 "• <code>/전략승인 ETH</code> : 제안된 이더리움 최적화 파라미터 승인 및 반영\n"
                                 "• <code>/감사</code> : 3대 봇 프로세스 및 DB/주문 무결성 정밀 감사\n\n"
-                                "💡 가상자산 브리핑: 09:30, 12:40, 16:40, 19:00 자동 발송\n"
+                                "💡 가상자산 브리핑: 08:30, 18:00 자동 발송\n"
                                 "💡 TQQQ 미국주식: 매일 22:35 주문 결과 자동 보고\n"
                                 "💡 정기 감사: 06:00, 14:00, 22:00 (8시간 주기)"
                             )
