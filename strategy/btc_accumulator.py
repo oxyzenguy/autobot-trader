@@ -366,6 +366,37 @@ _last_btc_ma200_time = 0.0
 _last_valid_btc_price = 0.0
 
 
+def get_btc_recent_dca_avg_price(days: int = 30) -> float:
+    """
+    최근 N일간(기본 30일) 체결된 BTC 매수 주문(DB 기준)의 거래량 가중 평균가(VWAP)를 반환합니다.
+    - DB 조회 성공 시: SUM(cost_or_revenue) / SUM(volume)
+    - DB에 최근 주문이 없거나 오류 발생 시: load_btc_state().get("dca_avg_price", 0.0)로 폴백
+    """
+    try:
+        if not os.path.exists(DB_PATH):
+            return float(load_btc_state().get("dca_avg_price", 0.0))
+
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COALESCE(SUM(cost_or_revenue), 0.0), COALESCE(SUM(volume), 0.0)
+            FROM trades
+            WHERE market = 'KRW-BTC' AND side = 'bid'
+              AND timestamp >= ?
+        """, (cutoff,))
+        row = cur.fetchone()
+        conn.close()
+
+        if row and row[1] > 0:
+            return float(row[0]) / float(row[1])
+    except Exception as e:
+        print(f"[WARN] [KRW-BTC] 최근 {days}일 DCA 평단가 계산 실패: {e}")
+
+    # 폴백: 상태 파일의 누적 적립평단가
+    return float(load_btc_state().get("dca_avg_price", 0.0))
+
+
 def get_btc_200ma() -> float:
     """업비트 일봉 200일 이동평균선(200 SMA) 조회 및 계산 (결과 5분 캐싱 및 장애 시 이전값 활용)"""
     global _last_valid_btc_ma200, _last_btc_ma200_time
@@ -390,9 +421,9 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
     """
     현재 비트코인의 계층형 가중 적립 상태 및 조건 판정:
     - 현재가 vs 200일선 (시장 대세 하락 여부)
-    - 현재가 vs 내 계좌 BTC 평단가 (계좌 마이너스 세일 여부)
+    - 현재가 vs 최근 30일 적립평단가(DCA VWAP) (단기 적립 세일 여부, 누적적립평단/계좌평단으로 폴백)
     - 계층 판정:
-      - Tier 0: 0원 추가 (맑음: 상승장 & 계좌 플러스)
+      - Tier 0: 0원 추가 (맑음: 상승장 & 적립평단 상회)
       - Tier 1: 10,000원 추가 (흐림: 둘 중 하나 만족)
       - Tier 2: 20,000원 추가 (폭풍우: 둘 다 만족 = 역대급 바겐세일)
     """
@@ -428,6 +459,21 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
         except Exception as e:
             print(f"[WARN] [KRW-BTC] 계좌 잔고 조회 실패: {e}")
 
+    # 30일 DCA VWAP 조회 (1안 기준선: 30일 적립평단 -> 누적 적립평단 -> 계좌 평단 순 폴백)
+    dca_30d_avg_p = get_btc_recent_dca_avg_price(days=30)
+    state = load_btc_state()
+    cum_dca_avg_p = float(state.get("dca_avg_price", 0.0))
+
+    if dca_30d_avg_p > 0:
+        ref_avg_p = dca_30d_avg_p
+        ref_avg_name = "최근 30일 적립평단"
+    elif cum_dca_avg_p > 0:
+        ref_avg_p = cum_dca_avg_p
+        ref_avg_name = "누적 적립평단"
+    else:
+        ref_avg_p = account_avg_p
+        ref_avg_name = "계좌 평단가"
+
     # [중요 안전장치] 시세(현재가 또는 200일선) 조회 실패 시 매수 판단 즉시 보류
     # (가격 0원을 폭락 바겐세일로 오인하여 2단계 매수가 오발주되는 사고 원천 차단)
     if cur_p <= 0.0 or ma200 <= 0.0:
@@ -437,7 +483,11 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
             "ma200": ma200,
             "account_avg_price": account_avg_p,
             "account_btc_balance": account_btc_bal,
+            "ref_avg_price": ref_avg_p,
+            "ref_avg_name": ref_avg_name,
+            "dca_30d_avg_price": dca_30d_avg_p,
             "dist_avg_pct": 0.0,
+            "dist_ref_pct": 0.0,
             "dist_ma200_pct": 0.0,
             "is_below_avg": False,
             "is_below_ma200": False,
@@ -455,30 +505,30 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
         }
 
     # 조건 판정
-    is_below_avg = (account_avg_p > 0) and (cur_p < account_avg_p)
+    is_below_avg = (ref_avg_p > 0) and (cur_p < ref_avg_p)
     is_below_ma200 = (ma200 > 0) and (cur_p < ma200)
 
     dist_avg_pct = ((cur_p - account_avg_p) / account_avg_p * 100.0) if account_avg_p > 0 else 0.0
+    dist_ref_pct = ((cur_p - ref_avg_p) / ref_avg_p * 100.0) if ref_avg_p > 0 else 0.0
     dist_ma200_pct = ((cur_p - ma200) / ma200 * 100.0) if ma200 > 0 else 0.0
 
     if is_below_avg and is_below_ma200:
         tier = 2
         buy_krw = BTC_UNIT_KRW * 2  # 20,000원
         tier_name = "⛈️ 2단계 역대급 세일 (+20,000원)"
-        tier_reason = "200일선 하회 + 계좌 평단가 하회 (대폭락 바겐세일)"
+        tier_reason = f"200일선 하회 + {ref_avg_name} 하회 (대폭락 바겐세일)"
     elif is_below_avg or is_below_ma200:
         tier = 1
         buy_krw = BTC_UNIT_KRW      # 10,000원
-        sub_desc = "계좌 평단가 하회" if is_below_avg else "200일선 하회"
+        sub_desc = f"{ref_avg_name} 하회" if is_below_avg else "200일선 하회"
         tier_name = f"⛅ 1단계 일반 세일 (+10,000원)"
         tier_reason = f"단기 세일 구간 ({sub_desc})"
     else:
         tier = 0
         buy_krw = 0
         tier_name = "☀️ 정상/상승 (0원 대기)"
-        tier_reason = "상승장 & 수익 구간 (추가 매수 대기)"
+        tier_reason = f"상승장 & {ref_avg_name} 상회 (추가 매수 대기)"
 
-    state = load_btc_state()
     kst_now = datetime.utcnow() + timedelta(hours=9)
     today_kst = kst_now.strftime("%Y-%m-%d")
     already_bought_today = (state.get("last_buy_date") == today_kst)
@@ -489,7 +539,11 @@ def check_btc_tiered_status(upbit_client=None) -> Dict[str, Any]:
         "ma200": ma200,
         "account_avg_price": account_avg_p,
         "account_btc_balance": account_btc_bal,
+        "ref_avg_price": ref_avg_p,
+        "ref_avg_name": ref_avg_name,
+        "dca_30d_avg_price": dca_30d_avg_p,
         "dist_avg_pct": dist_avg_pct,
+        "dist_ref_pct": dist_ref_pct,
         "dist_ma200_pct": dist_ma200_pct,
         "is_below_avg": is_below_avg,
         "is_below_ma200": is_below_ma200,

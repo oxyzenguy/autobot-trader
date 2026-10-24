@@ -315,6 +315,10 @@ def get_strategy_performance(market: str, strategy_name: str = "마틴게일 2x 
             "is_below_avg": is_below_avg,
             "is_below_ma200": is_below_ma200,
             "dist_avg_pct": btc_stat.get("dist_avg_pct", 0.0),
+            "ref_avg_price": btc_stat.get("ref_avg_price", 0.0),
+            "ref_avg_name": btc_stat.get("ref_avg_name", "최근 30일 적립평단"),
+            "dca_30d_avg_price": btc_stat.get("dca_30d_avg_price", 0.0),
+            "dist_ref_pct": btc_stat.get("dist_ref_pct", 0.0),
             "upbit_dca_schedule": btc_stat.get("upbit_dca_schedule", "매일 15:05 (10,000원)"),
             "bot_dca_schedule": btc_stat.get("bot_dca_schedule", "매일 08:55 (0~20,000원)")
         }

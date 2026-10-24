@@ -12,6 +12,7 @@ from strategy.btc_accumulator import (
     load_btc_state,
     save_btc_state,
     check_btc_tiered_status,
+    get_btc_recent_dca_avg_price,
 )
 
 
@@ -214,6 +215,88 @@ class TestBtcRecurringSync(unittest.TestCase):
 
         # 정리
         btc._clear_btc_fallback_checkpoint()
+
+    def test_get_btc_recent_dca_avg_price_window_filtering(self):
+        """최근 30일 이내의 BTC 매수 거래만 가중평균가(VWAP) 계산에 포함되어야 합니다."""
+        from datetime import datetime, timedelta
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM trades")
+
+        now = datetime.now()
+        ts_recent_1 = (now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+        ts_recent_2 = (now - timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+        ts_old = (now - timedelta(days=35)).strftime("%Y-%m-%d %H:%M:%S")
+
+        # 최근 거래 1: 100,000,000원에 0.0001 BTC (10,000원)
+        cur.execute("""
+            INSERT INTO trades (timestamp, ticker, market, side, action, price, volume, cost_or_revenue)
+            VALUES (?, 'BTC', 'KRW-BTC', 'bid', 'BTC_TIERED_BUY_T1', 100000000.0, 0.0001, 10000.0)
+        """, (ts_recent_1,))
+        # 최근 거래 2: 110,000,000원에 0.0002 BTC (22,000원)
+        cur.execute("""
+            INSERT INTO trades (timestamp, ticker, market, side, action, price, volume, cost_or_revenue)
+            VALUES (?, 'BTC', 'KRW-BTC', 'bid', 'BTC_TIERED_BUY_T2', 110000000.0, 0.0002, 22000.0)
+        """, (ts_recent_2,))
+        # 35일 전 과거 거래: 150,000,000원에 0.001 BTC (150,000원) -> 제외되어야 함!
+        cur.execute("""
+            INSERT INTO trades (timestamp, ticker, market, side, action, price, volume, cost_or_revenue)
+            VALUES (?, 'BTC', 'KRW-BTC', 'bid', 'OLD_BUY', 150000000.0, 0.001, 150000.0)
+        """, (ts_old,))
+        conn.commit()
+        conn.close()
+
+        # 최근 30일 VWAP: (10,000 + 22,000) / (0.0001 + 0.0002) = 32,000 / 0.0003 = 106,666,666.67
+        expected_vwap = 32000.0 / 0.0003
+        calculated_vwap = get_btc_recent_dca_avg_price(days=30)
+        self.assertAlmostEqual(calculated_vwap, expected_vwap, places=2)
+
+    def test_check_btc_tiered_status_evaluates_against_recent_dca_vwap(self):
+        """판정 기준이 계좌 전체 평단이 아닌 최근 30일 DCA 평단가 기준으로 평가되어야 합니다."""
+        from datetime import datetime, timedelta
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM trades")
+
+        now = datetime.now()
+        ts_recent = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+
+        # 최근 30일 평단: 110,000,000원 (10,000원에 0.0000909 BTC)
+        cur.execute("""
+            INSERT INTO trades (timestamp, ticker, market, side, action, price, volume, cost_or_revenue)
+            VALUES (?, 'BTC', 'KRW-BTC', 'bid', 'BTC_TIERED_BUY_T1', 110000000.0, 0.00009090909, 10000.0)
+        """, (ts_recent,))
+        conn.commit()
+        conn.close()
+
+        mock_upbit = Mock()
+        # 과거에 비싸게 산 계좌 평단가는 150,000,000원
+        mock_upbit.get_balance.return_value = {
+            "balance": "0.1",
+            "locked": "0.0",
+            "avg_buy_price": "150000000"
+        }
+
+        # Case 1: 현재가 115,000,000원 (30일 평단 1.10억보다 높고, 200일선 1.00억보다 높음)
+        # 계좌평단(1.5억) 기준이면 하회지만, 30일 적립평단 기준이면 상회이므로 Tier 0(쉬어가기)이어야 함!
+        with patch("strategy.btc_accumulator.pyupbit.get_current_price", return_value=115000000.0), \
+             patch("strategy.btc_accumulator.get_btc_200ma", return_value=100000000.0):
+            status = check_btc_tiered_status(mock_upbit)
+            self.assertEqual(status["tier"], 0)
+            self.assertEqual(status["buy_krw"], 0)
+            self.assertFalse(status["is_below_avg"])
+            self.assertFalse(status["is_below_ma200"])
+            self.assertEqual(status["ref_avg_name"], "최근 30일 적립평단")
+
+        # Case 2: 현재가 105,000,000원 (30일 평단 1.10억 하회, 200일선 1.00억 상회) -> Tier 1 (+10,000원)
+        with patch("strategy.btc_accumulator.pyupbit.get_current_price", return_value=105000000.0), \
+             patch("strategy.btc_accumulator.get_btc_200ma", return_value=100000000.0):
+            status = check_btc_tiered_status(mock_upbit)
+            self.assertEqual(status["tier"], 1)
+            self.assertEqual(status["buy_krw"], 10000)
+            self.assertTrue(status["is_below_avg"])
+            self.assertFalse(status["is_below_ma200"])
+            self.assertIn("최근 30일 적립평단 하회", status["tier_reason"])
 
 
 if __name__ == "__main__":
