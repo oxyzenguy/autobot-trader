@@ -992,6 +992,18 @@ class PocketGridRunner:
             print(f"[CRITICAL] [{self.market}] 상태 파일에 비정상 오류 플래그(trading_halted=True)가 설정되어 거래가 중단되었습니다. 수동 점검이 필요합니다.")
             sys.exit(1)
 
+        # 신규 목표 익절폭(profit_pct) 설정에 맞춰 기존 active_grids의 개별 tp_p 동기화 (파라미터 변경 시 신속 반영)
+        updated_tp = False
+        for g in state.get("active_grids", []):
+            buy_p = float(g.get("buy_p", 0.0) or 0.0)
+            if buy_p > 0:
+                expected_tp = buy_p * (1.0 + self.profit_pct)
+                if abs(float(g.get("tp_p", 0.0) or 0.0) - expected_tp) > 1e-4:
+                    g["tp_p"] = expected_tp
+                    updated_tp = True
+        if updated_tp:
+            self.save_state(state)
+
         # 1. 기동 시 미확정 주문 대사 우선 수행 (P1-R3: 장부 불일치 판정 전 pending 활동 복구)
         pending = state.get("pending_order")
         if pending:
