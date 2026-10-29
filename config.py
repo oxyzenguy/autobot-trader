@@ -106,7 +106,7 @@ import ast
 _last_config_mtime = 0.0
 
 def _sync_config_from_disk():
-    global _last_config_mtime, PROFIT_MARGINS, MAGIC_SPLIT_DOWN_PCTS, MAGIC_SPLIT_TRANCHE_PROFITS, MARKET_STRATEGIES
+    global _last_config_mtime, PROFIT_MARGINS, MAGIC_SPLIT_DOWN_PCTS, MAGIC_SPLIT_TRANCHE_PROFITS, MARKET_STRATEGIES, MARTINGALE_MAX_STEPS
     try:
         cfg_path = os.environ.get("AUTOTRADE_CONFIG_PATH") or os.path.abspath(__file__)
         if not os.path.exists(cfg_path):
@@ -121,10 +121,15 @@ def _sync_config_from_disk():
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        if target.id in ("PROFIT_MARGINS", "MAGIC_SPLIT_DOWN_PCTS", "MAGIC_SPLIT_TRANCHE_PROFITS", "MARKET_STRATEGIES"):
+                        if target.id in ("PROFIT_MARGINS", "MAGIC_SPLIT_DOWN_PCTS", "MAGIC_SPLIT_TRANCHE_PROFITS", "MARKET_STRATEGIES", "MARTINGALE_MAX_STEPS"):
                             try:
                                 val = ast.literal_eval(node.value)
-                                globals()[target.id] = val
+                                cur = globals().get(target.id)
+                                if isinstance(cur, dict) and isinstance(val, dict):
+                                    cur.clear()
+                                    cur.update(val)
+                                else:
+                                    globals()[target.id] = val
                             except Exception:
                                 pass
     except Exception:
@@ -143,6 +148,7 @@ def get_magic_split_tranche_profit(market: str) -> float:
 # 마켓별 운용 전략 모델 설정
 # - "HYBRID": 200 MA 기반 상승장(추세/적립/트레일링) + 하락장(마틴게일 매직스플릿) 국면전환 전략
 # - "PURE_MARTINGALE": 국면전환/손절 없이 24시간 1-1-2-4 무제한 순환 마틴게일 매직스플릿 (이더리움 최적화)
+# - "EXIT_ONLY": 추가 매수 없이 기존 보유 물량 익절만 수행하고 종료 (포켓 이전 대기)
 MARKET_STRATEGIES = {
     "KRW-ETH": "PURE_MARTINGALE",
     "KRW-SOL": "HYBRID",
@@ -202,9 +208,14 @@ MARTINGALE_SCHEDULE = {
 }
 
 MARTINGALE_MAX_STEPS = {
-    "KRW-SOL": 16,    # 솔라나: 최대 16차수(4스쿼드 / 32U) 도달 시 추가 매수 전면 중단 및 반등 홀딩
+    "KRW-SOL": 4,     # 솔라나: 추가 매수 전면 중단 (기존 4차수 유지 후 익절 정리 대기)
     "KRW-ETH": 9999,  # 이더리움: 예수금 허용 한도 내 무제한 스쿼드 투입
 }
+
+def get_martingale_max_steps(market: str) -> int:
+    """해당 마켓의 마틴게일 최대 허용 차수를 반환합니다."""
+    _sync_config_from_disk()
+    return MARTINGALE_MAX_STEPS.get(market, 16 if market == "KRW-SOL" else 9999)
 
 # 종목별 맞춤 익절 마진 (1단계 추천 적용: SOL 0.5%, ETH 0.8%)
 PROFIT_MARGINS = {

@@ -49,6 +49,7 @@ from config import (
     REGIME_SWITCH_LIQUIDATION_PCT,
     MARTINGALE_SCHEDULE,
     MARTINGALE_MAX_STEPS,
+    get_martingale_max_steps,
     STOP_LOSS_COOLDOWN_HOURS,
     REGIME_SWITCH_COOLDOWN_HOURS,
     TELEGRAM_BRIEFING_SCHEDULE,
@@ -1470,12 +1471,25 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 continue
 
             market_strat = get_market_strategy(market)
+            is_exit_only = (market_strat == "EXIT_ONLY" or state.get("exit_only", False))
             sell_profit_margin = get_profit_margin(market)
             regime_info = get_hybrid_regime_and_signals(market)
             confirmed_is_bull = regime_info.get("is_bull")
             candles_valid = bool(regime_info.get("candles_valid", False))
             prev_regime = state.get("current_regime", "BEAR")
-            if market_strat == "PURE_MARTINGALE":
+            if is_exit_only:
+                # EXIT_ONLY 모드: 추가 매수 전면 차단, 오직 기존 보유 물량 익절만 대기 (포켓 이전용)
+                if state.get("current_regime") == "BULL":
+                    state["current_regime"] = "BEAR"
+                    state["active_mode"] = "MARTINGALE_MAGIC_SPLIT"
+                    state["trailing_stop_active"] = False
+                    save_strategy_state(market, state)
+                is_bull = False
+                signal = "HOLD"
+                regime_str = "익절 정리 대기 (EXIT_ONLY)"
+                curr_regime = "BEAR"
+                prev_regime = "BEAR"
+            elif market_strat == "PURE_MARTINGALE":
                 # PURE_MARTINGALE 모드에서는 상승장(BULL) 경로 및 손절/국면전환 청산을 전면 배제합니다.
                 # 만약 이전 저장 상태가 BULL이었다면, 즉시 BEAR 마틴게일 바스켓으로 무손절 안전 인계 마이그레이션 실행
                 if state.get("current_regime") == "BULL":
@@ -1780,7 +1794,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             now_sec = time.time()
             if now_sec - last_heartbeat_time >= 1800:
                 krw_bal = get_krw_balance(upbit)
-                mode_label = "상승 추세모드" if is_bull else ("순수 마틴게일 순환모드" if market_strat == "PURE_MARTINGALE" else "하락 마틴-매직스플릿 방어모드")
+                mode_label = "상승 추세모드" if is_bull else ("익절 정리 모드 (EXIT_ONLY)" if is_exit_only else ("순수 마틴게일 순환모드" if market_strat == "PURE_MARTINGALE" else "하락 마틴-매직스플릿 방어모드"))
                 prot_q = PROTECTED_BALANCES.get(market, 0.0)
                 print(f"[{time.strftime('%H:%M:%S')}] [HEARTBEAT] {ticker}: {current_price:,.0f}원 | [{regime_str} / {mode_label}] | 예수금: {krw_bal:,.0f}원 (미체결: 매도 {num_sell}, 매수 {num_buy} | 봇 보유: {quantity:.6f} | 보호 자산: {prot_q:.4f})")
                 last_heartbeat_time = now_sec
@@ -2241,7 +2255,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                 # A-2. 마틴게일 상태 머신 (주문 등록 및 물타기)
                 martingale_sched = MARTINGALE_SCHEDULE.get(market, MARTINGALE_MULTIPLIERS)
-                max_steps = MARTINGALE_MAX_STEPS.get(market, 16 if market == "KRW-SOL" else 9999)
+                max_steps = get_martingale_max_steps(market)
+                if is_exit_only:
+                    max_steps = min(max_steps, len(state.get("tranches", [])))
                 active_stages = get_existing_stages_from_state(state)
                 if active_stages is None:
                     print(f"[{market}] [CRITICAL] 미체결 주문/트랜치 슬롯 메타데이터 불일치 또는 미확정; 거래를 중단합니다.")
@@ -2249,7 +2265,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     continue
                 max_squad_cap_reached = (market == "KRW-SOL" and any(sid >= 4 and stg >= 4 for sid, stg in active_stages))
                 current_steps = len(state.get("tranches", []))
-                expected_open_buys = 0 if max_squad_cap_reached else max(0, min(3, max_steps - len(active_stages)))
+                expected_open_buys = 0 if (max_squad_cap_reached or is_exit_only) else max(0, min(3, max_steps - len(active_stages)))
 
                 # 그리드 이탈 방지: 시장가가 최고 매수가보다 크게 상승하여 박스권을 이탈한 경우 고립 주문 취소 및 재배치
                 if buy_orders and not max_squad_cap_reached:
@@ -2289,12 +2305,21 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             buy_orders = [o for o in buy_orders if o['uuid'] not in [x['uuid'] for x in orphan_orders_to_cancel]]
                             num_buy = len(buy_orders)
 
-                # SOL 4개 스쿼드(16차수) 등 최대 차수 도달 시 잔여 매수 주문 자동 취소 및 홀딩 관리
-                if (current_steps >= max_steps or max_squad_cap_reached) and num_buy > 0:
-                    print(f"[{market}] 🛑 마틴게일 최대 차수({max_steps}차수 / 4개 스쿼드 32U) 도달로 잔여 매수 주문 {num_buy}건 취소.")
-                    if not all(cancel_order_and_wait(upbit, order['uuid'], market=market, state=state) for order in buy_orders):
+                # SOL 4개 스쿼드(16차수) 등 최대 차수 도달 또는 EXIT_ONLY 모드 시 잔여 매수 주문 자동 취소 및 홀딩 관리
+                if (current_steps >= max_steps or max_squad_cap_reached or is_exit_only) and num_buy > 0:
+                    reason_desc = "익절 정리(EXIT_ONLY)" if is_exit_only else f"최대 차수({max_steps}차수) 도달"
+                    print(f"[{market}] 🛑 마틴게일 {reason_desc}로 잔여 매수 주문 {num_buy}건 취소.")
+                    cancel_ok = True
+                    for order in buy_orders:
+                        if cancel_order_and_wait(upbit, order['uuid'], market=market, state=state):
+                            if order['uuid'] in state.get("bear_limit_buys", {}):
+                                state["bear_limit_buys"][order['uuid']]["state"] = "cancel"
+                        else:
+                            cancel_ok = False
+                    if not cancel_ok:
                         halt_for_order_reconciliation(market, state, {"reason": "마틴게일 매수 주문 취소 미확정"})
                         continue
+                    save_strategy_state(market, state)
                     buy_orders = []
                     num_buy = 0
 
@@ -2470,8 +2495,18 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             continue
 
                         # 2. 최초 1차 진입 조건:
+                        # - EXIT_ONLY: 보유 물량 청산 완료 후 신규 진입 전면 차단 (포켓 이전 대기)
                         # - PURE_MARTINGALE: 상시 1-1-2-4 순환 모드로 잔여 포지션 청산 완료 시 즉시 1차수 시장가 진입
                         # - HYBRID: ClucMay 과매도 낙주(is_cluc_dip) 발생 시에만 진입 허용 (과매도 신호 없으면 현금 보존 관망)
+                        if is_exit_only:
+                            now_sec = time.time()
+                            last_log = getattr(run_trading_strategy, f"_last_exit_log_{ticker}", 0)
+                            if now_sec - last_log >= 300:
+                                setattr(run_trading_strategy, f"_last_exit_log_{ticker}", now_sec)
+                                print(f"[{market}] 🏁 [종료 대기 (EXIT_ONLY)] 봇 보유 물량 전량 정리 완료. 신규 매수 없이 대기합니다.")
+                            time.sleep(10)
+                            continue
+
                         if market_strat != "PURE_MARTINGALE" and signal != "MARTINGALE_BUY_DIP":
                             print(f"[{market}] 🛡️ [하락장 관망] 현재가 200 MA 하회 중. ClucMay 과매도 낙주 신호 대기 (100% 현금 보존 관망).")
                             time.sleep(10)
@@ -2695,8 +2730,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         continue
                     reg_data = {}
                     max_squad_cap_reached = (market == "KRW-SOL" and any(sid >= 4 and stg >= 4 for sid, stg in active_stages))
-                    if max_squad_cap_reached or len(active_stages) >= max_steps:
-                        print(f"[{market}]   - 마틴게일 최대 차수({max_steps}차수 / 4개 스쿼드) 도달: 추가 물타기 매수 생략.")
+                    if max_squad_cap_reached or len(active_stages) >= max_steps or is_exit_only:
+                        print(f"[{market}]   - 마틴게일 최대 차수({max_steps}차수) 도달 또는 익절 정리(EXIT_ONLY) 모드: 추가 물타기 매수 생략.")
                         additional_orders = []
                     elif not candles_valid:
                         print(f"[{market}] ⚠️ [캔들 데이터 검증 대기] 확정 캔들 검증 실패로 추가 물타기 매수 보류 (신규 매수 0건).")
@@ -3297,149 +3332,72 @@ def run_trading_strategy(market: str = "KRW-SOL"):
         time.sleep(5)
 
 
-# --- 텔레그램 정기 현황 브리핑 (오전 8시 ~ 오후 8시, 1시간 간격) ---
+# --- 텔레그램 브리핑 및 현황 조회 핸들러 ---
 def send_telegram_status_briefing():
-    """
-    현재 계좌 잔고 및 코인별 봇 포지션/진행상태를 텔레그램으로 깔끔하게 브리핑
-    """
+    """현재 전 계좌 및 코인별 봇 상태를 텔레그램으로 깔끔하게 통합 브리핑"""
     try:
-        from utils.analytics import get_total_account_summary
-        from strategy.hybrid_regime import get_hybrid_regime_and_signals
-        from utils.market_commentary import get_all_markets_technical_summary, generate_gemini_market_commentary
-
-        acc = get_total_account_summary()
-        tot_equity = acc.get("total_equity", 0.0)
-        krw_bal = acc.get("krw_balance", 0.0)
-        unrealized_pnl = acc.get("unrealized_pnl", 0.0)
-        coin_pnl_pct = acc.get("coin_pnl_pct", 0.0)
-
-        # 실시간 기술적 지표 및 Gemini AI 마켓 코멘터리 생성
-        tech_data = {}
-        ai_commentary = None
-        try:
-            tech_data = get_all_markets_technical_summary()
-            ai_commentary = generate_gemini_market_commentary(tech_data)
-        except Exception as e_comm:
-            print(f"[WARN] 시황 분석 생성 오류: {e_comm}")
-
-        lines = [
-            "📊 <b>[정기 현황 브리핑]</b>",
-            f"• 총 자산: <b>{tot_equity:,.0f}원</b> (평가손익 {unrealized_pnl:+,.0f}원 | {coin_pnl_pct:+.2f}%)",
-            f"• 주문가능 예수금: <b>{krw_bal:,.0f}원</b>",
-        ]
-
-        # G60 서브포켓 요약 한 줄
-        try:
-            s_files = [f"pocket_grid_state_{m}.json" for m in ["KRW_ETH", "KRW_SOL", "KRW_XRP"]]
-            p_pnls = 0.0
-            p_wins = 0
-            p_grids = 0
-            for sf in s_files:
-                sp = os.path.join(BASE_DIR, sf)
-                if os.path.exists(sp):
-                    with open(sp, "r", encoding="utf-8") as f:
-                        sd = json.load(f)
-                        p_pnls += float(sd.get("realized_pnl", 0.0) or 0.0)
-                        p_wins += int(sd.get("win_count", 0) or 0)
-                        p_grids += len(sd.get("active_grids", []))
-            lines.append(f"• ⚡ G60 서브포켓: 실현 <b>{p_pnls:+,.0f}원</b> ({p_wins}회 익절 | 보유 {p_grids}단) (상세: <code>/60</code>)")
-        except Exception:
-            pass
-
-        if ai_commentary:
-            lines.extend([
-                "",
-                "🤖 <b>[Gemini AI 마켓 코멘터리]</b>",
-                f"<i>{ai_commentary}</i>"
-            ])
-
-        lines.append("")
-
-        markets = list(INVESTMENTS.keys())
-        priority_map = {"KRW-BTC": 1, "KRW-ETH": 2, "KRW-SOL": 3}
-        markets.sort(key=lambda x: priority_map.get(x, 99))
-
-        for m in markets:
-            if m == "KRW-BTC":
-                try:
-                    from strategy.btc_accumulator import check_btc_tiered_status, load_btc_state
-                    btc_stat = check_btc_tiered_status(upbit_client=get_upbit_client())
-                    btc_state = load_btc_state()
-                    cur_p = btc_stat.get("current_price", 0.0)
-                    avg_p = btc_stat.get("account_avg_price", 0.0)
-                    tot_bal = btc_stat.get("account_btc_balance", 0.0)
-                    pnl_pct = btc_stat.get("dist_avg_pct", 0.0)
-                    ma200 = btc_stat.get("ma200", 0.0)
-                    dist_ma = btc_stat.get("dist_ma200_pct", 0.0)
-                    today_status = btc_state.get("today_status", "대기")
-                    tier_label = btc_stat.get("tier_name", "대기")
-                    btc_tech = tech_data.get("KRW-BTC", {}).get("summary_line")
-
-                    lines.append(f"<b>[KRW-BTC]</b> 🟡 계층형 가중 모으기 ({cur_p:,.0f}원)")
-                    lines.append(f"• 총 보유: <b>{tot_bal:.6f} BTC</b> (계좌 평단 {avg_p:,.0f}원 | {pnl_pct:+.2f}%)")
-                    lines.append(f"• 200일선: {ma200:,.0f}원 ({dist_ma:+.2f}%) | {tier_label}")
-                    if btc_tech:
-                        lines.append(f"• 시장 시황: {btc_tech}")
-                    lines.append(f"• 적립 상태: 15:05 업비트 1만 + 08:55 봇 ({today_status})")
-                    lines.append("")
-                except Exception as e_btc:
-                    print(f"[WARN] BTC 브리핑 생성 오류: {e_btc}")
-                continue
-
-            ticker = m.split("-")[1]
-            state = load_strategy_state(m)
-            regime_info = get_hybrid_regime_and_signals(m)
-            confirmed_is_bull = regime_info.get("is_bull")
-            if confirmed_is_bull is None:
-                is_bull = (state.get("current_regime") == "BULL")
-            else:
-                is_bull = confirmed_is_bull
-            p = pyupbit.get_current_price(m) or 0.0
-            q = state.get("bot_quantity", 0.0)
-            avg = state.get("bot_avg_price", 0.0)
-            tranches = state.get("tranches", [])
-            pnl_pct = ((p - avg) / avg * 100.0) if avg > 0 else 0.0
-
-            m_strat = get_market_strategy(m)
-            if m_strat == "PURE_MARTINGALE":
-                regime_label = "🟣 순수 마틴게일"
-                margin = (get_profit_margin(m) - 1) * 100
-                prog_label = f"1-1-2-4 순환 {len(tranches)}차수 (바스켓 목표 +{margin:.2f}%)" if q > 0 else "진입 대기 중"
-            elif is_bull:
-                regime_label = "🟢 상승 추세"
-                prog_label = f"정기 적립 {len(tranches)}/{MAX_BULL_DCA_STEPS}회차" if q > 0 else "진입 대기 중"
-            else:
-                regime_label = "🔴 하락 방어"
-                max_s = MARTINGALE_MAX_STEPS.get(m, 16 if m == "KRW-SOL" else 9999)
-                max_str = f"{max_s}차" if max_s < 900 else "무제한"
-                margin = (get_profit_margin(m) - 1) * 100
-                prog_label = f"물타기 {len(tranches)}/{max_str} (바스켓 목표 +{margin:.2f}%)" if q > 0 else "진입 대기 중"
-
-            lines.append(f"<b>[{m}]</b> {regime_label} ({p:,.0f}원)")
-            alt_tech = tech_data.get(m, {}).get("summary_line")
-            if alt_tech:
-                lines.append(f"• 시장 시황: {alt_tech}")
-            if q > 0:
-                lines.append(f"• 봇 보유: {q:.4f} {ticker} (평단 {avg:,.0f}원 | {pnl_pct:+.2f}%)")
-                lines.append(f"• 진행 상태: {prog_label}")
-                if is_bull:
-                    now_kst = datetime.utcnow() + timedelta(hours=9)
-                    today_str = now_kst.strftime("%Y-%m-%d")
-                    closing_st = state.get("today_closing_status")
-                    if state.get("last_closing_buy_date") == today_str and closing_st:
-                        lines.append(f"• 종가 매수: {closing_st}")
-                    elif now_kst.hour < 8 or (now_kst.hour == 8 and now_kst.minute < 55):
-                        lines.append("• 종가 매수: 08:55 판정 대기")
-                    elif closing_st:
-                        lines.append(f"• 종가 매수: {closing_st}")
-            else:
-                lines.append(f"• 봇 보유: 없음 ({prog_label})")
-            lines.append("")
-
-        send_telegram_alert("\n".join(lines).strip())
-        print(f"[{time.strftime('%H:%M:%S')}] [BRIEFING] 텔레그램 정기 현황 브리핑 발송 완료.")
+        from utils.telegram_briefing import build_status_briefing
+        msg = build_status_briefing()
+        send_telegram_alert(msg)
+        print(f"[{time.strftime('%H:%M:%S')}] [BRIEFING] 텔레그램 통합 현황 브리핑 발송 완료.")
     except Exception as e:
         print(f"[WARN] 텔레그램 정기 브리핑 생성 오류: {e}")
+        send_telegram_alert(f"⚠️ 통합 브리핑 생성 오류: {e}")
+
+
+def send_telegram_main_bot_briefing():
+    """메인 봇 실거래 상세 현황 브리핑 (/메인 명령어)"""
+    try:
+        from utils.telegram_briefing import build_main_bot_briefing
+        msg = build_main_bot_briefing()
+        send_telegram_alert(msg)
+        print(f"[{time.strftime('%H:%M:%S')}] [BRIEFING] 텔레그램 메인봇 상세 브리핑 발송 완료.")
+    except Exception as e:
+        send_telegram_alert(f"⚠️ 메인봇 브리핑 생성 오류: {e}")
+
+
+def send_telegram_cascade_briefing():
+    """Cascade 서브포켓 실거래 상세 현황 브리핑 (/cascade, /포켓2 명령어)"""
+    try:
+        from utils.telegram_briefing import build_cascade_briefing
+        msg = build_cascade_briefing()
+        send_telegram_alert(msg)
+        print(f"[{time.strftime('%H:%M:%S')}] [BRIEFING] 텔레그램 Cascade 브리핑 발송 완료.")
+    except Exception as e:
+        send_telegram_alert(f"⚠️ Cascade 브리핑 생성 오류: {e}")
+
+
+def send_telegram_balance_briefing():
+    """전 계좌 자산 및 잔고 총정리 브리핑 (/잔고 명령어)"""
+    try:
+        from utils.telegram_briefing import build_balance_briefing
+        msg = build_balance_briefing()
+        send_telegram_alert(msg)
+        print(f"[{time.strftime('%H:%M:%S')}] [BRIEFING] 텔레그램 잔고 브리핑 발송 완료.")
+    except Exception as e:
+        send_telegram_alert(f"⚠️ 잔고 브리핑 생성 오류: {e}")
+
+
+def send_telegram_recent_trades():
+    """최근 체결 내역 통합 조회 브리핑 (/체결 명령어)"""
+    try:
+        from utils.telegram_briefing import build_recent_trades_briefing
+        msg = build_recent_trades_briefing()
+        send_telegram_alert(msg)
+        print(f"[{time.strftime('%H:%M:%S')}] [BRIEFING] 텔레그램 최근 체결 브리핑 발송 완료.")
+    except Exception as e:
+        send_telegram_alert(f"⚠️ 체결 내역 조회 오류: {e}")
+
+
+def send_telegram_help_briefing():
+    """텔레그램 컨트롤 명령어 도움말 안내 (/도움말 명령어)"""
+    try:
+        from utils.telegram_briefing import build_help_briefing
+        msg = build_help_briefing()
+        send_telegram_alert(msg)
+        print(f"[{time.strftime('%H:%M:%S')}] [BRIEFING] 텔레그램 도움말 발송 완료.")
+    except Exception as e:
+        send_telegram_alert(f"⚠️ 도움말 생성 오류: {e}")
 
 
 def send_telegram_g60_briefing(filter_market: Optional[str] = None):
@@ -3640,8 +3598,16 @@ def telegram_command_listener_worker():
                             continue
                         cmd = text.lower()
 
-                        if cmd in ["/status", "/상태", "상태", "/현황", "현황", "/잔고", "잔고", "/check"]:
+                        if cmd in ["/status", "/상태", "상태", "/현황", "현황", "/요약", "요약", "/check", "/all"]:
                             send_telegram_status_briefing()
+                        elif cmd in ["/메인", "메인", "/main", "main", "/메인봇", "메인봇"]:
+                            send_telegram_main_bot_briefing()
+                        elif cmd in ["/cascade", "cascade", "/포켓2", "포켓2", "/pocket2", "pocket2", "/캐스케이드", "캐스케이드", "/c2", "c2"]:
+                            send_telegram_cascade_briefing()
+                        elif cmd in ["/잔고", "잔고", "/balance", "balance", "/자산", "자산", "/예수금", "예수금"]:
+                            send_telegram_balance_briefing()
+                        elif cmd in ["/체결", "체결", "/체결내역", "체결내역", "/trades", "trades", "/최근체결", "최근체결"]:
+                            send_telegram_recent_trades()
                         elif (
                             cmd in ["/60", "60", "/g60", "g60", "/포켓", "포켓", "/서브포켓", "서브포켓"] or
                             cmd.startswith("/60 ") or cmd.startswith("60 ") or
@@ -3652,6 +3618,8 @@ def telegram_command_listener_worker():
                             if len(parts) >= 2:
                                 filter_m = parts[1].strip()
                             send_telegram_g60_briefing(filter_market=filter_m)
+                        elif cmd in ["/start", "/help", "help", "/도움말", "도움말", "/명령어", "명령어"]:
+                            send_telegram_help_briefing()
                         elif cmd in ["/tqqq", "tqqq", "/미국주식", "미국주식", "/주식", "주식"]:
                             try:
                                 import subprocess
@@ -3674,23 +3642,6 @@ def telegram_command_listener_worker():
                                 send_telegram_alert(msg)
                             except Exception as ke:
                                 send_telegram_alert(f"⚠️ 국내주식 브리핑 생성 실패: {ke}")
-                        elif cmd in ["/start", "/help", "도움말"]:
-                            help_msg = (
-                                "🤖 <b>[Trader 통합 컨트롤 명령어]</b>\n\n"
-                                "• <code>/상태</code> : 실시간 가상자산 계좌 및 봇 포지션/주문 확인\n"
-                                "• <code>/60</code> : ⚡ G60 서브포켓 스쿼드 그리드 3종(ETH·SOL·XRP) 실거래 현황\n"
-                                "• <code>/재기동</code> : 실거래 봇(main.py) 안전 재기동 (옵션: <code>포켓</code>, <code>가상</code>, <code>대시보드</code>, <code>전체</code>)\n"
-                                "• <code>/tqqq</code> : 라오어 TQQQ 무한매수 4.0 및 미국주식(JEPI/SPMO) 실시간 브리핑\n"
-                                "• <code>/국장</code> : 국내주식(498410/498400) 스마트 분할 매도봇 현황 브리핑\n"
-                                "• <code>/전략검토</code> : 퀀트 전략 리뷰 및 백테스트 최적화 제안서 확인\n"
-                                "• <code>/전략승인 SOL</code> : 제안된 솔라나 최적화 파라미터 승인 및 반영\n"
-                                "• <code>/전략승인 ETH</code> : 제안된 이더리움 최적화 파라미터 승인 및 반영\n"
-                                "• <code>/감사</code> : 3대 봇 프로세스 및 DB/주문 무결성 정밀 감사\n\n"
-                                "💡 가상자산 브리핑: 08:30, 18:00 자동 발송\n"
-                                "💡 TQQQ 미국주식: 매일 22:35 주문 결과 자동 보고\n"
-                                "💡 정기 감사: 06:00, 14:00, 22:00 (8시간 주기)"
-                            )
-                            send_telegram_alert(help_msg)
                         elif (
                             cmd in ["/재기동", "재기동", "/restart", "restart", "/reboot", "reboot", "/재시작", "재시작"] or
                             cmd.startswith("/재기동 ") or cmd.startswith("재기동 ") or

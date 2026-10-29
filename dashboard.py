@@ -59,6 +59,20 @@ def get_latest_trade_signature() -> str:
     except Exception:
         pass
 
+    cascade_sig = "0_0"
+    try:
+        c_db = os.path.join(BASE_DIR, "pocket2_basket_trade_history.db")
+        if os.path.exists(c_db):
+            conn = sqlite3.connect(c_db, timeout=2.0)
+            cur = conn.cursor()
+            cur.execute("SELECT count(*), coalesce(max(id), 0) FROM pocket_trades")
+            row = cur.fetchone()
+            if row:
+                cascade_sig = f"{row[0]}_{row[1]}"
+            conn.close()
+    except Exception:
+        pass
+
     state_sig = []
     for m in INVESTMENTS.keys():
         s_file = os.path.join(BASE_DIR, f"real_strategy_state_{m.replace('-', '_')}.json")
@@ -88,7 +102,21 @@ def get_latest_trade_signature() -> str:
             except Exception:
                 pass
 
-    return f"{db_sig}|{pocket_sig}|{'_'.join(state_sig)}"
+    for m in ["KRW_SOL", "KRW_ETH"]:
+        c_file = os.path.join(BASE_DIR, f"pocket2_basket_state_{m}.json")
+        if os.path.exists(c_file):
+            try:
+                with open(c_file, "r", encoding="utf-8") as f:
+                    c_data = json.load(f)
+                    c_cycle = c_data.get("cycle_count", 0)
+                    c_lvls = c_data.get("active_levels", 0)
+                    c_pnl = c_data.get("total_realized_pnl", 0.0)
+                    state_sig.append(f"C_{m}:{c_cycle}_{c_lvls}_{c_pnl:.1f}")
+            except Exception:
+                pass
+
+    return f"{db_sig}|{pocket_sig}|{cascade_sig}|{'_'.join(state_sig)}"
+
 
 
 
@@ -939,6 +967,101 @@ with st.expander("📊 계좌 자산 포트폴리오 구성 & 보유 종목 상�
 st.divider()
 
 
+def render_main_sol_exit_only_card(
+    strat: Dict[str, Any],
+    cur_p: float,
+    open_orders: List[Dict[str, Any]],
+    trades_df: pd.DataFrame,
+    idx: int = 3
+) -> None:
+    """
+    메인봇 솔라나(KRW-SOL) 익절 전용 모드 간소화 카드
+    - 사용자 요청: "대시보드를 정리해줘. 메인봇 솔은 매도되는것만 확인하면 될것 같아."
+    - 복잡한 1시간봉 차트/스쿼드 테이블 대신, 현재가, 등록된 익절 매도가(142,400원), 잔여 거리, 청산 대기 상태를 직관적으로 요약 표시합니다.
+    """
+    market = strat["market"]
+    ticker = strat["ticker"]
+    bot_q = float(strat.get("bot_quantity", 0.0) or 0.0)
+    bot_avg = float(strat.get("bot_avg_price", 0.0) or 0.0)
+    bot_eval = bot_q * cur_p
+    unrealized_pnl = (cur_p - bot_avg) * bot_q if bot_avg > 0 else 0.0
+    unrealized_pnl_pct = ((cur_p - bot_avg) / bot_avg * 100.0) if bot_avg > 0 else 0.0
+
+    # 등록된 지정가 매도 주문 탐색
+    ask_orders = [o for o in open_orders if o.get("side") == "ask"]
+    target_sell_p = float(ask_orders[0].get("price", 142400.0)) if ask_orders else 142400.0
+    target_sell_vol = float(ask_orders[0].get("volume", bot_q)) if ask_orders else bot_q
+    sell_order_uuid = ask_orders[0].get("uuid", "-") if ask_orders else "-"
+
+    dist_to_tp = ((target_sell_p - cur_p) / cur_p * 100.0) if cur_p > 0 else 0.0
+    expected_profit = (target_sell_p * target_sell_vol * 0.9995) - (bot_avg * target_sell_vol)
+    expected_pnl_pct = ((target_sell_p - bot_avg) / bot_avg * 100.0) if bot_avg > 0 else 0.0
+
+    pnl_color = "#00e676" if unrealized_pnl >= 0 else "#ff5252"
+    dist_badge_color = "#00e676" if dist_to_tp <= 0 else "#ffb300"
+
+    html_card = f"""
+<div style="background:linear-gradient(135deg, #181d27 0%, #1f2737 100%); border:1px solid #ffb30055; border-radius:12px; padding:18px 22px; margin-bottom:20px; box-shadow:0 4px 14px rgba(255, 179, 0, 0.08);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid #2d3648; padding-bottom:10px; flex-wrap:wrap; gap:8px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:1.3rem;">🟣</span>
+            <span style="font-size:1.15rem; font-weight:800; color:#f0f3f6;">
+                전략 {idx}. 메인봇 솔라나 ({market})
+            </span>
+            <span style="background:#ffb30022; color:#ffb300; border:1px solid #ffb300; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">
+                🎯 익절 청산 대기중 (EXIT ONLY)
+            </span>
+        </div>
+        <div style="font-size:0.85rem; color:#8c96a5;">
+            전략 배정 원금: <b style="color:#f0f3f6;">114,844원</b> | 신규 매수 <b>차단</b>
+        </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom:12px;">
+        <div style="background:#12161f; padding:12px 16px; border-radius:8px; border:1px solid #232b3a;">
+            <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">현재 시세</div>
+            <div style="font-size:1.25rem; font-weight:700; color:#f0f3f6;">{cur_p:,.0f}원</div>
+            <div style="font-size:0.75rem; color:{pnl_color}; margin-top:2px;">평가손익: {unrealized_pnl:+,.0f}원 ({unrealized_pnl_pct:+.2f}%)</div>
+        </div>
+        <div style="background:#12161f; padding:12px 16px; border-radius:8px; border:1px solid #232b3a;">
+            <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">🤖 봇 매수평단 & 수량</div>
+            <div style="font-size:1.25rem; font-weight:700; color:#81d4fa;">{bot_avg:,.0f}원</div>
+            <div style="font-size:0.75rem; color:#8c96a5; margin-top:2px;">보유: {bot_q:.6f} SOL ({bot_eval:,.0f}원)</div>
+        </div>
+        <div style="background:#12161f; padding:12px 16px; border-radius:8px; border:1px solid #00e67644;">
+            <div style="font-size:0.75rem; color:#00e676; margin-bottom:2px;">🎯 등록된 지정가 매도가</div>
+            <div style="font-size:1.25rem; font-weight:800; color:#00e676;">{target_sell_p:,.0f}원</div>
+            <div style="font-size:0.75rem; color:#00e676; margin-top:2px;">목표 마진: +{expected_pnl_pct:.2f}% (순익: +{expected_profit:,.0f}원)</div>
+        </div>
+        <div style="background:#12161f; padding:12px 16px; border-radius:8px; border:1px solid #232b3a;">
+            <div style="font-size:0.75rem; color:#8c96a5; margin-bottom:2px;">익절 도달까지 잔여 거리</div>
+            <div style="font-size:1.25rem; font-weight:700; color:{dist_badge_color};">+{dist_to_tp:.2f}%</div>
+            <div style="font-size:0.75rem; color:#8c96a5; margin-top:2px;">미체결 매도: {len(ask_orders)}건 | 매수: 0건</div>
+        </div>
+    </div>
+
+    <div style="background:#141b24; padding:10px 14px; border-radius:8px; border:1px dashed #2d3848; font-size:0.83rem; color:#cbd5e1; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <div>
+            💡 <b>운용 알림</b>: 추가 매수가 전면 차단되었으며, 업비트에 <b>{target_sell_p:,.0f}원</b> 전량 매도 지정가 주문이 등록되어 있습니다.
+            체결 즉시 메인봇 솔라나 운용이 완료되며, 회수 자금은 신규 <b>Cascade 포켓</b>으로 이전됩니다.
+        </div>
+        <div style="font-size:0.75rem; color:#8c96a5; white-space:nowrap;">
+            주문 UUID: <code>{sell_order_uuid[:8]}...</code>
+        </div>
+    </div>
+</div>
+"""
+    st.html(html_card)
+
+    with st.expander(f"📜 {ticker} 최근 체결 내역 및 주문 상세 ({len(trades_df)}건)", expanded=False):
+        if not trades_df.empty:
+            show_df = trades_df.head(10).copy()
+            show_cols = [c for c in ["timestamp", "side", "action", "price", "volume", "cost_or_revenue", "pnl"] if c in show_df.columns]
+            st.dataframe(show_df[show_cols], hide_index=True, use_container_width=True)
+        else:
+            st.info("체결 내역이 없습니다.")
+
+
 # =============================================================================
 # 2. 현재 적용한 전략의 수익률 및 현황 (제목의 [아래] 삭제, 복수 전략 지원)
 # =============================================================================
@@ -965,6 +1088,12 @@ else:
         eval_amt = strat["eval_amount"]
         open_orders = strat["open_orders"]
         trades_df = strat["trades_df"]
+
+        if market == "KRW-SOL":
+            render_main_sol_exit_only_card(strat, cur_p, open_orders, trades_df, idx=idx)
+            st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+            continue
+
 
         ret_color = "text-green" if strat_ret >= 0 else "text-red"
         pnl_color = "text-green" if strat_pnl >= 0 else "text-red"
@@ -1288,144 +1417,173 @@ else:
 
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
+        if market == "KRW-BTC":
+            # 비트코인 스마트 적립: 포지션현황 및 차트 제거, 체결내역만 표시
+            # 사용자 요청: "비트의 포지션현황, 차트는 제거. 체결내역만 보여주면 될꺼 같음"
+            st.markdown(f"##### 📜 {ticker} 스마트 적립 체결 내역 (총 {len(trades_df)}건)")
+            if not trades_df.empty:
+                trades_df_sorted = trades_df.sort_values("timestamp", ascending=False)
+                latest_fill = trades_df_sorted.iloc[0]
+                latest_side = "매도" if latest_fill.get("side") == "ask" else "매수"
+                st.caption(
+                    f"최근 체결: {latest_fill['timestamp']} | {latest_side} "
+                    f"{float(latest_fill.get('price') or 0):,.0f}원 | "
+                    f"{float(latest_fill.get('volume') or 0):.8f} {ticker} | "
+                    f"{float(latest_fill.get('cost_or_revenue') or 0):,.0f}원"
+                )
+                action_map = {
+                    "BTC_TIERED_BUY_T1": "봇 1단계 스마트 종가적립 (08:50)",
+                    "BTC_TIERED_BUY_T2": "봇 2단계 특가 추가적립 (08:50)",
+                    "BTC_UPBIT_DCA": "업비트 정기 모으기 (15:05)",
+                }
+                btc_table_items = []
+                for _, t in trades_df_sorted.head(25).iterrows():
+                    raw_act = str(t.get("action", ""))
+                    act_kr = action_map.get(raw_act, raw_act or "적립 매수")
+                    t_time = str(t.get("timestamp", "-"))[:19]
+                    p_val = float(t.get("price") or 0.0)
+                    v_val = float(t.get("volume") or 0.0)
+                    c_val = float(t.get("cost_or_revenue") or 0.0)
+
+                    btc_table_items.append({
+                        "상태": "✅ 적립완료",
+                        "체결시각": t_time,
+                        "구분": f"🔵 매수 ({act_kr})",
+                        "체결단가": f"{p_val:,.0f}원",
+                        "적립수량": f"{v_val:.8f} BTC",
+                        "체결금액": f"{c_val:,.0f}원"
+                    })
+                if btc_table_items:
+                    st.dataframe(
+                        pd.DataFrame(btc_table_items),
+                        hide_index=True,
+                        use_container_width=True,
+                        height=280,
+                        key="btc_dca_trades_table"
+                    )
+            else:
+                st.info("비트코인 체결 내역이 없습니다.")
+
+            st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+            continue
+
         # 포지션 및 미체결 주문 2분할 (스쿼드 정보 가독성을 위해 1.35:1.65 비율 적용)
         p_col1, p_col2 = st.columns([1.35, 1.65])
 
         with p_col1:
             st.markdown(f"##### 💼 {ticker} 포지션 현황 (계좌 잔고 & 모으기 현황)")
-            if market == "KRW-BTC":
-                r_state = strat.get("runtime_state", {})
-                dca_cnt = r_state.get("total_dca_buys_count", 0)
-                dca_inv = r_state.get("total_dca_invested_krw", 0.0)
-                dca_avg = r_state.get("dca_avg_price", 0.0)
-                ref_p = regime_info.get("ref_avg_price", 0.0) or regime_info.get("dca_30d_avg_price", 0.0) or dca_avg
-                ref_name = regime_info.get("ref_avg_name", "최근 30일 적립평단")
-                dist_ref = regime_info.get("dist_ref_pct", 0.0)
-                ref_str = f"{ref_p:,.0f} 원 ({dist_ref:+.2f}%)" if ref_p > 0 else "-"
+            r_state = strat.get("runtime_state", {})
+            bot_q = strat.get("bot_quantity", 0.0)
+            bot_avg = strat.get("bot_avg_price", 0.0)
+            bot_eval = strat.get("bot_eval", 0.0)
+            bot_pnl = strat.get("bot_unrealized_pnl", 0.0)
+            bot_pnl_pct = strat.get("bot_pnl_pct", 0.0)
+            prot_q = strat.get("protected_quantity", 0.0)
+            tot_coin = strat.get("account_total_coin_balance", coin_bal)
+            tranches = r_state.get("tranches", [])
+
+
+            from config import is_adaptive_grid_enabled, get_magic_split_tranche_profit
+            if is_adaptive_grid_enabled(market):
+                from strategy.adaptive_grid import get_dynamic_tp_margins
+                _, dyn_t_margin = get_dynamic_tp_margins(is_bull=is_bull)
+                squad_tp_margin_pct = (dyn_t_margin - 1.0) * 100.0
+            else:
+                squad_tp_margin_pct = get_magic_split_tranche_profit(market) * 100.0
+
+            # 스쿼드별 보유 차수 집계
+            squad_map = {}
+            for t in tranches:
+                s_id = t.get("squad_id", 0)
+                squad_map.setdefault(s_id, []).append(t)
+
+            squad_rows = []
+            for s_id, s_tranches in sorted(squad_map.items(), reverse=True):
+                s_vol = sum(float(t.get("volume", 0.0)) for t in s_tranches)
+                s_cost = sum(float(t.get("volume", 0.0)) * float(t.get("buy_price", 0.0)) for t in s_tranches)
+                s_vwap = s_cost / s_vol if s_vol > 0 else 0.0
+                s_units = sum(t.get("units", 1) for t in s_tranches)
+                s_name = f"스쿼드 {s_id}" if s_id > 0 else "국면 인계"
+                s_pnl_pct = ((cur_p - s_vwap) / s_vwap * 100.0) if s_vwap > 0 else 0.0
+                s_target_p = s_vwap * (1.0 + squad_tp_margin_pct / 100.0)
+                dist_to_tp = ((s_target_p - cur_p) / cur_p * 100.0) if cur_p > 0 else 0.0
+
+                if cur_p >= s_target_p:
+                    status_badge = "🎯 익절 도달"
+                elif dist_to_tp <= 0.6:
+                    status_badge = f"🔥 익절 근접 (+{dist_to_tp:.2f}%)"
+                elif s_pnl_pct >= 0:
+                    status_badge = f"🟢 수익 중 ({s_pnl_pct:+.2f}%)"
+                else:
+                    status_badge = f"💧 대기 ({s_pnl_pct:+.2f}%)"
+
+                squad_rows.append({
+                    "스쿼드": s_name,
+                    "체결": f"{len(s_tranches)}차 ({s_units}U)",
+                    "스쿼드평단": f"{s_vwap:,.0f}원",
+                    "현재손익": f"{s_pnl_pct:+.2f}%",
+                    "단독익절가": f"{s_target_p:,.0f}원 (+{squad_tp_margin_pct:.1f}%)",
+                    "수량": f"{s_vol:.6f} {ticker}",
+                    "상태": status_badge
+                })
+
+            # 호가창 미체결 중 신규 대기 스쿼드 확인 (예: 스쿼드 7)
+            active_buys = {}
+            for k in ["active_limit_orders", "bear_limit_buys"]:
+                b_dict = r_state.get(k, {})
+                if isinstance(b_dict, dict):
+                    active_buys.update(b_dict)
+            pending_sq_ids = sorted(list(set(
+                b_meta.get("squad_id") for b_meta in active_buys.values()
+                if b_meta.get("state") == "wait" and b_meta.get("squad_id", 0) > 0 and b_meta.get("squad_id") not in squad_map
+            )))
+
+            pnl_color_hex = "#00e676" if bot_pnl >= 0 else "#ff5252"
+            active_squad_cnt = len([s for s in squad_map.keys() if s > 0])
+            squad_title_cnt = f"{active_squad_cnt}개 운용 중" if active_squad_cnt > 0 else "미보유 (대기)"
+
+            st.html(f"""
+            <div style="background:#12161f; padding:8px 14px; border-radius:8px; border:1px solid #232b3a; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <span style="font-size:0.75rem; color:#8c96a5;">🤖 봇 운용 포지션</span><br>
+                    <b style="color:#f0f3f6; font-size:0.95rem;">{bot_q:.6f} {ticker}</b>
+                    <span style="font-size:0.78rem; color:#8c96a5;">(@ {bot_avg:,.0f}원)</span>
+                </div>
+                <div style="text-align:right;">
+                    <span style="font-size:0.75rem; color:#8c96a5;">🎯 바스켓 목표 / 손익</span><br>
+                    <b style="color:{pnl_color_hex}; font-size:0.95rem;">{bot_pnl:+,.0f}원 ({bot_pnl_pct:+.2f}%)</b>
+                    <span style="font-size:0.8rem; color:#00e676; font-weight:700;">(🎯 {basket_target_p:,.0f}원)</span>
+                </div>
+            </div>
+            """)
+
+            tab_squad, tab_account = st.tabs([
+                f"🪖 스쿼드별 상세 ({squad_title_cnt})",
+                f"🏛️ 계좌 총잔고 & 보호자산"
+            ])
+
+            with tab_squad:
+                if squad_rows:
+                    st.dataframe(pd.DataFrame(squad_rows), hide_index=True, use_container_width=True, height=210,
+                                 key=f"{market}_squad_status_table")
+                else:
+                    st.info(f"현재 투입된 스쿼드가 없습니다. (다음 신호 대기 중)")
+
+                pending_note = f" | ⏳ **신규 대기**: 스쿼드 {', '.join(str(s) for s in pending_sq_ids)} (호가창 대기)" if pending_sq_ids else ""
+                st.caption(f"💡 **이중 익절 규칙**: 스쿼드별 평단 대비 +{squad_tp_margin_pct:.1f}% 도달 시 해당 스쿼드만 단독 익절{pending_note}")
+
+            with tab_account:
                 pos_data = [
                     {"항목": "현재 시세", "값": f"{cur_p:,.0f} 원"},
-                    {"항목": "🏛️ 계좌 총 보유 수량 (기존잔고 포함)", "값": f"{coin_bal:.6f} BTC"},
-                    {"항목": "💳 계좌 전체 평단가", "값": f"{avg_p:,.0f} 원" if avg_p > 0 else "-"},
-                    {"항목": "💰 계좌 총 평가금액", "값": f"{eval_amt:,.0f} 원"},
-                    {"항목": "📈 계좌 총 평가손익 (수익률)", "값": f"{unrealized_pnl:+,.0f} 원 ({unrealized_pnl_pct:+.2f}%)" if avg_p > 0 else "-"},
-                    {"항목": f"🎯 {ref_name} (판정기준)", "값": ref_str},
-                    {"항목": "📊 전략 누적 적립 현황", "값": f"{dca_cnt}회차 ({dca_inv:,.0f}원 누적 | 평단 {dca_avg:,.0f}원)" if dca_avg > 0 else f"{dca_cnt}회차 ({dca_inv:,.0f}원 누적)"},
-                    {"항목": "📱 업비트 정기 모으기", "값": "매일 15:05 (10,000원 적립)"},
-                    {"항목": "🤖 봇 종가 가중 적립", "값": f"매일 08:55 ({regime_info.get('signal', '0~2만 원')})"}
+                    {"항목": "🤖 봇 운용 수량", "값": f"{bot_q:.6f} {ticker}"},
+                    {"항목": "🤖 봇 매수평단", "값": f"{bot_avg:,.0f} 원" if bot_avg > 0 else "미보유 (대기)"},
+                    {"항목": "🤖 봇 평가금액", "값": f"{bot_eval:,.0f} 원"},
+                    {"항목": "🤖 봇 미실현손익", "값": f"{bot_pnl:+,.0f} 원 ({bot_pnl_pct:+.2f}%)" if bot_avg > 0 else "-"},
+                    {"항목": "🔒 기존 자산 (보호중)", "값": f"{prot_q:.6f} {ticker}"},
+                    {"항목": "🏛️ 계좌 전체 총수량", "값": f"{tot_coin:.6f} {ticker}"}
                 ]
-
-            else:
-                r_state = strat.get("runtime_state", {})
-                bot_q = strat.get("bot_quantity", 0.0)
-                bot_avg = strat.get("bot_avg_price", 0.0)
-                bot_eval = strat.get("bot_eval", 0.0)
-                bot_pnl = strat.get("bot_unrealized_pnl", 0.0)
-                bot_pnl_pct = strat.get("bot_pnl_pct", 0.0)
-                prot_q = strat.get("protected_quantity", 0.0)
-                tot_coin = strat.get("account_total_coin_balance", coin_bal)
-                tranches = r_state.get("tranches", [])
-
-                from config import is_adaptive_grid_enabled, get_magic_split_tranche_profit
-                if is_adaptive_grid_enabled(market):
-                    from strategy.adaptive_grid import get_dynamic_tp_margins
-                    _, dyn_t_margin = get_dynamic_tp_margins(is_bull=is_bull)
-                    squad_tp_margin_pct = (dyn_t_margin - 1.0) * 100.0
-                else:
-                    squad_tp_margin_pct = get_magic_split_tranche_profit(market) * 100.0
-
-                # 스쿼드별 보유 차수 집계
-                squad_map = {}
-                for t in tranches:
-                    s_id = t.get("squad_id", 0)
-                    squad_map.setdefault(s_id, []).append(t)
-
-                squad_rows = []
-                for s_id, s_tranches in sorted(squad_map.items(), reverse=True):
-                    s_vol = sum(float(t.get("volume", 0.0)) for t in s_tranches)
-                    s_cost = sum(float(t.get("volume", 0.0)) * float(t.get("buy_price", 0.0)) for t in s_tranches)
-                    s_vwap = s_cost / s_vol if s_vol > 0 else 0.0
-                    s_units = sum(t.get("units", 1) for t in s_tranches)
-                    s_name = f"스쿼드 {s_id}" if s_id > 0 else "국면 인계"
-                    s_pnl_pct = ((cur_p - s_vwap) / s_vwap * 100.0) if s_vwap > 0 else 0.0
-                    s_target_p = s_vwap * (1.0 + squad_tp_margin_pct / 100.0)
-                    dist_to_tp = ((s_target_p - cur_p) / cur_p * 100.0) if cur_p > 0 else 0.0
-
-                    if cur_p >= s_target_p:
-                        status_badge = "🎯 익절 도달"
-                    elif dist_to_tp <= 0.6:
-                        status_badge = f"🔥 익절 근접 (+{dist_to_tp:.2f}%)"
-                    elif s_pnl_pct >= 0:
-                        status_badge = f"🟢 수익 중 ({s_pnl_pct:+.2f}%)"
-                    else:
-                        status_badge = f"💧 대기 ({s_pnl_pct:+.2f}%)"
-
-                    squad_rows.append({
-                        "스쿼드": s_name,
-                        "체결": f"{len(s_tranches)}차 ({s_units}U)",
-                        "스쿼드평단": f"{s_vwap:,.0f}원",
-                        "현재손익": f"{s_pnl_pct:+.2f}%",
-                        "단독익절가": f"{s_target_p:,.0f}원 (+{squad_tp_margin_pct:.1f}%)",
-                        "수량": f"{s_vol:.6f} {ticker}",
-                        "상태": status_badge
-                    })
-
-                # 호가창 미체결 중 신규 대기 스쿼드 확인 (예: 스쿼드 7)
-                active_buys = {}
-                for k in ["active_limit_orders", "bear_limit_buys"]:
-                    b_dict = r_state.get(k, {})
-                    if isinstance(b_dict, dict):
-                        active_buys.update(b_dict)
-                pending_sq_ids = sorted(list(set(
-                    b_meta.get("squad_id") for b_meta in active_buys.values()
-                    if b_meta.get("state") == "wait" and b_meta.get("squad_id", 0) > 0 and b_meta.get("squad_id") not in squad_map
-                )))
-
-                pnl_color_hex = "#00e676" if bot_pnl >= 0 else "#ff5252"
-                active_squad_cnt = len([s for s in squad_map.keys() if s > 0])
-                squad_title_cnt = f"{active_squad_cnt}개 운용 중" if active_squad_cnt > 0 else "미보유 (대기)"
-
-                st.html(f"""
-                <div style="background:#12161f; padding:8px 14px; border-radius:8px; border:1px solid #232b3a; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
-                    <div>
-                        <span style="font-size:0.75rem; color:#8c96a5;">🤖 봇 운용 포지션</span><br>
-                        <b style="color:#f0f3f6; font-size:0.95rem;">{bot_q:.6f} {ticker}</b>
-                        <span style="font-size:0.78rem; color:#8c96a5;">(@ {bot_avg:,.0f}원)</span>
-                    </div>
-                    <div style="text-align:right;">
-                        <span style="font-size:0.75rem; color:#8c96a5;">🎯 바스켓 목표 / 손익</span><br>
-                        <b style="color:{pnl_color_hex}; font-size:0.95rem;">{bot_pnl:+,.0f}원 ({bot_pnl_pct:+.2f}%)</b>
-                        <span style="font-size:0.8rem; color:#00e676; font-weight:700;">(🎯 {basket_target_p:,.0f}원)</span>
-                    </div>
-                </div>
-                """)
-
-                tab_squad, tab_account = st.tabs([
-                    f"🪖 스쿼드별 상세 ({squad_title_cnt})",
-                    f"🏛️ 계좌 총잔고 & 보호자산"
-                ])
-
-                with tab_squad:
-                    if squad_rows:
-                        st.dataframe(pd.DataFrame(squad_rows), hide_index=True, use_container_width=True, height=210,
-                                     key=f"{market}_squad_status_table")
-                    else:
-                        st.info(f"현재 투입된 스쿼드가 없습니다. (다음 신호 대기 중)")
-
-                    pending_note = f" | ⏳ **신규 대기**: 스쿼드 {', '.join(str(s) for s in pending_sq_ids)} (호가창 대기)" if pending_sq_ids else ""
-                    st.caption(f"💡 **이중 익절 규칙**: 스쿼드별 평단 대비 +{squad_tp_margin_pct:.1f}% 도달 시 해당 스쿼드만 단독 익절{pending_note}")
-
-                with tab_account:
-                    pos_data = [
-                        {"항목": "현재 시세", "값": f"{cur_p:,.0f} 원"},
-                        {"항목": "🤖 봇 운용 수량", "값": f"{bot_q:.6f} {ticker}"},
-                        {"항목": "🤖 봇 매수평단", "값": f"{bot_avg:,.0f} 원" if bot_avg > 0 else "미보유 (대기)"},
-                        {"항목": "🤖 봇 평가금액", "값": f"{bot_eval:,.0f} 원"},
-                        {"항목": "🤖 봇 미실현손익", "값": f"{bot_pnl:+,.0f} 원 ({bot_pnl_pct:+.2f}%)" if bot_avg > 0 else "-"},
-                        {"항목": "🔒 기존 자산 (보호중)", "값": f"{prot_q:.6f} {ticker}"},
-                        {"항목": "🏛️ 계좌 전체 총수량", "값": f"{tot_coin:.6f} {ticker}"}
-                    ]
-                    st.dataframe(pd.DataFrame(pos_data), hide_index=True, use_container_width=True, height=210,
-                                 key=f"{market}_account_balance_table")
+                st.dataframe(pd.DataFrame(pos_data), hide_index=True, use_container_width=True, height=210,
+                             key=f"{market}_account_balance_table")
 
         with p_col2:
             st.markdown(f"##### 📋 {ticker} 실시간 주문 및 체결 현황")
@@ -2117,9 +2275,254 @@ def render_pocket_g60_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
                 st.info(f"아직 {item['name']} 체결 내역이 없습니다.")
 
 
+# =============================================================================
+# 3. Cascade 서브포켓 (200단 바스켓 리셋 전략) 실거래 현황
+# =============================================================================
+def get_cascade_summary(loaded_snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Cascade 서브포켓 2종(SOL, ETH)의 실거래 상태 및 체결 내역을 조회합니다."""
+    markets = [
+        {"market": "KRW-SOL", "ticker": "SOL", "name": "솔라나", "icon": "🟣", "status": "RUNNING"},
+        {"market": "KRW-ETH", "ticker": "ETH", "name": "이더리움", "icon": "💎", "status": "PENDING_TRANSFER"}
+    ]
+
+    states = {}
+    trades_list = []
+
+    # 1. 클라우드 스냅샷 (Streamlit Cloud 환경 대응)
+    cascade_cloud = (loaded_snapshot or {}).get("cascade_pocket", {})
+    cloud_states = cascade_cloud.get("states", {})
+    cloud_trades = cascade_cloud.get("trades_list", [])
+    if cloud_states:
+        states.update(cloud_states)
+    if cloud_trades:
+        trades_list.extend(cloud_trades)
+
+    # 2. 로컬 파일 및 DB 로드
+    db_file = os.path.join(BASE_DIR, "pocket2_basket_trade_history.db")
+    if os.path.exists(db_file):
+        try:
+            conn = sqlite3.connect(db_file, timeout=2.0)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("""
+                SELECT id, timestamp, market, side, action, price, volume, cost_or_revenue, fee, pnl, cycle, order_uuid, strategy
+                FROM pocket_trades
+                ORDER BY id DESC
+            """)
+            local_trades = [dict(r) for r in c.fetchall()]
+            conn.close()
+            if local_trades:
+                trades_list = local_trades
+        except Exception:
+            pass
+
+    for m in markets:
+        m_key = m["market"]
+        s_file = os.path.join(BASE_DIR, f"pocket2_basket_state_{m_key.replace('-', '_')}.json")
+        if os.path.exists(s_file):
+            try:
+                with open(s_file, "r", encoding="utf-8") as f:
+                    states[m_key] = json.load(f)
+            except Exception:
+                pass
+
+    # 3. 거래소 실시간 잔고 및 미체결 주문 (UPBIT_POCKET2)
+    krw_balance = float(cascade_cloud.get("krw_balance", 240222.0) or 240222.0)
+    open_orders_map = cascade_cloud.get("open_orders") or {m["market"]: [] for m in markets}
+    try:
+        from utils.pocket_api import UpbitPocketClient
+        client = UpbitPocketClient(env_prefix="UPBIT_POCKET2")
+        krw_balance = client.get_balance("KRW")
+        for m in markets:
+            open_orders_map[m["market"]] = client.get_open_orders(m["market"])
+    except Exception:
+        pass
+
+    return {
+        "markets": markets,
+        "states": states,
+        "trades_list": trades_list,
+        "krw_balance": krw_balance,
+        "open_orders": open_orders_map
+    }
+
+
+def format_cascade_action(row) -> str:
+    """Cascade 서브포켓 체결 액션을 한글 명칭으로 변환합니다."""
+    act = str(row.get("action", ""))
+    side = str(row.get("side", ""))
+    if "INITIAL" in act:
+        return "1단 신규 매수"
+    elif "LADDER" in act or "BUY" in act or side == "bid":
+        return f"래더 매수 (Lvl {row.get('cycle', 1)})"
+    elif "RESET" in act or "SELL" in act or side == "ask":
+        return "🎯 바스켓 전량 익절"
+    return act
+
+
+def render_cascade_pocket_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
+    """Cascade 서브포켓 (1.8% 하락 매수 / 0.8% 전량 익절 리셋 200단) 매매 현황 컴포넌트"""
+    st.markdown("### 🌊 Cascade 서브포켓 실거래 현황")
+    st.caption("업비트 서브포켓(UPBIT_POCKET2 / Cascade) 독립 데몬의 1.8% 하락 매수 / 0.8% 전량 익절 리셋(최대 200단) 실시간 현황을 모니터링합니다.")
+
+    data = get_cascade_summary(loaded_snapshot=loaded_snapshot)
+    states = data["states"]
+    trades_list = data["trades_list"]
+    krw_bal = data["krw_balance"]
+    open_orders = data["open_orders"]
+
+    # 상단 요약 바
+    sol_state = states.get("KRW-SOL", {})
+    eth_state = states.get("KRW-ETH", {})
+
+    sol_pnl = float(sol_state.get("total_realized_pnl", 0.0) or 0.0)
+    eth_pnl = float(eth_state.get("total_realized_pnl", 0.0) or 0.0)
+    tot_pnl = sol_pnl + eth_pnl
+
+    sol_fees = float(sol_state.get("total_fees", 0.0) or 0.0)
+    eth_fees = float(eth_state.get("total_fees", 0.0) or 0.0)
+    tot_fees = sol_fees + eth_fees
+
+    sol_wins = int(sol_state.get("win_count", 0) or 0)
+    eth_wins = int(eth_state.get("win_count", 0) or 0)
+    tot_wins = sol_wins + eth_wins
+
+    sb1, sb2, sb3, sb4 = st.columns(4)
+    with sb1:
+        st.metric(label="Cascade 총 운용예산", value="300,000원", delta="SOL 15만 가동 + ETH 15만 대기")
+    with sb2:
+        st.metric(label="가용 현금 잔고", value=f"{krw_bal:,.0f}원")
+    with sb3:
+        pnl_delta = f"{tot_pnl:+,.1f}원"
+        st.metric(label="Cascade 누적 실현손익", value=f"{tot_pnl:+,.1f}원", delta=pnl_delta)
+    with sb4:
+        st.metric(label="완료 사이클 / 총 수수료", value=f"{tot_wins}회 리셋 완료", delta=f"수수료 {tot_fees:,.1f}원")
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+    # 2열 배치: 솔라나(col_sol), 이더리움(col_eth)
+    col_sol, col_eth = st.columns(2)
+
+    with col_sol:
+        st.html("""
+        <div style="background:#181d27; border:1px solid #c77dff44; border-radius:12px; padding:14px 16px; margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:1.15rem; font-weight:800; color:#f0f3f6;">
+                    🟣 솔라나 <span style="font-size:0.85rem; color:#8c96a5;">(KRW-SOL)</span>
+                </span>
+                <span style="background:#00c08722; color:#00c087; border:1px solid #00c087; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;">🟢 실거래 가동중</span>
+            </div>
+        </div>
+        """)
+
+        cycle_cnt = sol_state.get("cycle_count", 1)
+        active_lvls = sol_state.get("active_levels", 1)
+        vwap = float(sol_state.get("vwap", 0.0) or 0.0)
+        held_vol = float(sol_state.get("held_volume", 0.0) or 0.0)
+        total_cost = float(sol_state.get("total_cost", 0.0) or 0.0)
+        pending_sell = sol_state.get("pending_sell") or {}
+        tp_price = float(pending_sell.get("price", 0.0) or (vwap * 1.008 if vwap > 0 else 0.0))
+
+        sol_orders = open_orders.get("KRW-SOL", [])
+        sol_asks = [o for o in sol_orders if o.get("side") == "ask"]
+        sol_bids = [o for o in sol_orders if o.get("side") == "bid"]
+
+        cur_p = 137800.0
+        try:
+            cur_p = float(pyupbit.get_current_price("KRW-SOL") or 137800.0)
+        except Exception:
+            pass
+
+        dist_to_tp = ((tp_price - cur_p) / cur_p * 100.0) if cur_p > 0 and tp_price > 0 else 0.0
+        expected_pnl = (tp_price * held_vol * 0.9995) - total_cost if tp_price > 0 and held_vol > 0 else 0.0
+        pnl_pct_expected = ((tp_price - vwap) / vwap * 100.0) if vwap > 0 and tp_price > 0 else 0.0
+
+        m1, m2 = st.columns(2)
+        with m1:
+            st.metric(label="현재 운용 상태", value=f"사이클 {cycle_cnt}회차", delta=f"현재 {active_lvls}/200단")
+        with m2:
+            st.metric(label="목표 익절가", value=f"{tp_price:,.0f}원", delta=f"+{pnl_pct_expected:.2f}% (익절까지 +{dist_to_tp:.2f}%)")
+
+        st.caption(f"🎯 1단 평단: **{vwap:,.0f}원** | 보유: **{held_vol:.6f} SOL** ({total_cost:,.0f}원) | 목표 순익: **+{expected_pnl:,.0f}원**")
+
+        # 거래소 호가창 대기 주문 테이블
+        st.markdown("**📥 거래소 호가창 실시간 대기 주문**")
+        order_rows = []
+        if sol_asks:
+            for o in sol_asks:
+                order_rows.append({
+                    "구분": "🎯 바스켓 전량 익절",
+                    "가격": f"{float(o.get('price', 0)):,.0f}원",
+                    "수량": f"{float(o.get('volume', 0)):.6f} SOL",
+                    "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
+                    "상태": "호가창 등록 대기"
+                })
+        if sol_bids:
+            sorted_bids = sorted(sol_bids, key=lambda x: -float(x.get("price", 0)))
+            for i, o in enumerate(sorted_bids, start=2):
+                order_rows.append({
+                    "구분": f"📥 매수 Lvl {i} (-{1.8*(i-1):.1f}%)",
+                    "가격": f"{float(o.get('price', 0)):,.0f}원",
+                    "수량": f"{float(o.get('volume', 0)):.6f} SOL",
+                    "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
+                    "상태": "호가창 등록 대기"
+                })
+        if order_rows:
+            st.dataframe(pd.DataFrame(order_rows), hide_index=True, use_container_width=True, height=180)
+        else:
+            st.info("호가창 대기 주문 조회 중...")
+
+        # 최근 체결 내역
+        st.markdown("**📜 최근 체결 내역**")
+        sol_trades = [t for t in trades_list if t.get("market") == "KRW-SOL"]
+        if sol_trades:
+            df_s = pd.DataFrame(sol_trades)
+            df_s["구분"] = df_s.apply(format_cascade_action, axis=1)
+            df_s["체결시각"] = df_s["timestamp"].apply(lambda x: str(x)[5:19] if len(str(x)) >= 19 else str(x))
+            df_s["단가"] = df_s["price"].apply(lambda x: f"{float(x):,.0f}원" if pd.notnull(x) else "-")
+            df_s["수량"] = df_s["volume"].apply(lambda x: f"{float(x):.6f}" if pd.notnull(x) else "-")
+            df_s["체결금액"] = df_s["cost_or_revenue"].apply(lambda x: f"{float(x):,.0f}원" if pd.notnull(x) else "-")
+            view_cols = ["체결시각", "구분", "단가", "수량", "체결금액"]
+            st.dataframe(df_s[view_cols].head(8), hide_index=True, use_container_width=True, height=160)
+        else:
+            st.info("아직 체결 내역이 없습니다.")
+
+    with col_eth:
+        st.html("""
+        <div style="background:#181d27; border:1px solid #00e5ff44; border-radius:12px; padding:14px 16px; margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:1.15rem; font-weight:800; color:#f0f3f6;">
+                    💎 이더리움 <span style="font-size:0.85rem; color:#8c96a5;">(KRW-ETH)</span>
+                </span>
+                <span style="background:#ffb30022; color:#ffb300; border:1px solid #ffb300; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;">⏳ 메인봇 익절 후 이전 대기</span>
+            </div>
+        </div>
+        """)
+
+        st.metric(label="배정 예정 예산", value="150,000원", delta="1Unit 10,000원 (최대 200단)")
+
+        st.html("""
+        <div style="background:#12161f; border:1px dashed #2d3848; border-radius:10px; padding:18px 20px; margin-top:14px; color:#cbd5e1; font-size:0.88rem; line-height:1.65;">
+            <div style="font-size:1rem; font-weight:700; color:#00e5ff; margin-bottom:8px;">
+                💎 이더리움 Cascade 포켓 진입 계획
+            </div>
+            1. <b>현재 상태</b>: 메인계좌에서 이더리움 하이브리드 전략이 정상 운용 중입니다.<br>
+            2. <b>이전 계획</b>: 메인계좌의 이더리움 포지션이 목표가에 도달하여 익절 청산되면, 회수된 원화를 Cascade 포켓으로 이전합니다.<br>
+            3. <b>가동 엔진</b>: 자산 이전 완료 후 <code>pocket2_basket_eth.py</code>를 실행하면 1.8% 하락 매수 / 0.8% 전량 익절 리셋 200단 모드로 즉시 자동 매매가 시작됩니다.<br>
+            <div style="margin-top:10px; padding:8px 12px; background:#18202c; border-radius:6px; font-size:0.8rem; color:#8c96a5;">
+                • 준비된 실행 스크립트: <code>pocket2_basket_eth.py</code><br>
+                • 텔레그램 간편 기동 명령어: <code>/재기동 포켓2이더</code>
+            </div>
+        </div>
+        """)
+
+
+st.divider()
+render_cascade_pocket_section(loaded_snapshot=loaded_snapshot)
 st.divider()
 render_pocket_g60_section(loaded_snapshot=loaded_snapshot)
 st.divider()
+
 
 
 # =============================================================================

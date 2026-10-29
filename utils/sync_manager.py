@@ -163,6 +163,50 @@ def create_dashboard_snapshot(account_data: Optional[Dict[str, Any]] = None) -> 
         "trades_list": pocket_trades_list
     }
 
+    # Cascade (Pocket 2) 200단 바스켓 서브포켓 데이터 포함 (SOL, ETH)
+    cascade_states = {}
+    for p_file in SNAPSHOT_DIR.parent.glob("pocket2_basket_state_KRW_*.json"):
+        try:
+            with open(p_file, "r", encoding="utf-8") as pf:
+                m_key = p_file.stem.replace("pocket2_basket_state_", "").replace("_", "-")
+                cascade_states[m_key] = json.load(pf)
+        except Exception:
+            pass
+
+    cascade_trades_list = []
+    cascade_db_file = SNAPSHOT_DIR.parent / "pocket2_basket_trade_history.db"
+    if cascade_db_file.exists():
+        try:
+            conn = sqlite3.connect(str(cascade_db_file), timeout=2.0)
+            c_trades_df = pd.read_sql_query(
+                "SELECT id, timestamp, market, side, action, price, volume, cost_or_revenue, fee, pnl, cycle, order_uuid, strategy FROM pocket_trades ORDER BY id DESC LIMIT 100",
+                conn
+            )
+            conn.close()
+            cascade_trades_list = c_trades_df.to_dict(orient="records")
+        except Exception:
+            pass
+
+    cascade_krw_balance = 0.0
+    cascade_open_orders = {}
+    try:
+        from utils.pocket_api import UpbitPocketClient
+        c2_client = UpbitPocketClient(env_prefix="UPBIT_POCKET2")
+        cascade_krw_balance = float(c2_client.get_balance("KRW"))
+        for m_sym in ["KRW-SOL", "KRW-ETH"]:
+            orders = c2_client.get_open_orders(m_sym)
+            if orders:
+                cascade_open_orders[m_sym] = orders
+    except Exception:
+        pass
+
+    cascade_pocket_data = {
+        "states": cascade_states,
+        "trades_list": cascade_trades_list,
+        "krw_balance": cascade_krw_balance,
+        "open_orders": cascade_open_orders
+    }
+
     # 가상 매매 (Paper Trading) 데이터 포함 (XRP, ETH, SOL 등 다중 마켓 자동 탐색)
     paper_states = {}
     for p_file in SNAPSHOT_DIR.parent.glob("paper_grid_state_KRW_*.json"):
@@ -200,7 +244,8 @@ def create_dashboard_snapshot(account_data: Optional[Dict[str, Any]] = None) -> 
         "account_data": account_data,
         "active_strategies": serializable_strategies,
         "paper_trading": paper_trading_data,
-        "pocket_grid": pocket_grid_data
+        "pocket_grid": pocket_grid_data,
+        "cascade_pocket": cascade_pocket_data
     }
 
 

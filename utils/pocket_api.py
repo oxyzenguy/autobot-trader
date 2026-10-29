@@ -21,11 +21,37 @@ UPBIT_HOST = "https://api.upbit.com"
 
 
 class UpbitPocketClient:
-    def __init__(self, access_key: Optional[str] = None, secret_key: Optional[str] = None):
-        self.access_key = access_key or os.getenv("UPBIT_POCKET_ACCESS_KEY")
-        self.secret_key = secret_key or os.getenv("UPBIT_POCKET_SECRET_KEY")
+    def __init__(
+        self,
+        access_key: Optional[str] = None,
+        secret_key: Optional[str] = None,
+        env_prefix: str = "UPBIT_POCKET"
+    ):
+        self.env_prefix = env_prefix
+        self.access_key = (
+            access_key
+            or os.getenv(f"{env_prefix}_ACCESS_KEY")
+            or (os.getenv("UPBIT_CASCADE_ACCESS_KEY") if env_prefix == "UPBIT_POCKET2" else None)
+        )
+        self.secret_key = (
+            secret_key
+            or os.getenv(f"{env_prefix}_SECRET_KEY")
+            or (os.getenv("UPBIT_CASCADE_SECRET_KEY") if env_prefix == "UPBIT_POCKET2" else None)
+        )
+
         if not self.access_key or not self.secret_key:
-            raise ValueError("UPBIT_POCKET_ACCESS_KEY 또는 UPBIT_POCKET_SECRET_KEY가 설정되지 않았습니다.")
+            if env_prefix == "UPBIT_POCKET":
+                raise ValueError("UPBIT_POCKET_ACCESS_KEY 또는 UPBIT_POCKET_SECRET_KEY가 설정되지 않았습니다.")
+            else:
+                fb_ak = os.getenv("UPBIT_POCKET_ACCESS_KEY")
+                fb_sk = os.getenv("UPBIT_POCKET_SECRET_KEY")
+                if fb_ak and fb_sk and os.getenv("ALLOW_POCKET_FALLBACK", "0") == "1":
+                    self.access_key = fb_ak
+                    self.secret_key = fb_sk
+                else:
+                    raise ValueError(
+                        f"[{env_prefix}] API 키가 설정되지 않았습니다. .env 파일에 {env_prefix}_ACCESS_KEY 및 {env_prefix}_SECRET_KEY를 등록해주세요."
+                    )
 
     def _get_headers(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         payload = {
@@ -209,3 +235,161 @@ class UpbitPocketClient:
                 return parsed
 
         raise TimeoutError(f"Market sell order {order_uuid} (identifier: {identifier}) timed out after {timeout_sec}s")
+
+    def get_open_orders(self, market: str) -> List[Dict[str, Any]]:
+        """해당 마켓의 미체결 주문 목록 조회 (state=wait)"""
+        params = {"market": market, "state": "wait"}
+        headers = self._get_headers(params)
+        r = requests.get(f"{UPBIT_HOST}/v1/orders?{urlencode(params)}", headers=headers, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+        raise RuntimeError(f"Failed to get open orders for {market}: {r.status_code} {r.text}")
+
+    def create_limit_order(
+        self,
+        market: str,
+        side: str,
+        volume: float,
+        price: float,
+        identifier: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """지정가 주문 접수 (side: 'bid' 또는 'ask')"""
+        clean_vol = f"{volume:.8f}".rstrip("0").rstrip(".")
+        clean_price = str(int(price)) if price >= 1.0 else f"{price:.4f}".rstrip("0").rstrip(".")
+
+        body = {
+            "market": market,
+            "side": side,
+            "volume": clean_vol,
+            "price": clean_price,
+            "ord_type": "limit"
+        }
+        if identifier:
+            body["identifier"] = identifier
+
+        headers = self._get_headers(body)
+        r = requests.post(f"{UPBIT_HOST}/v1/orders", json=body, headers=headers, timeout=5)
+        if r.status_code in (200, 201):
+            return r.json()
+        raise RuntimeError(f"Limit order ({side} {volume} @ {price}) failed: {r.status_code} {r.text}")
+
+    def cancel_order(self, order_uuid: str) -> Dict[str, Any]:
+        """주문 취소 접수"""
+        params = {"uuid": order_uuid}
+        headers = self._get_headers(params)
+        r = requests.delete(f"{UPBIT_HOST}/v1/order?{urlencode(params)}", headers=headers, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+        raise RuntimeError(f"Cancel order {order_uuid} failed: {r.status_code} {r.text}")
+
+    def get_coin_balance_and_avg(self, currency: str) -> Tuple[float, float]:
+        """특정 코인의 보유 수량 및 평단가 반환 (수량, 평단가)"""
+        accounts = self.get_accounts()
+        for acc in accounts:
+            if acc.get("currency") == currency:
+                bal = float(acc.get("balance", 0.0) or 0.0)
+                locked = float(acc.get("locked", 0.0) or 0.0)
+                avg = float(acc.get("avg_buy_price", 0.0) or 0.0)
+                return (bal + locked, avg)
+        return (0.0, 0.0)
+
+
+class UpbitPocketManager:
+    """업비트 포켓 관리 및 포켓 간 자산 이전 전용 클라이언트 (UPBIT_MGMT_ACCESS_KEY 사용)"""
+    def __init__(
+        self,
+        access_key: Optional[str] = None,
+        secret_key: Optional[str] = None,
+        server_url: str = UPBIT_HOST
+    ):
+        self.access_key = access_key or os.getenv("UPBIT_MGMT_ACCESS_KEY")
+        self.secret_key = secret_key or os.getenv("UPBIT_MGMT_SECRET_KEY")
+        self.server_url = server_url
+
+        if not self.access_key or not self.secret_key:
+            raise ValueError(
+                "UPBIT_MGMT_ACCESS_KEY 또는 UPBIT_MGMT_SECRET_KEY가 설정되지 않았습니다. .env 파일을 확인해주세요."
+            )
+
+    def _get_headers(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        payload = {
+            "access_key": self.access_key,
+            "nonce": str(uuid.uuid4())
+        }
+        if params:
+            query_str = unquote(urlencode(params))
+            m = hashlib.sha512(query_str.encode("utf-8")).hexdigest()
+            payload["query_hash"] = m
+            payload["query_hash_alg"] = "SHA512"
+
+        token = jwt.encode(payload, self.secret_key, algorithm="HS256")
+        return {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+    def list_pockets(self) -> List[Dict[str, Any]]:
+        """계정 내 전체 포켓 목록 조회"""
+        headers = self._get_headers()
+        r = requests.get(f"{self.server_url}/v1/pockets", headers=headers, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+        raise RuntimeError(f"Failed to list pockets: {r.status_code} {r.text}")
+
+    def get_pocket_uuid(self, name_or_uuid: str) -> str:
+        """포켓 이름 또는 UUID로 포켓 UUID 확인"""
+        pockets = self.list_pockets()
+        for p in pockets:
+            if p.get("uuid") == name_or_uuid or p.get("name") == name_or_uuid:
+                return p["uuid"]
+        raise ValueError(f"포켓을 찾을 수 없습니다: {name_or_uuid} (조회된 포켓: {[p.get('name') for p in pockets]})")
+
+    def transfer(
+        self,
+        from_pocket: str,
+        to_pocket: str,
+        currency: str,
+        amount: float,
+        identifier: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """포켓 간 자산 이전 실행 (POST /v1/pockets/universal_transfers)"""
+        from_uuid = self.get_pocket_uuid(from_pocket)
+        to_uuid = self.get_pocket_uuid(to_pocket)
+        if from_uuid == to_uuid:
+            raise ValueError("출금 포켓과 입금 포켓이 동일합니다.")
+
+        clean_amount = str(int(amount)) if amount == int(amount) else f"{amount:.8f}".rstrip("0").rstrip(".")
+        ident = identifier or f"transfer_{uuid.uuid4().hex[:12]}"
+        body = {
+            "from": from_uuid,
+            "to": to_uuid,
+            "currency": currency,
+            "amount": clean_amount,
+            "identifier": ident
+        }
+        headers = self._get_headers(body)
+        r = requests.post(
+            f"{self.server_url}/v1/pockets/universal_transfers",
+            json=body,
+            headers=headers,
+            timeout=5
+        )
+        if r.status_code in (200, 201):
+            return r.json()
+        raise RuntimeError(f"Pocket transfer failed ({r.status_code}): {r.text}")
+
+    def list_transfers(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """메인포켓 자산 이전 목록 조회 (GET /v1/pockets/universal_transfers)"""
+        params = {"limit": limit}
+        headers = self._get_headers(params)
+        r = requests.get(
+            f"{self.server_url}/v1/pockets/universal_transfers?{urlencode(params)}",
+            headers=headers,
+            timeout=5
+        )
+        if r.status_code == 200:
+            return r.json()
+        raise RuntimeError(f"Failed to list transfers ({r.status_code}): {r.text}")
+
+
+

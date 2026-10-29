@@ -279,5 +279,58 @@ class TestPocketGridSafety(unittest.TestCase):
             self.assertTrue(any("G60 실거래 개별 익절" in m and "Lvl 1" in m for m in sent_msgs))
 
 
+class TestPocketManager(unittest.TestCase):
+    @patch("utils.pocket_api.requests.get")
+    def test_list_pockets_and_get_uuid(self, mock_get):
+        from utils.pocket_api import UpbitPocketManager
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = [
+            {"uuid": "main-uuid-1", "name": "메인포켓", "type": "main"},
+            {"uuid": "cascade-uuid-2", "name": "Cascade", "type": "user_spot_trading"}
+        ]
+        mgr = UpbitPocketManager("test-ak", "test-sk")
+        pockets = mgr.list_pockets()
+        self.assertEqual(len(pockets), 2)
+        self.assertEqual(mgr.get_pocket_uuid("Cascade"), "cascade-uuid-2")
+        self.assertEqual(mgr.get_pocket_uuid("main-uuid-1"), "main-uuid-1")
+        with self.assertRaises(ValueError):
+            mgr.get_pocket_uuid("NonExistent")
+
+    @patch("utils.pocket_api.requests.post")
+    @patch("utils.pocket_api.requests.get")
+    def test_transfer_success_and_validation(self, mock_get, mock_post):
+        from utils.pocket_api import UpbitPocketManager
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = [
+            {"uuid": "main-uuid-1", "name": "메인포켓", "type": "main"},
+            {"uuid": "cascade-uuid-2", "name": "Cascade", "type": "user_spot_trading"}
+        ]
+        mock_post.return_value.status_code = 201
+        mock_post.return_value.json.return_value = {
+            "uuid": "tx-123", "state": "done", "amount": "300000"
+        }
+
+        mgr = UpbitPocketManager("test-ak", "test-sk")
+        res = mgr.transfer("메인포켓", "Cascade", "KRW", 300000)
+        self.assertEqual(res["state"], "done")
+
+        # Validation: Same from and to
+        with self.assertRaises(ValueError):
+            mgr.transfer("Cascade", "Cascade", "KRW", 10000)
+
+    @patch("utils.pocket_api.requests.get")
+    def test_list_transfers(self, mock_get):
+        from utils.pocket_api import UpbitPocketManager
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = [
+            {"uuid": "tx-123", "state": "done", "amount": "300000.0", "currency": "KRW"}
+        ]
+        mgr = UpbitPocketManager("test-ak", "test-sk")
+        txs = mgr.list_transfers(limit=10)
+        self.assertEqual(len(txs), 1)
+        self.assertEqual(txs[0]["currency"], "KRW")
+
+
+
 if __name__ == "__main__":
     unittest.main()

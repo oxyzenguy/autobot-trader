@@ -187,6 +187,31 @@ class TestP1BullEntry(unittest.TestCase):
         self.assertEqual(logged[0]["action"], "TREND_GOLDEN_CROSS_BUY")
         self.assertEqual(saved[-1]["need_fresh_golden_cross"], False)
 
+    def test_exit_only_state_blocks_new_buys(self):
+        """When state has exit_only=True, new buys are strictly blocked even in BULL BUY signal."""
+        prot = main.PROTECTED_BALANCES["KRW-SOL"]
+        exchange = FakeExchange(prot, 165_000.0)
+        state = {
+            "market": "KRW-SOL",
+            "current_regime": "BULL",
+            "active_mode": "TREND",
+            "bot_quantity": 0.0,
+            "bot_avg_price": 0.0,
+            "protected_quantity": prot,
+            "initial_entry_done": True,
+            "trailing_stop_active": False,
+            "tranches": [],
+            "completed_cycles": 2,
+            "need_fresh_golden_cross": False,
+            "exit_only": True,
+        }
+
+        saved, logged = self.run_tick(exchange, state, 165_000.0, is_bull=True, signal="BUY")
+
+        # Zero buys must have occurred
+        self.assertEqual(len(exchange.market_buys), 0)
+        self.assertEqual(len(logged), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

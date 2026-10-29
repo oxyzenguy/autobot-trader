@@ -72,6 +72,8 @@ def get_all_bot_statuses() -> Dict[str, Dict[str, Any]]:
         "pocket_grid_xrp.py": "G60 포켓 실거래 (XRP)",
         "pocket_grid_eth.py": "G60 포켓 실거래 (ETH)",
         "pocket_grid_sol.py": "G60 포켓 실거래 (SOL)",
+        "pocket2_basket_eth.py": "신규 포켓2 200단 (ETH 1.8/0.8)",
+        "pocket2_basket_sol.py": "신규 포켓2 200단 (SOL 1.8/0.8)",
         "dashboard.py": "웹 대시보드 (dashboard.py)"
     }
     res = {}
@@ -143,6 +145,47 @@ def restart_pocket_bots() -> str:
         f"• SOL: <code>PID {new_pids.get('pocket_grid_sol.py', '-')}</code>\n"
         "서브포켓 실거래 호가 감시 및 자동 매매가 시작되었습니다."
     )
+
+
+def restart_pocket2_bots(target: str = "all") -> str:
+    """신규 포켓2 200단 바스켓 데몬(ETH, SOL)을 종료 후 백그라운드로 안전하게 재기동합니다."""
+    target_lower = target.lower()
+    if target_lower in ["sol", "솔"]:
+        scripts = ["pocket2_basket_sol.py"]
+    elif target_lower in ["eth", "이더"]:
+        scripts = ["pocket2_basket_eth.py"]
+    else:
+        scripts = ["pocket2_basket_eth.py", "pocket2_basket_sol.py"]
+
+    new_pids = {}
+    python_bin = get_python_executable()
+
+    for script in scripts:
+        old_pids = find_process_pids(script)
+        if old_pids:
+            kill_processes(old_pids)
+
+        log_file = BASE_DIR / script.replace(".py", ".log")
+        with open(log_file, "a") as f:
+            proc = subprocess.Popen(
+                [python_bin, "-u", script],
+                cwd=str(BASE_DIR),
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True
+            )
+            new_pids[script] = proc.pid
+        time.sleep(0.3)
+
+    msg_lines = ["🚀 <b>[신규 포켓2 200단 러너 가동 완료]</b>"]
+    if "pocket2_basket_eth.py" in new_pids:
+        msg_lines.append(f"• ETH (1.8/0.8): <code>PID {new_pids.get('pocket2_basket_eth.py', '-')}</code>")
+    if "pocket2_basket_sol.py" in new_pids:
+        msg_lines.append(f"• SOL (1.8/0.8): <code>PID {new_pids.get('pocket2_basket_sol.py', '-')}</code>")
+    msg_lines.append("독립 서브포켓2 전용 자동 매매가 시작되었습니다.")
+
+    return "\n".join(msg_lines)
+
 
 
 def restart_paper_bots() -> str:
@@ -272,6 +315,22 @@ def handle_restart_command(
         msg = restart_pocket_bots()
         send_alert_fn(msg)
 
+    elif sub_cmd in ["포켓2", "pocket2", "신규포켓", "포켓200단", "basket2"]:
+        send_alert_fn("🔄 <b>[신규 포켓2 200단 재기동]</b> ETH/SOL 2개 신규 포켓 데몬을 재시작합니다...")
+        msg = restart_pocket2_bots("all")
+        send_alert_fn(msg)
+
+    elif sub_cmd in ["포켓2솔", "pocket2_sol", "솔2", "sol2"]:
+        send_alert_fn("🔄 <b>[신규 포켓2 SOL 200단 재기동]</b> SOL 신규 포켓 데몬을 재시작합니다...")
+        msg = restart_pocket2_bots("sol")
+        send_alert_fn(msg)
+
+    elif sub_cmd in ["포켓2이더", "pocket2_eth", "이더2", "eth2"]:
+        send_alert_fn("🔄 <b>[신규 포켓2 ETH 200단 재기동]</b> ETH 신규 포켓 데몬을 재시작합니다...")
+        msg = restart_pocket2_bots("eth")
+        send_alert_fn(msg)
+
+
     elif sub_cmd in ["대시보드", "dashboard", "streamlit"]:
         send_alert_fn("🔄 <b>[웹 대시보드 재기동]</b> Streamlit 대시보드를 재시작합니다...")
         msg = restart_dashboard_bot()
@@ -294,6 +353,7 @@ def handle_restart_command(
             "• <code>/재기동</code> : 실거래 봇(main.py) 재기동 (기본값)\n"
             "• <code>/재기동 실거래</code> : 실거래 봇 재기동\n"
             "• <code>/재기동 포켓</code> : G60 포켓 실거래 3종(XRP/ETH/SOL) 재기동\n"
+            "• <code>/재기동 포켓2</code> : 신규 포켓2 200단 러너(ETH/SOL) 재기동\n"
             "• <code>/재기동 가상</code> : 가상매매 3종(XRP/ETH/SOL) 재기동\n"
             "• <code>/재기동 대시보드</code> : Streamlit 웹 대시보드 재기동\n"
             "• <code>/재기동 전체</code> : 실거래 / 포켓 / 가상매매 / 대시보드 전체 재기동\n\n"
