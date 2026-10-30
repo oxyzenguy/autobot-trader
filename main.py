@@ -50,6 +50,8 @@ from config import (
     MARTINGALE_SCHEDULE,
     MARTINGALE_MAX_STEPS,
     get_martingale_max_steps,
+    MAX_SQUAD_CAPS,
+    get_max_squad_cap,
     STOP_LOSS_COOLDOWN_HOURS,
     REGIME_SWITCH_COOLDOWN_HOURS,
     TELEGRAM_BRIEFING_SCHEDULE,
@@ -2263,9 +2265,57 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     print(f"[{market}] [CRITICAL] 미체결 주문/트랜치 슬롯 메타데이터 불일치 또는 미확정; 거래를 중단합니다.")
                     halt_for_order_reconciliation(market, state, {"reason": "슬롯 메타데이터 불일치 또는 식별 불가"})
                     continue
-                max_squad_cap_reached = (market == "KRW-SOL" and any(sid >= 4 and stg >= 4 for sid, stg in active_stages))
+                max_squad_cap = get_max_squad_cap(market)
+                squad_exhausted = (
+                    max_squad_cap is not None and any(
+                        t.get("squad_id") is not None and t.get("squad_id") >= max_squad_cap and
+                        t.get("squad_stage") is not None and t.get("squad_stage") >= 4
+                        for t in state.get("tranches", [])
+                    )
+                )
+                max_squad_cap_reached = squad_exhausted or (
+                    max_squad_cap is not None and any(
+                        sid >= max_squad_cap and stg >= 4 for sid, stg in active_stages
+                    )
+                )
                 current_steps = len(state.get("tranches", []))
-                expected_open_buys = 0 if (max_squad_cap_reached or is_exit_only) else max(0, min(3, max_steps - len(active_stages)))
+                expected_open_buys = 0 if (squad_exhausted or is_exit_only) else (
+                    1 if max_squad_cap_reached else max(0, min(3, max_steps - len(active_stages)))
+                )
+
+                # 최대 허용 스쿼드를 초과하는 비정상/잔여 매수 주문(예: ETH Squad 10+) 즉시 취소 및 장부 정격화
+                if max_squad_cap is not None and buy_orders:
+                    over_cap_buys = [
+                        o for o in buy_orders
+                        if state.get("bear_limit_buys", {}).get(o['uuid'], {}).get("squad_id", 0) > max_squad_cap
+                    ]
+                    if over_cap_buys:
+                        print(f"[{market}] 🛑 최대 허용 스쿼드({max_squad_cap} 스쿼드) 초과 주문 {len(over_cap_buys)}건 취소 집행.")
+                        cancel_over_ok = True
+                        for o in over_cap_buys:
+                            if cancel_order_and_wait(upbit, o['uuid'], market=market, state=state):
+                                if o['uuid'] in state.get("bear_limit_buys", {}):
+                                    state["bear_limit_buys"][o['uuid']]["state"] = "cancel"
+                            else:
+                                cancel_over_ok = False
+                        if not cancel_over_ok:
+                            halt_for_order_reconciliation(market, state, {"reason": "최대 스쿼드 초과 매수 주문 취소 미확정"})
+                            continue
+                        save_strategy_state(market, state)
+                        buy_orders = [o for o in buy_orders if o['uuid'] not in [x['uuid'] for x in over_cap_buys]]
+                        num_buy = len(buy_orders)
+                        active_stages = get_existing_stages_from_state(state)
+                        if active_stages is None:
+                            halt_for_order_reconciliation(market, state, {"reason": "초과 주문 취소 후 슬롯 식별 불가"})
+                            continue
+                        max_squad_cap_reached = squad_exhausted or (
+                            max_squad_cap is not None and any(
+                                sid >= max_squad_cap and stg >= 4 for sid, stg in active_stages
+                            )
+                        )
+                        expected_open_buys = 0 if (squad_exhausted or is_exit_only) else (
+                            1 if max_squad_cap_reached else max(0, min(3, max_steps - len(active_stages)))
+                        )
 
                 # 그리드 이탈 방지: 시장가가 최고 매수가보다 크게 상승하여 박스권을 이탈한 경우 고립 주문 취소 및 재배치
                 if buy_orders and not max_squad_cap_reached:
@@ -2305,9 +2355,9 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             buy_orders = [o for o in buy_orders if o['uuid'] not in [x['uuid'] for x in orphan_orders_to_cancel]]
                             num_buy = len(buy_orders)
 
-                # SOL 4개 스쿼드(16차수) 등 최대 차수 도달 또는 EXIT_ONLY 모드 시 잔여 매수 주문 자동 취소 및 홀딩 관리
-                if (current_steps >= max_steps or max_squad_cap_reached or is_exit_only) and num_buy > 0:
-                    reason_desc = "익절 정리(EXIT_ONLY)" if is_exit_only else f"최대 차수({max_steps}차수) 도달"
+                # SOL 4개 스쿼드(16차수) / ETH 9개 스쿼드 등 최대 차수/스쿼드 전량 소진(squad_exhausted) 또는 EXIT_ONLY 모드 시 잔여 매수 주문 자동 취소 및 홀딩 관리
+                if (current_steps >= max_steps or squad_exhausted or is_exit_only) and num_buy > 0:
+                    reason_desc = "익절 정리(EXIT_ONLY)" if is_exit_only else f"최대 차수/스쿼드(최대 {max_squad_cap or max_steps}) 도달"
                     print(f"[{market}] 🛑 마틴게일 {reason_desc}로 잔여 매수 주문 {num_buy}건 취소.")
                     cancel_ok = True
                     for order in buy_orders:
@@ -2729,9 +2779,21 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         halt_for_order_reconciliation(market, state, {"reason": "추가 물타기 슬롯 메타데이터 불일치 또는 식별 불가"})
                         continue
                     reg_data = {}
-                    max_squad_cap_reached = (market == "KRW-SOL" and any(sid >= 4 and stg >= 4 for sid, stg in active_stages))
+                    max_squad_cap = get_max_squad_cap(market)
+                    squad_exhausted = (
+                        max_squad_cap is not None and any(
+                            t.get("squad_id") is not None and t.get("squad_id") >= max_squad_cap and
+                            t.get("squad_stage") is not None and t.get("squad_stage") >= 4
+                            for t in state.get("tranches", [])
+                        )
+                    )
+                    max_squad_cap_reached = squad_exhausted or (
+                        max_squad_cap is not None and any(
+                            sid >= max_squad_cap and stg >= 4 for sid, stg in active_stages
+                        )
+                    )
                     if max_squad_cap_reached or len(active_stages) >= max_steps or is_exit_only:
-                        print(f"[{market}]   - 마틴게일 최대 차수({max_steps}차수) 도달 또는 익절 정리(EXIT_ONLY) 모드: 추가 물타기 매수 생략.")
+                        print(f"[{market}]   - 마틴게일 최대 차수/스쿼드(최대 {max_squad_cap or max_steps}) 도달 또는 익절 정리(EXIT_ONLY) 모드: 추가 물타기 매수 생략.")
                         additional_orders = []
                     elif not candles_valid:
                         print(f"[{market}] ⚠️ [캔들 데이터 검증 대기] 확정 캔들 검증 실패로 추가 물타기 매수 보류 (신규 매수 0건).")
@@ -2800,7 +2862,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             print(f"[{market}]     - 추가 매수 주문: {p:,.0f}원 | Squad {s_id} Stage {s_stage} | {u} Units ({order_krw:,}원)")
                         time.sleep(0.2)
 
-                    if max_squad_cap_reached or len(active_stages) >= max_steps:
+                    if max_squad_cap_reached or squad_exhausted or len(active_stages) >= max_steps:
                         state["bear_buy_rebalance_pending"] = False
                     elif bool(additional_orders) or (candles_valid and (not is_adaptive_grid_enabled(market) or reg_data.get("candles_valid", False))):
                         state["bear_buy_rebalance_pending"] = False

@@ -196,7 +196,8 @@ def get_next_squad_stages(
     existing_stages: List[tuple],
     count: int = 1,
     max_steps: int = 9999,
-    legacy_count: int = 0
+    legacy_count: int = 0,
+    max_squad: Optional[int] = None
 ) -> List[Dict[str, int]]:
     """
     Determine the next `count` sequential squad stages based on the highest existing (squad_id, squad_stage).
@@ -219,13 +220,16 @@ def get_next_squad_stages(
                 next_sid = max_sid + 1
                 next_stage = 1
 
-        stage_idx = legacy_count + (next_sid - 1) * 4 + next_stage
-        if stage_idx > max_steps:
-            break
-        # Also enforce max squads if max_steps corresponds to squads (e.g. SOL 16 steps = 4 squads)
-        max_squads = max(1, max_steps // 4)
-        if next_sid > max_squads and max_steps <= 16:
-            break
+        if max_squad is not None:
+            if next_sid > max_squad:
+                break
+        elif max_steps < 9999:
+            max_squads = max(1, max_steps // 4)
+            if next_sid > max_squads:
+                break
+            stage_idx = legacy_count + (next_sid - 1) * 4 + next_stage
+            if stage_idx > max_steps:
+                break
 
         units = SQUAD_STAGE_MULTIPLIERS.get(next_stage, 1)
         results.append({
@@ -316,11 +320,19 @@ def calculate_new_buy_prices(
                 stg = (k - 1) % 4 + 1
                 existing_stages.append((sid, stg))
 
-    # 물타기 하락 간격 (down_pct) 결정
+    # 물타기 하락 간격 (down_pct) 및 최대 허용 스쿼드(max_squad) 결정
+    market = (state.get("market") if isinstance(state, dict) else None) or kwargs.get("market")
+    max_squad = kwargs.get("max_squad")
+    if max_squad is None and market:
+        try:
+            from config import get_max_squad_cap
+            max_squad = get_max_squad_cap(market)
+        except Exception:
+            max_squad = None
+
     if down_pct is None:
         down_pct = kwargs.get('down_pct')
     if down_pct is None:
-        market = (state.get("market") if isinstance(state, dict) else None) or kwargs.get("market")
         if market:
             from config import get_magic_split_down_pct
             down_pct = get_magic_split_down_pct(market)
@@ -332,12 +344,13 @@ def calculate_new_buy_prices(
     # Case 3: 매도 완료 후 신규/재진입 (평단가 기준 단계별 예약)
     if not normalized_orders:
         orders = []
-        num_to_create = min(3, max(0, max_steps - (legacy_count + len(existing_stages))))
+        num_to_create = 3 if max_squad is not None else min(3, max(0, max_steps - (legacy_count + len(existing_stages))))
         planned_stages = get_next_squad_stages(
             existing_stages=existing_stages,
             count=num_to_create,
             max_steps=max_steps,
-            legacy_count=legacy_count
+            legacy_count=legacy_count,
+            max_squad=max_squad
         )
         cum_factor = 1.0
         for s_info in planned_stages:
@@ -353,7 +366,7 @@ def calculate_new_buy_prices(
 
     # Case 4: 매수 체결 시 (미체결 주문 기준 추가 주문)
     num_existing = len(normalized_orders)
-    allowed_new = max_steps - (legacy_count + len(existing_stages))
+    allowed_new = (3 - num_existing) if max_squad is not None else (max_steps - (legacy_count + len(existing_stages)))
     if allowed_new <= 0:
         return []
 
@@ -362,7 +375,8 @@ def calculate_new_buy_prices(
         existing_stages=existing_stages,
         count=num_to_create,
         max_steps=max_steps,
-        legacy_count=legacy_count
+        legacy_count=legacy_count,
+        max_squad=max_squad
     )
     if not planned_stages:
         return []

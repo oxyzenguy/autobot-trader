@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 from pathlib import Path
 import pyupbit
@@ -121,7 +122,7 @@ def _sync_config_from_disk():
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        if target.id in ("PROFIT_MARGINS", "MAGIC_SPLIT_DOWN_PCTS", "MAGIC_SPLIT_TRANCHE_PROFITS", "MARKET_STRATEGIES", "MARTINGALE_MAX_STEPS"):
+                        if target.id in ("PROFIT_MARGINS", "MAGIC_SPLIT_DOWN_PCTS", "MAGIC_SPLIT_TRANCHE_PROFITS", "MARKET_STRATEGIES", "MARTINGALE_MAX_STEPS", "MAX_SQUAD_CAPS"):
                             try:
                                 val = ast.literal_eval(node.value)
                                 cur = globals().get(target.id)
@@ -201,21 +202,32 @@ REGIME_SWITCH_LIQUIDATION_PCT = {
 # 하락장(BEAR) 마틴게일 스쿼드(Squad = 1-1-2-4) 투입 스케줄 (종목별 차별화)
 # 1 Squad = [1, 1, 2, 4] 배수 (총 8 Units = 80,000원)
 # SOL: 1-1-2-4 스쿼드 4번 투입 (총 16차수 = 32 Units / 32만 원 캡 후 홀딩)
-# ETH: 1-1-2-4 스쿼드 무제한 순환 투입 (1-1-2-4-1-1-2-4... 예수금 한도 내 무한 물타기 및 탈출)
+# ETH: 1-1-2-4 스쿼드 최대 9번 투입 (총 36차수 = 72 Units / 72만 원 캡 후 홀딩)
 MARTINGALE_SCHEDULE = {
     "KRW-SOL": [1, 1, 2, 4] * 4,  # 총 4개 스쿼드 (16차수 / 32 Units 캡 후 홀딩)
-    "KRW-ETH": [1, 1, 2, 4],      # 1-1-2-4 스쿼드 무제한 순환 패턴
+    "KRW-ETH": [1, 1, 2, 4] * 9,  # 총 9개 스쿼드 (36차수 / 72 Units 캡 후 홀딩)
 }
+
+# 마틴게일 최대 허용 스쿼드 번호 (1 Squad = 4 stages)
+MAX_SQUAD_CAPS = {
+    "KRW-SOL": 4,     # 솔라나: 최대 4개 스쿼드
+    "KRW-ETH": 9,     # 이더리움: 최대 9개 스쿼드
+}
+
+def get_max_squad_cap(market: str) -> Optional[int]:
+    """해당 마켓의 마틴게일 최대 허용 스쿼드 번호를 반환합니다 (None이면 무제한)."""
+    _sync_config_from_disk()
+    return MAX_SQUAD_CAPS.get(market)
 
 MARTINGALE_MAX_STEPS = {
     "KRW-SOL": 4,     # 솔라나: 추가 매수 전면 중단 (기존 4차수 유지 후 익절 정리 대기)
-    "KRW-ETH": 9999,  # 이더리움: 예수금 허용 한도 내 무제한 스쿼드 투입
+    "KRW-ETH": 36,    # 이더리움: 최대 9개 스쿼드 (36차수)
 }
 
 def get_martingale_max_steps(market: str) -> int:
     """해당 마켓의 마틴게일 최대 허용 차수를 반환합니다."""
     _sync_config_from_disk()
-    return MARTINGALE_MAX_STEPS.get(market, 16 if market == "KRW-SOL" else 9999)
+    return MARTINGALE_MAX_STEPS.get(market, 16 if market == "KRW-SOL" else 36)
 
 # 종목별 맞춤 익절 마진 (1단계 추천 적용: SOL 0.5%, ETH 0.8%)
 PROFIT_MARGINS = {

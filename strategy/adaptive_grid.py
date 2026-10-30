@@ -279,11 +279,21 @@ def calculate_adaptive_buy_prices(
         else:
             existing_stages = []
 
+    market = (state.get("market") if isinstance(state, dict) else None) or kwargs.get("market")
+    max_squad = kwargs.get("max_squad")
+    if max_squad is None and market:
+        try:
+            from config import get_max_squad_cap
+            max_squad = get_max_squad_cap(market)
+        except Exception:
+            max_squad = None
+
     planned_stages = get_next_squad_stages(
         existing_stages=existing_stages,
         count=num_orders,
         max_steps=max_steps,
-        legacy_count=legacy_count
+        legacy_count=legacy_count,
+        max_squad=max_squad
     )
     if not planned_stages:
         return []
