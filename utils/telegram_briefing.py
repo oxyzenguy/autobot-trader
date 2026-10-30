@@ -152,31 +152,34 @@ def build_status_briefing() -> str:
 
     # 4. Cascade 서브포켓 (신규 200단 바스켓 리셋)
     lines.extend(["", "🌊 <b>[Cascade 서브포켓]</b> (1.8% 하락 / 0.8% 익절 200단)"])
-    try:
-        c_sol_file = os.path.join(BASE_DIR, "pocket2_basket_state_KRW_SOL.json")
-        if os.path.exists(c_sol_file):
-            with open(c_sol_file, "r", encoding="utf-8") as f:
-                cs = json.load(f)
-            cs_cycle = _safe_int(cs.get("cycle_count", 1))
-            cs_lvls = _safe_int(cs.get("active_levels", 0))
-            cs_vol = _safe_float(cs.get("held_volume", 0.0))
-            cs_vwap = _safe_float(cs.get("vwap", 0.0))
-            cs_pnl = _safe_float(cs.get("total_realized_pnl", 0.0))
-            cs_wins = _safe_int(cs.get("win_count", 0))
-            cs_sell = cs.get("pending_sell") or {}
-            cs_tp_p = _safe_float(cs_sell.get("price", 0.0))
-            cs_buys = cs.get("pending_buys") or {}
+    for m_sym, f_tag in [("SOL", "KRW_SOL"), ("ETH", "KRW_ETH")]:
+        try:
+            c_file = os.path.join(BASE_DIR, f"pocket2_basket_state_{f_tag}.json")
+            if os.path.exists(c_file):
+                with open(c_file, "r", encoding="utf-8") as f:
+                    cs = json.load(f)
+                cs_cycle = _safe_int(cs.get("cycle_count", 1))
+                cs_lvls = _safe_int(cs.get("active_levels", 0))
+                cs_vol = _safe_float(cs.get("held_volume", 0.0))
+                cs_vwap = _safe_float(cs.get("vwap", 0.0))
+                cs_pnl = _safe_float(cs.get("total_realized_pnl", 0.0))
+                cs_wins = _safe_int(cs.get("win_count", 0))
+                cs_sell = cs.get("pending_sell") or {}
+                cs_tp_p = _safe_float(cs_sell.get("price", 0.0))
+                cs_buys = cs.get("pending_buys") or {}
 
-            lines.extend([
-                f"• <b>SOL</b> (사이클 {cs_cycle}회차): <b>{cs_lvls}/200단</b> ({cs_vol:.4f} SOL @ {cs_vwap:,.0f}원)",
-                f"  - 전량 익절가: <b>{cs_tp_p:,.0f}원</b> (+0.80%) | 대기 매수: {len(cs_buys)}건",
-                f"  - 누적 실현: <b>{cs_pnl:+,.0f}원</b> ({cs_wins}회 익절 성공)"
-            ])
-        else:
-            lines.append("• <b>SOL</b>: 대기 중")
-    except Exception:
-        lines.append("• <b>SOL</b>: Cascade 상태 로드 중...")
-    lines.append("• <b>ETH</b>: ⏳ 메인봇 익절 완료 후 자산 이전 대기")
+                lines.extend([
+                    f"• <b>{m_sym}</b> (사이클 {cs_cycle}회차): <b>{cs_lvls}/200단</b> ({cs_vol:.4f} {m_sym} @ {cs_vwap:,.0f}원)",
+                    f"  - 전량 익절가: <b>{cs_tp_p:,.0f}원</b> (+0.80%) | 대기 매수: {len(cs_buys)}건",
+                    f"  - 누적 실현: <b>{cs_pnl:+,.0f}원</b> ({cs_wins}회 익절 성공)"
+                ])
+            else:
+                if m_sym == "ETH":
+                    lines.append("• <b>ETH</b>: ⏳ 메인봇 익절 완료 후 자산 이전 대기")
+                else:
+                    lines.append(f"• <b>{m_sym}</b>: 대기 중")
+        except Exception:
+            lines.append(f"• <b>{m_sym}</b>: Cascade 상태 로드 중...")
 
     # 5. G60 서브포켓 요약
     lines.extend(["", "⚡ <b>[G60 서브포켓]</b> (3종 스쿼드 그리드)"])
@@ -379,11 +382,59 @@ def build_cascade_briefing() -> str:
         lines.append("🟣 솔라나: 상태 파일 미발견 (대기 중)\n")
 
     # ETH
-    lines.extend([
-        "💎 <b>이더리움 (KRW-ETH) - 대기 중 (PENDING_TRANSFER)</b>",
-        "• 운용 상태: 메인봇 ETH 포지션 전량 익절 완료 후 자금 이전하여 시작 예정",
-        "• 예정 설정: 1.8% 하락 매수 / 0.8% 전량 익절 리셋 (200단 버퍼)"
-    ])
+    eth_file = os.path.join(BASE_DIR, "pocket2_basket_state_KRW_ETH.json")
+    if os.path.exists(eth_file):
+        try:
+            with open(eth_file, "r", encoding="utf-8") as f:
+                ce = json.load(f)
+            e_cycle = _safe_int(ce.get("cycle_count", 1))
+            e_levels = _safe_int(ce.get("active_levels", 0))
+            e_vol = _safe_float(ce.get("held_volume", 0.0))
+            e_cost = _safe_float(ce.get("total_cost", 0.0))
+            e_vwap = _safe_float(ce.get("vwap", 0.0))
+            e_tot_pnl = _safe_float(ce.get("total_realized_pnl", 0.0))
+            e_tot_fees = _safe_float(ce.get("total_fees", 0.0))
+            e_wins = _safe_int(ce.get("win_count", 0))
+
+            e_cur_p = _safe_float(pyupbit.get_current_price("KRW-ETH") or 0.0)
+            e_eval_val = e_vol * e_cur_p
+            e_unreal_pnl = e_eval_val - e_cost
+            e_unreal_pct = (e_unreal_pnl / e_cost * 100.0) if e_cost > 0 else 0.0
+
+            e_sell_info = ce.get("pending_sell") or {}
+            e_tp_p = _safe_float(e_sell_info.get("price", 0.0))
+            e_dist_tp = ((e_tp_p - e_cur_p) / e_cur_p * 100.0) if e_cur_p > 0 else 0.0
+            e_buys = ce.get("pending_buys") or {}
+
+            lines.extend([
+                f"💎 <b>이더리움 (KRW-ETH) - 가동 중 (RUNNING)</b>",
+                f"• 현재가: <b>{e_cur_p:,.0f}원</b> | 운용 사이클: <b>{e_cycle}회차</b>",
+                f"• 보유 포지션: <b>{e_levels}/200단</b> ({e_vol:.6f} ETH | 투입 {e_cost:,.0f}원)",
+                f"• 봇 매수평단: <b>{e_vwap:,.0f}원</b> (평가손익: {e_unreal_pnl:+,.0f}원 | {e_unreal_pct:+.2f}%)",
+                f"• 🎯 <b>등록된 전량 익절가: {e_tp_p:,.0f}원</b> (+0.80% / 도달 잔여 {e_dist_tp:+.2f}%)",
+                f"• 🛒 <b>대기 매수 ({len(e_buys)}건)</b>:"
+            ])
+
+            sorted_e_buys = sorted(e_buys.values(), key=lambda x: _safe_int(x.get("level", 999)))
+            for b in sorted_e_buys:
+                b_lvl = b.get("level", "-")
+                b_p = _safe_float(b.get("price", 0.0))
+                b_v = _safe_float(b.get("volume", 0.0))
+                b_cost = b_p * b_v
+                lines.append(f"  - Lvl {b_lvl}: {b_p:,.0f}원 ({b_v:.6f} ETH | {b_cost:,.0f}원)")
+
+            lines.extend([
+                f"• 누적 실현손익: <b>{e_tot_pnl:+,.0f}원</b> ({e_wins}회 익절 성공 | 수수료 {e_tot_fees:,.1f}원)",
+                ""
+            ])
+        except Exception as e:
+            lines.append(f"💎 ETH 상태 파싱 오류: {e}\n")
+    else:
+        lines.extend([
+            "💎 <b>이더리움 (KRW-ETH) - 대기 중 (PENDING_TRANSFER)</b>",
+            "• 운용 상태: 메인봇 ETH 포지션 전량 익절 완료 후 자금 이전하여 시작 예정",
+            "• 예정 설정: 1.8% 하락 매수 / 0.8% 전량 익절 리셋 (200단 버퍼)"
+        ])
 
     return "\n".join(lines).strip()
 

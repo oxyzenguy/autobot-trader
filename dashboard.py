@@ -2389,7 +2389,7 @@ def render_cascade_pocket_section(loaded_snapshot: Optional[Dict[str, Any]] = No
 
     sb1, sb2, sb3, sb4 = st.columns(4)
     with sb1:
-        st.metric(label="Cascade 총 운용예산", value="300,000원", delta="SOL 15만 가동 + ETH 15만 대기")
+        st.metric(label="Cascade 총 운용예산", value="300,000원", delta="SOL 15만 + ETH 15만 가동")
     with sb2:
         st.metric(label="가용 현금 잔고", value=f"{krw_bal:,.0f}원")
     with sb3:
@@ -2488,33 +2488,117 @@ def render_cascade_pocket_section(loaded_snapshot: Optional[Dict[str, Any]] = No
             st.info("아직 체결 내역이 없습니다.")
 
     with col_eth:
-        st.html("""
-        <div style="background:#181d27; border:1px solid #00e5ff44; border-radius:12px; padding:14px 16px; margin-bottom:12px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <span style="font-size:1.15rem; font-weight:800; color:#f0f3f6;">
-                    💎 이더리움 <span style="font-size:0.85rem; color:#8c96a5;">(KRW-ETH)</span>
-                </span>
-                <span style="background:#ffb30022; color:#ffb300; border:1px solid #ffb300; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;">⏳ 메인봇 익절 후 이전 대기</span>
+        if eth_state and (eth_state.get("active_levels", 0) > 0 or eth_state.get("held_volume", 0) > 0 or eth_state.get("cycle_count", 0) > 0):
+            st.html("""
+            <div style="background:#181d27; border:1px solid #00e5ff44; border-radius:12px; padding:14px 16px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:1.15rem; font-weight:800; color:#f0f3f6;">
+                        💎 이더리움 <span style="font-size:0.85rem; color:#8c96a5;">(KRW-ETH)</span>
+                    </span>
+                    <span style="background:#00c08722; color:#00c087; border:1px solid #00c087; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;">🟢 실거래 가동중</span>
+                </div>
             </div>
-        </div>
-        """)
+            """)
 
-        st.metric(label="배정 예정 예산", value="150,000원", delta="1Unit 10,000원 (최대 200단)")
+            e_cycle_cnt = eth_state.get("cycle_count", 1)
+            e_active_lvls = eth_state.get("active_levels", 1)
+            e_vwap = float(eth_state.get("vwap", 0.0) or 0.0)
+            e_held_vol = float(eth_state.get("held_volume", 0.0) or 0.0)
+            e_total_cost = float(eth_state.get("total_cost", 0.0) or 0.0)
+            e_pending_sell = eth_state.get("pending_sell") or {}
+            e_tp_price = float(e_pending_sell.get("price", 0.0) or (e_vwap * 1.008 if e_vwap > 0 else 0.0))
 
-        st.html("""
-        <div style="background:#12161f; border:1px dashed #2d3848; border-radius:10px; padding:18px 20px; margin-top:14px; color:#cbd5e1; font-size:0.88rem; line-height:1.65;">
-            <div style="font-size:1rem; font-weight:700; color:#00e5ff; margin-bottom:8px;">
-                💎 이더리움 Cascade 포켓 진입 계획
+            eth_orders = open_orders.get("KRW-ETH", [])
+            eth_asks = [o for o in eth_orders if o.get("side") == "ask"]
+            eth_bids = [o for o in eth_orders if o.get("side") == "bid"]
+
+            e_cur_p = 3018000.0
+            try:
+                e_cur_p = float(pyupbit.get_current_price("KRW-ETH") or 3018000.0)
+            except Exception:
+                pass
+
+            e_dist_to_tp = ((e_tp_price - e_cur_p) / e_cur_p * 100.0) if e_cur_p > 0 and e_tp_price > 0 else 0.0
+            e_expected_pnl = (e_tp_price * e_held_vol * 0.9995) - e_total_cost if e_tp_price > 0 and e_held_vol > 0 else 0.0
+            e_pnl_pct_expected = ((e_tp_price - e_vwap) / e_vwap * 100.0) if e_vwap > 0 and e_tp_price > 0 else 0.0
+
+            em1, em2 = st.columns(2)
+            with em1:
+                st.metric(label="현재 운용 상태", value=f"사이클 {e_cycle_cnt}회차", delta=f"현재 {e_active_lvls}/200단")
+            with em2:
+                st.metric(label="목표 익절가", value=f"{e_tp_price:,.0f}원", delta=f"+{e_pnl_pct_expected:.2f}% (익절까지 +{e_dist_to_tp:.2f}%)")
+
+            st.caption(f"🎯 1단 평단: **{e_vwap:,.0f}원** | 보유: **{e_held_vol:.6f} ETH** ({e_total_cost:,.0f}원) | 목표 순익: **+{e_expected_pnl:,.0f}원**")
+
+            # 거래소 호가창 대기 주문 테이블
+            st.markdown("**📥 거래소 호가창 실시간 대기 주문**")
+            e_order_rows = []
+            if eth_asks:
+                for o in eth_asks:
+                    e_order_rows.append({
+                        "구분": "🎯 바스켓 전량 익절",
+                        "가격": f"{float(o.get('price', 0)):,.0f}원",
+                        "수량": f"{float(o.get('volume', 0)):.6f} ETH",
+                        "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
+                        "상태": "호가창 등록 대기"
+                    })
+            if eth_bids:
+                sorted_e_bids = sorted(eth_bids, key=lambda x: -float(x.get("price", 0)))
+                for i, o in enumerate(sorted_e_bids, start=2):
+                    e_order_rows.append({
+                        "구분": f"📥 매수 Lvl {i} (-{1.8*(i-1):.1f}%)",
+                        "가격": f"{float(o.get('price', 0)):,.0f}원",
+                        "수량": f"{float(o.get('volume', 0)):.6f} ETH",
+                        "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
+                        "상태": "호가창 등록 대기"
+                    })
+            if e_order_rows:
+                st.dataframe(pd.DataFrame(e_order_rows), hide_index=True, use_container_width=True, height=180)
+            else:
+                st.info("호가창 대기 주문 조회 중...")
+
+            # 최근 체결 내역
+            st.markdown("**📜 최근 체결 내역**")
+            eth_trades = [t for t in trades_list if t.get("market") == "KRW-ETH"]
+            if eth_trades:
+                df_e = pd.DataFrame(eth_trades)
+                df_e["구분"] = df_e.apply(format_cascade_action, axis=1)
+                df_e["체결시각"] = df_e["timestamp"].apply(lambda x: str(x)[5:19] if len(str(x)) >= 19 else str(x))
+                df_e["단가"] = df_e["price"].apply(lambda x: f"{float(x):,.0f}원" if pd.notnull(x) else "-")
+                df_e["수량"] = df_e["volume"].apply(lambda x: f"{float(x):.6f}" if pd.notnull(x) else "-")
+                df_e["체결금액"] = df_e["cost_or_revenue"].apply(lambda x: f"{float(x):,.0f}원" if pd.notnull(x) else "-")
+                view_cols = ["체결시각", "구분", "단가", "수량", "체결금액"]
+                st.dataframe(df_e[view_cols].head(8), hide_index=True, use_container_width=True, height=160)
+            else:
+                st.info("아직 체결 내역이 없습니다.")
+        else:
+            st.html("""
+            <div style="background:#181d27; border:1px solid #00e5ff44; border-radius:12px; padding:14px 16px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:1.15rem; font-weight:800; color:#f0f3f6;">
+                        💎 이더리움 <span style="font-size:0.85rem; color:#8c96a5;">(KRW-ETH)</span>
+                    </span>
+                    <span style="background:#ffb30022; color:#ffb300; border:1px solid #ffb300; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;">⏳ 메인봇 익절 후 이전 대기</span>
+                </div>
             </div>
-            1. <b>현재 상태</b>: 메인계좌에서 이더리움 하이브리드 전략이 정상 운용 중입니다.<br>
-            2. <b>이전 계획</b>: 메인계좌의 이더리움 포지션이 목표가에 도달하여 익절 청산되면, 회수된 원화를 Cascade 포켓으로 이전합니다.<br>
-            3. <b>가동 엔진</b>: 자산 이전 완료 후 <code>pocket2_basket_eth.py</code>를 실행하면 1.8% 하락 매수 / 0.8% 전량 익절 리셋 200단 모드로 즉시 자동 매매가 시작됩니다.<br>
-            <div style="margin-top:10px; padding:8px 12px; background:#18202c; border-radius:6px; font-size:0.8rem; color:#8c96a5;">
-                • 준비된 실행 스크립트: <code>pocket2_basket_eth.py</code><br>
-                • 텔레그램 간편 기동 명령어: <code>/재기동 포켓2이더</code>
+            """)
+
+            st.metric(label="배정 예정 예산", value="150,000원", delta="1Unit 10,000원 (최대 200단)")
+
+            st.html("""
+            <div style="background:#12161f; border:1px dashed #2d3848; border-radius:10px; padding:18px 20px; margin-top:14px; color:#cbd5e1; font-size:0.88rem; line-height:1.65;">
+                <div style="font-size:1rem; font-weight:700; color:#00e5ff; margin-bottom:8px;">
+                    💎 이더리움 Cascade 포켓 진입 계획
+                </div>
+                1. <b>현재 상태</b>: 메인계좌에서 이더리움 하이브리드 전략이 정상 운용 중입니다.<br>
+                2. <b>이전 계획</b>: 메인계좌의 이더리움 포지션이 목표가에 도달하여 익절 청산되면, 회수된 원화를 Cascade 포켓으로 이전합니다.<br>
+                3. <b>가동 엔진</b>: 자산 이전 완료 후 <code>pocket2_basket_eth.py</code>를 실행하면 1.8% 하락 매수 / 0.8% 전량 익절 리셋 200단 모드로 즉시 자동 매매가 시작됩니다.<br>
+                <div style="margin-top:10px; padding:8px 12px; background:#18202c; border-radius:6px; font-size:0.8rem; color:#8c96a5;">
+                    • 준비된 실행 스크립트: <code>pocket2_basket_eth.py</code><br>
+                    • 텔레그램 간편 기동 명령어: <code>/재기동 포켓2이더</code>
+                </div>
             </div>
-        </div>
-        """)
+            """)
 
 
 st.divider()
