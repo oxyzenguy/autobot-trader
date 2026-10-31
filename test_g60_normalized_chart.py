@@ -11,7 +11,12 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from dashboard import build_g60_normalized_figure, format_g60_action
+from dashboard import (
+    build_g60_normalized_figure,
+    build_subpockets_integrated_normalized_figure,
+    format_g60_action,
+    format_cascade_action,
+)
 
 
 class TestG60NormalizedChart(unittest.TestCase):
@@ -108,6 +113,67 @@ class TestG60NormalizedChart(unittest.TestCase):
         )
         # Only 3 line traces
         self.assertEqual(3, len(fig.data))
+
+
+    def test_format_cascade_action(self):
+        self.assertEqual("1단 신규 매수 (Cyc 1)", format_cascade_action({"action": "BASKET_INITIAL_BUY", "side": "bid", "cycle": 1}))
+        self.assertEqual("래더 매수 (Lvl 2)", format_cascade_action({"action": "BASKET_LADDER_BUY_LVL_2", "side": "bid", "cycle": 1}))
+        self.assertEqual("🎯 바스켓 전량 익절 (Cyc 3)", format_cascade_action({"action": "BASKET_RESET_SELL", "side": "ask", "cycle": 3}))
+
+    def test_build_subpockets_integrated_normalized_figure_with_cascade(self):
+        sol_trades = pd.DataFrame([
+            {"timestamp": "2026-10-21 06:00:00", "market": "KRW-SOL", "side": "bid", "price": 141000.0, "volume": 0.07, "action": "POCKET_BUY_LVL_1", "level": 1},
+        ])
+        g60_data = [
+            {"market": "KRW-SOL", "ticker": "SOL", "name": "솔라나", "icon": "🟣", "trades_df": sol_trades},
+            {"market": "KRW-XRP", "ticker": "XRP", "name": "리플", "icon": "🌊", "trades_df": pd.DataFrame()},
+        ]
+        cascade_data = {
+            "trades_list": [
+                {"timestamp": "2026-10-21 08:00:00", "market": "KRW-ETH", "side": "bid", "price": 3020000.0, "volume": 0.003, "action": "BASKET_INITIAL_BUY", "cycle": 1},
+                {"timestamp": "2026-10-21 14:00:00", "market": "KRW-ETH", "side": "ask", "price": 3060000.0, "volume": 0.003, "action": "BASKET_RESET_SELL", "pnl": 120.0, "cycle": 1},
+                {"timestamp": "2026-10-21 09:00:00", "market": "KRW-SOL", "side": "bid", "price": 140000.0, "volume": 0.07, "action": "BASKET_INITIAL_BUY", "cycle": 1},
+            ]
+        }
+
+        fig = build_subpockets_integrated_normalized_figure(
+            g60_data=g60_data,
+            cascade_data=cascade_data,
+            interval="minute60",
+            count=72,
+            show_g60_trades=True,
+            show_cascade_trades=True,
+            show_zero_line=True,
+            ohlcv_fetcher=self._mock_ohlcv
+        )
+
+        self.assertIsInstance(fig, go.Figure)
+        # Expected:
+        # 3 line traces (ETH, SOL, XRP)
+        # + G60 SOL buy (1 trace)
+        # + Cascade ETH buy, Cascade ETH sell (2 traces)
+        # + Cascade SOL buy (1 trace)
+        # = 7 traces
+        self.assertEqual(7, len(fig.data))
+
+        trace_names = [t.name for t in fig.data]
+        self.assertTrue(any("ETH" in n for n in trace_names))
+        self.assertTrue(any("SOL" in n for n in trace_names))
+        self.assertTrue(any("XRP" in n for n in trace_names))
+        self.assertTrue(any("[G60] SOL 매수" in n for n in trace_names))
+        self.assertTrue(any("[Cascade] ETH 매수" in n for n in trace_names))
+        self.assertTrue(any("[Cascade] ETH 바스켓 익절" in n for n in trace_names))
+        self.assertTrue(any("[Cascade] SOL 매수" in n for n in trace_names))
+
+        # Check marker symbols
+        g60_sol_trace = next(t for t in fig.data if "[G60] SOL 매수" in t.name)
+        self.assertEqual("triangle-up", g60_sol_trace.marker.symbol)
+
+        casc_eth_buy_trace = next(t for t in fig.data if "[Cascade] ETH 매수" in t.name)
+        self.assertEqual("diamond", casc_eth_buy_trace.marker.symbol)
+
+        casc_eth_sell_trace = next(t for t in fig.data if "[Cascade] ETH 바스켓 익절" in t.name)
+        self.assertEqual("star", casc_eth_sell_trace.marker.symbol)
 
 
 if __name__ == "__main__":

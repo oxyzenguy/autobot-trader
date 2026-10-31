@@ -1880,37 +1880,71 @@ def format_g60_action(row) -> str:
     return act
 
 
-def build_g60_normalized_figure(
-    g60_data: List[Dict[str, Any]],
+def format_cascade_action(row) -> str:
+    """Cascade 서브포켓 체결 액션을 한글 명칭으로 변환합니다."""
+    act = str(row.get("action", ""))
+    side = str(row.get("side", ""))
+    cyc = row.get("cycle", 1)
+    if "INITIAL" in act:
+        return f"1단 신규 매수 (Cyc {cyc})"
+    elif "LADDER" in act or "BUY" in act or side == "bid":
+        if "LVL_" in act:
+            lvl = act.split("LVL_")[-1]
+            return f"래더 매수 (Lvl {lvl})"
+        return f"래더 매수 (Cyc {cyc})"
+    elif "RESET" in act or "SELL" in act or side == "ask":
+        return f"🎯 바스켓 전량 익절 (Cyc {cyc})"
+    return act
+
+
+def build_subpockets_integrated_normalized_figure(
+    g60_data: Optional[List[Dict[str, Any]]] = None,
+    cascade_data: Optional[Dict[str, Any]] = None,
     interval: str = "minute60",
     count: int = 72,
-    show_trades: bool = True,
+    show_g60_trades: bool = True,
+    show_cascade_trades: bool = True,
     show_zero_line: bool = True,
     line_width: float = 2.2,
     ohlcv_fetcher=None
 ) -> go.Figure:
     """
-    서브포켓 3종(ETH, SOL, XRP)의 정규화(%) 수익률 및 매매 타점을 단일 평면에 오버레이하는 Plotly Figure를 생성합니다.
+    서브포켓 전체(G60 2종 + Cascade 2종, 총 3개 코인: ETH, SOL, XRP)의
+    정규화(%) 수익률 및 각 전략별 실전 매매 타점을 단일 평면에 오버레이하는 Plotly Figure를 생성합니다.
     """
     if ohlcv_fetcher is None:
         ohlcv_fetcher = fetch_ohlcv_cached
 
-    color_map = {
-        "KRW-ETH": "#00e5ff",  # 네온 시안 (이더리움)
-        "KRW-SOL": "#c77dff",  # 네온 바이올렛 (솔라나)
-        "KRW-XRP": "#ffb703",  # 웜 골드/앰버 (리플)
+    markets_meta_map = {
+        "KRW-ETH": {"market": "KRW-ETH", "ticker": "ETH", "name": "이더리움", "icon": "💎", "color": "#00e5ff"},
+        "KRW-SOL": {"market": "KRW-SOL", "ticker": "SOL", "name": "솔라나", "icon": "🟣", "color": "#c77dff"},
+        "KRW-XRP": {"market": "KRW-XRP", "ticker": "XRP", "name": "리플", "icon": "🌊", "color": "#ffb703"},
     }
+
+    if cascade_data is not None:
+        # 통합 모드: ETH, SOL, XRP 3종 대상
+        target_markets = ["KRW-ETH", "KRW-SOL", "KRW-XRP"]
+    else:
+        # G60 전용 모드 (하위 호환 및 단위 테스트)
+        target_markets = [item["market"] for item in (g60_data or [])]
 
     fig = go.Figure()
     candle_width = pd.DateOffset(hours=1 if "minute60" in interval else (4 if "minute240" in interval else 24))
     has_valid_data = False
 
-    for item in g60_data:
-        market = item["market"]
-        ticker = item["ticker"]
-        name = item["name"]
-        icon = item.get("icon", "")
-        coin_color = color_map.get(market, "#ffffff")
+    for m_key in target_markets:
+        meta = markets_meta_map.get(m_key, {
+            "market": m_key,
+            "ticker": m_key.replace("KRW-", ""),
+            "name": m_key,
+            "icon": "🪙",
+            "color": "#ffffff"
+        })
+        market = meta["market"]
+        ticker = meta["ticker"]
+        name = meta["name"]
+        icon = meta["icon"]
+        coin_color = meta["color"]
 
         df = ohlcv_fetcher(market, interval=interval, count=count)
         if df is None or df.empty or "close" not in df.columns:
@@ -1945,125 +1979,242 @@ def build_g60_normalized_figure(
             )
         )
 
-        # (2) 실전 매매 타점 오버레이
-        trades_df = item.get("trades_df")
-        if show_trades and trades_df is not None and not trades_df.empty and "timestamp" in trades_df.columns:
-            t_df = trades_df.copy()
-            t_df["dt"] = pd.to_datetime(t_df["timestamp"], errors="coerce")
-            t_df = t_df.dropna(subset=["dt"])
+        window_start = df.index.min()
+        window_end = df.index.max() + candle_width
 
-            window_start = df.index.min()
-            window_end = df.index.max() + candle_width
-            t_df = t_df[(t_df["dt"] >= window_start) & (t_df["dt"] <= window_end)]
+        # (2) G60 실전 매매 타점 오버레이 (▲ 매수 / ▼ 익절)
+        if show_g60_trades and g60_data:
+            g_item = next((item for item in g60_data if item.get("market") == market), None)
+            if g_item:
+                trades_df = g_item.get("trades_df")
+                if trades_df is not None and not trades_df.empty and "timestamp" in trades_df.columns:
+                    t_df = trades_df.copy()
+                    t_df["dt"] = pd.to_datetime(t_df["timestamp"], errors="coerce")
+                    t_df = t_df.dropna(subset=["dt"])
+                    t_df = t_df[(t_df["dt"] >= window_start) & (t_df["dt"] <= window_end)]
 
-            if not t_df.empty:
-                buys = t_df[t_df["side"] == "bid"]
-                sells = t_df[t_df["side"] == "ask"]
+                    if not t_df.empty:
+                        buys = t_df[t_df["side"] == "bid"]
+                        sells = t_df[t_df["side"] == "ask"]
 
-                # 매수 타점 (▲ 에메랄드 그린 + 코인 컬러 테두리)
-                if not buys.empty:
-                    buy_records = []
-                    for (dt_val, price_val), grp in buys.groupby(["dt", "price"], sort=False):
-                        tot_vol = float(grp["volume"].astype(float).sum())
-                        tot_cost = float(grp["cost_or_revenue"].astype(float).sum()) if "cost_or_revenue" in grp.columns else (float(price_val) * tot_vol)
-                        cnt = len(grp)
-                        cnt_str = f" ({cnt}건 일괄)" if cnt > 1 else ""
-                        act_str = format_g60_action(grp.iloc[0]) + cnt_str
-                        ret_pos = ((float(price_val) / base_price) - 1.0) * 100.0
-                        buy_records.append({
-                            "dt": dt_val,
-                            "ret_pos": ret_pos,
-                            "price": float(price_val),
-                            "volume": tot_vol,
-                            "cost": tot_cost,
-                            "action": act_str
-                        })
-                    b_plot_df = pd.DataFrame(buy_records)
-                    fig.add_trace(
-                        go.Scatter(
-                            x=b_plot_df["dt"],
-                            y=b_plot_df["ret_pos"],
-                            mode="markers",
-                            name=f"{ticker} 매수 ({len(buys)}건)",
-                            marker=dict(
-                                symbol="triangle-up",
-                                size=13,
-                                color="#00e676",
-                                line=dict(color=coin_color, width=2.0)
-                            ),
-                            customdata=np.stack((
-                                b_plot_df["price"],
-                                b_plot_df["volume"],
-                                b_plot_df["cost"],
-                                b_plot_df["action"]
-                            ), axis=-1),
-                            hovertemplate=(
-                                f"<b>🟢 [{ticker} 매수 체결]</b><br>"
-                                f"• 시각: %{{x|%m-%d %H:%M:%S}}<br>"
-                                f"• 체결단가: <b>%{{customdata[0]:,.0f}}원</b><br>"
-                                f"• 변동률 위치: <b>%{{y:+.2f}}%</b><br>"
-                                f"• 체결수량: %{{customdata[1]:.6f}} {ticker}<br>"
-                                f"• 체결금액: %{{customdata[2]:,.0f}}원<br>"
-                                f"• 구분: <b>%{{customdata[3]}}</b>"
-                                f"<extra></extra>"
+                        # G60 매수 (▲ 에메랄드 그린 + 코인 컬러 테두리)
+                        if not buys.empty:
+                            buy_records = []
+                            for (dt_val, price_val), grp in buys.groupby(["dt", "price"], sort=False):
+                                tot_vol = float(grp["volume"].astype(float).sum())
+                                tot_cost = float(grp["cost_or_revenue"].astype(float).sum()) if "cost_or_revenue" in grp.columns else (float(price_val) * tot_vol)
+                                cnt = len(grp)
+                                cnt_str = f" ({cnt}건 일괄)" if cnt > 1 else ""
+                                act_str = format_g60_action(grp.iloc[0]) + cnt_str
+                                ret_pos = ((float(price_val) / base_price) - 1.0) * 100.0
+                                buy_records.append({
+                                    "dt": dt_val,
+                                    "ret_pos": ret_pos,
+                                    "price": float(price_val),
+                                    "volume": tot_vol,
+                                    "cost": tot_cost,
+                                    "action": act_str
+                                })
+                            b_plot_df = pd.DataFrame(buy_records)
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=b_plot_df["dt"],
+                                    y=b_plot_df["ret_pos"],
+                                    mode="markers",
+                                    name=f"[G60] {ticker} 매수 ({len(buys)}건)",
+                                    marker=dict(
+                                        symbol="triangle-up",
+                                        size=12,
+                                        color="#00e676",
+                                        line=dict(color=coin_color, width=2.0)
+                                    ),
+                                    customdata=np.stack((
+                                        b_plot_df["price"],
+                                        b_plot_df["volume"],
+                                        b_plot_df["cost"],
+                                        b_plot_df["action"]
+                                    ), axis=-1),
+                                    hovertemplate=(
+                                        f"<b>🟢 [G60 {ticker} 매수 체결]</b><br>"
+                                        f"• 시각: %{{x|%m-%d %H:%M:%S}}<br>"
+                                        f"• 체결단가: <b>%{{customdata[0]:,.0f}}원</b><br>"
+                                        f"• 변동률 위치: <b>%{{y:+.2f}}%</b><br>"
+                                        f"• 체결수량: %{{customdata[1]:.6f}} {ticker}<br>"
+                                        f"• 체결금액: %{{customdata[2]:,.0f}}원<br>"
+                                        f"• 구분: <b>%{{customdata[3]}}</b>"
+                                        f"<extra></extra>"
+                                    )
+                                )
                             )
-                        )
-                    )
 
-                # 익절 매도 타점 (▼ 네온 코랄레드 + 코인 컬러 테두리)
-                if not sells.empty:
-                    sell_records = []
-                    for (dt_val, price_val), grp in sells.groupby(["dt", "price"], sort=False):
-                        tot_vol = float(grp["volume"].astype(float).sum())
-                        tot_pnl = float(grp["pnl"].astype(float).sum()) if "pnl" in grp.columns else 0.0
-                        cnt = len(grp)
-                        cnt_str = f" ({cnt}건 일괄)" if cnt > 1 else ""
-                        act_str = format_g60_action(grp.iloc[0]) + cnt_str
-                        ret_pos = ((float(price_val) / base_price) - 1.0) * 100.0
-                        sell_records.append({
-                            "dt": dt_val,
-                            "ret_pos": ret_pos,
-                            "price": float(price_val),
-                            "volume": tot_vol,
-                            "pnl": tot_pnl,
-                            "action": act_str
-                        })
-                    s_plot_df = pd.DataFrame(sell_records)
-                    fig.add_trace(
-                        go.Scatter(
-                            x=s_plot_df["dt"],
-                            y=s_plot_df["ret_pos"],
-                            mode="markers",
-                            name=f"{ticker} 익절 ({len(sells)}건)",
-                            marker=dict(
-                                symbol="triangle-down",
-                                size=13,
-                                color="#ff1744",
-                                line=dict(color=coin_color, width=2.0)
-                            ),
-                            customdata=np.stack((
-                                s_plot_df["price"],
-                                s_plot_df["volume"],
-                                s_plot_df["pnl"],
-                                s_plot_df["action"]
-                            ), axis=-1),
-                            hovertemplate=(
-                                f"<b>🔴 [{ticker} 매도/익절 체결]</b><br>"
-                                f"• 시각: %{{x|%m-%d %H:%M:%S}}<br>"
-                                f"• 체결단가: <b>%{{customdata[0]:,.0f}}원</b><br>"
-                                f"• 변동률 위치: <b>%{{y:+.2f}}%</b><br>"
-                                f"• 체결수량: %{{customdata[1]:.6f}} {ticker}<br>"
-                                f"• 실현손익: <b>%{{customdata[2]:+,.1f}}원</b><br>"
-                                f"• 구분: <b>%{{customdata[3]}}</b>"
-                                f"<extra></extra>"
+                        # G60 익절 매도 (▼ 네온 코랄레드 + 코인 컬러 테두리)
+                        if not sells.empty:
+                            sell_records = []
+                            for (dt_val, price_val), grp in sells.groupby(["dt", "price"], sort=False):
+                                tot_vol = float(grp["volume"].astype(float).sum())
+                                tot_pnl = float(grp["pnl"].astype(float).sum()) if "pnl" in grp.columns else 0.0
+                                cnt = len(grp)
+                                cnt_str = f" ({cnt}건 일괄)" if cnt > 1 else ""
+                                act_str = format_g60_action(grp.iloc[0]) + cnt_str
+                                ret_pos = ((float(price_val) / base_price) - 1.0) * 100.0
+                                sell_records.append({
+                                    "dt": dt_val,
+                                    "ret_pos": ret_pos,
+                                    "price": float(price_val),
+                                    "volume": tot_vol,
+                                    "pnl": tot_pnl,
+                                    "action": act_str
+                                })
+                            s_plot_df = pd.DataFrame(sell_records)
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=s_plot_df["dt"],
+                                    y=s_plot_df["ret_pos"],
+                                    mode="markers",
+                                    name=f"[G60] {ticker} 익절 ({len(sells)}건)",
+                                    marker=dict(
+                                        symbol="triangle-down",
+                                        size=12,
+                                        color="#ff1744",
+                                        line=dict(color=coin_color, width=2.0)
+                                    ),
+                                    customdata=np.stack((
+                                        s_plot_df["price"],
+                                        s_plot_df["volume"],
+                                        s_plot_df["pnl"],
+                                        s_plot_df["action"]
+                                    ), axis=-1),
+                                    hovertemplate=(
+                                        f"<b>🔴 [G60 {ticker} 익절 체결]</b><br>"
+                                        f"• 시각: %{{x|%m-%d %H:%M:%S}}<br>"
+                                        f"• 체결단가: <b>%{{customdata[0]:,.0f}}원</b><br>"
+                                        f"• 변동률 위치: <b>%{{y:+.2f}}%</b><br>"
+                                        f"• 체결수량: %{{customdata[1]:.6f}} {ticker}<br>"
+                                        f"• 실현손익: <b>%{{customdata[2]:+,.1f}}원</b><br>"
+                                        f"• 구분: <b>%{{customdata[3]}}</b>"
+                                        f"<extra></extra>"
+                                    )
+                                )
                             )
-                        )
-                    )
+
+        # (3) Cascade 실전 매매 타점 오버레이 (◆ 래더 매수 / ⭐ 바스켓 전량 익절)
+        if show_cascade_trades and cascade_data:
+            raw_c_trades = [t for t in cascade_data.get("trades_list", []) if t.get("market") == market]
+            if raw_c_trades:
+                c_df = pd.DataFrame(raw_c_trades)
+                if not c_df.empty and "timestamp" in c_df.columns:
+                    c_df["dt"] = pd.to_datetime(c_df["timestamp"], errors="coerce")
+                    c_df = c_df.dropna(subset=["dt"])
+                    c_df = c_df[(c_df["dt"] >= window_start) & (c_df["dt"] <= window_end)]
+
+                    if not c_df.empty:
+                        c_buys = c_df[c_df["side"] == "bid"]
+                        c_sells = c_df[c_df["side"] == "ask"]
+
+                        # Cascade 래더 매수 (◆ 청록 다이아몬드 + 코인 컬러 테두리)
+                        if not c_buys.empty:
+                            c_buy_records = []
+                            for (dt_val, price_val), grp in c_buys.groupby(["dt", "price"], sort=False):
+                                tot_vol = float(grp["volume"].astype(float).sum())
+                                tot_cost = float(grp["cost_or_revenue"].astype(float).sum()) if "cost_or_revenue" in grp.columns else (float(price_val) * tot_vol)
+                                cnt = len(grp)
+                                cnt_str = f" ({cnt}건 일괄)" if cnt > 1 else ""
+                                act_str = format_cascade_action(grp.iloc[0]) + cnt_str
+                                ret_pos = ((float(price_val) / base_price) - 1.0) * 100.0
+                                c_buy_records.append({
+                                    "dt": dt_val,
+                                    "ret_pos": ret_pos,
+                                    "price": float(price_val),
+                                    "volume": tot_vol,
+                                    "cost": tot_cost,
+                                    "action": act_str
+                                })
+                            cb_plot_df = pd.DataFrame(c_buy_records)
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=cb_plot_df["dt"],
+                                    y=cb_plot_df["ret_pos"],
+                                    mode="markers",
+                                    name=f"[Cascade] {ticker} 매수 ({len(c_buys)}건)",
+                                    marker=dict(
+                                        symbol="diamond",
+                                        size=12,
+                                        color="#00b4d8",
+                                        line=dict(color=coin_color, width=2.0)
+                                    ),
+                                    customdata=np.stack((
+                                        cb_plot_df["price"],
+                                        cb_plot_df["volume"],
+                                        cb_plot_df["cost"],
+                                        cb_plot_df["action"]
+                                    ), axis=-1),
+                                    hovertemplate=(
+                                        f"<b>🔷 [Cascade {ticker} 래더 매수]</b><br>"
+                                        f"• 시각: %{{x|%m-%d %H:%M:%S}}<br>"
+                                        f"• 체결단가: <b>%{{customdata[0]:,.0f}}원</b><br>"
+                                        f"• 변동률 위치: <b>%{{y:+.2f}}%</b><br>"
+                                        f"• 체결수량: %{{customdata[1]:.6f}} {ticker}<br>"
+                                        f"• 투입금액: %{{customdata[2]:,.0f}}원<br>"
+                                        f"• 구분: <b>%{{customdata[3]}}</b>"
+                                        f"<extra></extra>"
+                                    )
+                                )
+                            )
+
+                        # Cascade 바스켓 전량 익절 (⭐ 골드 스타 + 화이트 테두리)
+                        if not c_sells.empty:
+                            c_sell_records = []
+                            for (dt_val, price_val), grp in c_sells.groupby(["dt", "price"], sort=False):
+                                tot_vol = float(grp["volume"].astype(float).sum())
+                                tot_pnl = float(grp["pnl"].astype(float).sum()) if "pnl" in grp.columns else 0.0
+                                cnt = len(grp)
+                                cnt_str = f" ({cnt}건 일괄)" if cnt > 1 else ""
+                                act_str = format_cascade_action(grp.iloc[0]) + cnt_str
+                                ret_pos = ((float(price_val) / base_price) - 1.0) * 100.0
+                                c_sell_records.append({
+                                    "dt": dt_val,
+                                    "ret_pos": ret_pos,
+                                    "price": float(price_val),
+                                    "volume": tot_vol,
+                                    "pnl": tot_pnl,
+                                    "action": act_str
+                                })
+                            cs_plot_df = pd.DataFrame(c_sell_records)
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=cs_plot_df["dt"],
+                                    y=cs_plot_df["ret_pos"],
+                                    mode="markers",
+                                    name=f"[Cascade] {ticker} 바스켓 익절 ({len(c_sells)}건)",
+                                    marker=dict(
+                                        symbol="star",
+                                        size=16,
+                                        color="#ffd166",
+                                        line=dict(color="#ffffff", width=1.5)
+                                    ),
+                                    customdata=np.stack((
+                                        cs_plot_df["price"],
+                                        cs_plot_df["volume"],
+                                        cs_plot_df["pnl"],
+                                        cs_plot_df["action"]
+                                    ), axis=-1),
+                                    hovertemplate=(
+                                        f"<b>⭐ [Cascade {ticker} 바스켓 전량 익절]</b><br>"
+                                        f"• 시각: %{{x|%m-%d %H:%M:%S}}<br>"
+                                        f"• 청산단가: <b>%{{customdata[0]:,.0f}}원</b><br>"
+                                        f"• 변동률 위치: <b>%{{y:+.2f}}%</b><br>"
+                                        f"• 청산수량: %{{customdata[1]:.6f}} {ticker}<br>"
+                                        f"• 실현손익: <b>%{{customdata[2]:+,.1f}}원</b><br>"
+                                        f"• 구분: <b>%{{customdata[3]}}</b>"
+                                        f"<extra></extra>"
+                                    )
+                                )
+                            )
 
     if not has_valid_data:
         return fig
 
-    # (3) 0% 기준선
+    # (4) 0% 기준선
     if show_zero_line:
         fig.add_hline(
             y=0,
@@ -2075,12 +2226,12 @@ def build_g60_normalized_figure(
             annotation_font=dict(color="#94a3b8", size=10)
         )
 
-    # (4) 레이아웃 설정
+    # (5) 레이아웃 설정
     fig.update_layout(
         template="plotly_dark",
         plot_bgcolor="#131722",
         paper_bgcolor="#181d27",
-        height=480,
+        height=520,
         margin=dict(l=15, r=40, t=30, b=20),
         hovermode="closest",
         legend=dict(
@@ -2122,60 +2273,33 @@ def build_g60_normalized_figure(
     return fig
 
 
-def render_pocket_g60_normalized_chart(g60_data: List[Dict[str, Any]]):
+def build_g60_normalized_figure(
+    g60_data: List[Dict[str, Any]],
+    interval: str = "minute60",
+    count: int = 72,
+    show_trades: bool = True,
+    show_zero_line: bool = True,
+    line_width: float = 2.2,
+    ohlcv_fetcher=None
+) -> go.Figure:
     """
-    서브포켓 2종(솔라나, 리플)의 수익률(%)을 0% 기준 정규화하여
-    단일 선 차트에 표시하고, 각 코인의 실전 매매 타점(▲ 매수 / ▼ 익절)을 오버레이합니다.
+    (하위 호환 유지) 서브포켓 G60 정규화(%) 수익률 및 매매 타점을 단일 평면에 오버레이하는 Plotly Figure를 생성합니다.
     """
-    with st.container(border=True):
-        st.markdown("#### 📈 서브포켓 2종 통합 수익률 및 매매 타점 (정규화 %)")
-        st.caption("2개 코인(SOL · XRP)의 시작가를 0%로 정규화하여 가격 변동률 궤적과 실전 매매 타점(▲ 매수 / ▼ 익절)을 단일 차트에서 직관적으로 비교합니다.")
-
-        # 컨트롤 바
-        c_itv, c_opt = st.columns([1.6, 2.4])
-        with c_itv:
-            period_choice = st.radio(
-                "조회 기간",
-                ["최근 24시간", "최근 3일", "최근 7일", "최근 14일"],
-                index=1,
-                horizontal=True,
-                key="g60_norm_period_radio"
-            )
-
-        period_map = {
-            "최근 24시간": ("minute60", 24),
-            "최근 3일": ("minute60", 72),
-            "최근 7일": ("minute60", 168),
-            "최근 14일": ("minute60", 336),
-        }
-        itv_code, candle_count = period_map.get(period_choice, ("minute60", 72))
-
-        with c_opt:
-            o1, o2, o3 = st.columns(3)
-            with o1:
-                show_trades = st.checkbox("🎯 매매 타점 (▲/▼)", value=True, key="g60_norm_chk_trades")
-            with o2:
-                show_zero_line = st.checkbox("➖ 0% 기준선", value=True, key="g60_norm_chk_zero")
-            with o3:
-                line_w = st.selectbox("선 굵기", [1.5, 2.0, 2.5], index=1, key="g60_norm_line_w")
-
-        fig = build_g60_normalized_figure(
-            g60_data=g60_data,
-            interval=itv_code,
-            count=candle_count,
-            show_trades=show_trades,
-            show_zero_line=show_zero_line,
-            line_width=line_w
-        )
-
-        if not fig.data:
-            st.info("서브포켓 2종 시세 데이터를 불러오는 중입니다...")
-        else:
-            st.plotly_chart(fig, use_container_width=True, key="g60_normalized_chart")
+    return build_subpockets_integrated_normalized_figure(
+        g60_data=g60_data,
+        cascade_data=None,
+        interval=interval,
+        count=count,
+        show_g60_trades=show_trades,
+        show_cascade_trades=False,
+        show_zero_line=show_zero_line,
+        line_width=line_width,
+        ohlcv_fetcher=ohlcv_fetcher
+    )
 
 
 def render_pocket_g60_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
-    """G60 서브포켓 스쿼드 그리드 실거래 2단(솔라나, 리플) 매매 현황 컴포넌트 (통합 정규화 수익률 차트 포함)"""
+    """G60 서브포켓 스쿼드 그리드 실거래 2단(솔라나, 리플) 매매 현황 컴포넌트"""
     st.markdown("### ⚡ G60 서브포켓 스쿼드 그리드 실거래 현황")
     st.caption("업비트 서브포켓(G60) 독립 데몬의 실시간 포지션 및 매매 체결 내역을 2단(솔라나 · 리플)으로 모니터링합니다. (※ 이더리움은 +1.0% 바스켓 탈출 모드로 대기 중이며 대시보드 표시에서 제외되었습니다.)")
 
@@ -2200,12 +2324,6 @@ def render_pocket_g60_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
         st.metric(label="누적 익절 / 총 체결", value=f"{tot_wins}회 / {tot_trades}건")
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-    # -------------------------------------------------------------------------
-    # 서브포켓 2종 통합 정규화(%) 수익률 및 실시간 매매 타점 오버레이 차트
-    # -------------------------------------------------------------------------
-    render_pocket_g60_normalized_chart(g60_data)
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
     # 2단 배치: 솔(col_sol), 리플(col_xrp)
     col_sol, col_xrp = st.columns(2)
@@ -2346,19 +2464,6 @@ def get_cascade_summary(loaded_snapshot: Optional[Dict[str, Any]] = None) -> Dic
         "krw_balance": krw_balance,
         "open_orders": open_orders_map
     }
-
-
-def format_cascade_action(row) -> str:
-    """Cascade 서브포켓 체결 액션을 한글 명칭으로 변환합니다."""
-    act = str(row.get("action", ""))
-    side = str(row.get("side", ""))
-    if "INITIAL" in act:
-        return "1단 신규 매수"
-    elif "LADDER" in act or "BUY" in act or side == "bid":
-        return f"래더 매수 (Lvl {row.get('cycle', 1)})"
-    elif "RESET" in act or "SELL" in act or side == "ask":
-        return "🎯 바스켓 전량 익절"
-    return act
 
 
 def render_cascade_pocket_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
@@ -2602,10 +2707,74 @@ def render_cascade_pocket_section(loaded_snapshot: Optional[Dict[str, Any]] = No
             """)
 
 
+def render_subpockets_integrated_normalized_chart(loaded_snapshot: Optional[Dict[str, Any]] = None):
+    """
+    서브포켓 전체(G60 2종 + Cascade 2종, 총 3개 코인: ETH · SOL · XRP)의 수익률(%)을
+    0% 기준 정규화하여 단일 선 차트에 표시하고, 각 전략의 실전 매매 타점을 오버레이합니다.
+    """
+    st.markdown("### 📈 서브포켓 통합 수익률 및 매매 타점 (Cascade + G60 정규화 %)")
+    st.caption(
+        "서브포켓 독립 데몬으로 운용 중인 3개 코인(ETH · SOL · XRP)의 시작가를 0.0%로 정규화하여 가격 궤적을 비교하고, "
+        "G60 스쿼드 그리드(▲/▼)와 Cascade 바스켓 리셋(◆/⭐)의 실시간 매매 타점을 단일 차트에서 직관적으로 모니터링합니다."
+    )
+
+    with st.container(border=True):
+        # 컨트롤 바
+        c_itv, c_opt = st.columns([1.5, 2.5])
+        with c_itv:
+            period_choice = st.radio(
+                "조회 기간",
+                ["최근 24시간", "최근 3일", "최근 7일", "최근 14일"],
+                index=1,
+                horizontal=True,
+                key="subpockets_norm_period_radio"
+            )
+
+        period_map = {
+            "최근 24시간": ("minute60", 24),
+            "최근 3일": ("minute60", 72),
+            "최근 7일": ("minute60", 168),
+            "최근 14일": ("minute60", 336),
+        }
+        itv_code, candle_count = period_map.get(period_choice, ("minute60", 72))
+
+        with c_opt:
+            o1, o2, o3, o4 = st.columns(4)
+            with o1:
+                show_g60 = st.checkbox("⚡ G60 (▲/▼)", value=True, key="subpockets_norm_chk_g60")
+            with o2:
+                show_cascade = st.checkbox("🌊 Cascade (◆/⭐)", value=True, key="subpockets_norm_chk_casc")
+            with o3:
+                show_zero = st.checkbox("➖ 0% 기준선", value=True, key="subpockets_norm_chk_zero")
+            with o4:
+                line_w = st.selectbox("선 굵기", [1.5, 2.0, 2.5], index=1, key="subpockets_norm_line_w")
+
+        g60_data = get_pocket_g60_summary(loaded_snapshot=loaded_snapshot)
+        cascade_data = get_cascade_summary(loaded_snapshot=loaded_snapshot)
+
+        fig = build_subpockets_integrated_normalized_figure(
+            g60_data=g60_data,
+            cascade_data=cascade_data,
+            interval=itv_code,
+            count=candle_count,
+            show_g60_trades=show_g60,
+            show_cascade_trades=show_cascade,
+            show_zero_line=show_zero,
+            line_width=line_w
+        )
+
+        if not fig.data:
+            st.info("서브포켓 시세 데이터를 불러오는 중입니다...")
+        else:
+            st.plotly_chart(fig, use_container_width=True, key="subpockets_integrated_normalized_chart")
+
+
 st.divider()
 render_cascade_pocket_section(loaded_snapshot=loaded_snapshot)
 st.divider()
 render_pocket_g60_section(loaded_snapshot=loaded_snapshot)
+st.divider()
+render_subpockets_integrated_normalized_chart(loaded_snapshot=loaded_snapshot)
 st.divider()
 
 
