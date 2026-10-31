@@ -2683,7 +2683,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 step_scale=DEFAULT_STEP_SCALE,
                                 multipliers=martingale_sched,
                                 unit_krw=unit_krw,
-                                state=state
+                                state=state,
+                                market=market
                             )
                     else:
                         new_orders = calculate_new_buy_prices(
@@ -2820,7 +2821,8 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 multipliers=martingale_sched,
                                 unit_krw=unit_krw,
                                 state=state,
-                                existing_orders=buy_orders
+                                existing_orders=buy_orders,
+                                market=market
                             )
                     else:
                         buy_order_details = []
