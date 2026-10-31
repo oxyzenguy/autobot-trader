@@ -1161,7 +1161,7 @@ else:
             if is_adaptive_grid_enabled(market):
                 mode_desc = "⚡ 적응형 그리드 C-E (Adaptive 1-1-2-4 + Dynamic Exit)"
                 martingale_desc = "NATR × 1.25^Step 적응형 간격 + 1-1-2-4 순환"
-                regime_handover_desc = "국면별 동적 익절 (BULL +1.2%/+4% | BEAR +0.4%/+2.5%)"
+                regime_handover_desc = f"국면별 동적 익절 (BULL +1.2%/+4% | BEAR +0.4%/+{active_tranche_margin_pct:.1f}%)"
                 regime_badge = '<span style="background:#00e67622; color:#00e676; border:1px solid #00e676; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">Adaptive C-E (실전)</span>'
                 regime_color = "#00e676"
             else:
@@ -1223,12 +1223,12 @@ else:
                     <div>
                         <span style="color:#8c96a5;">🎯 바스켓 익절 목표가:</span>
                         <b style="color:#00c087; margin-left:4px;">{basket_target_p:,.0f}원</b>
-                        <span style="color:#8c96a5; font-size:0.74rem;">(평단가 대비 +{(strat['profit_margin']-1)*100:.2f}%)</span>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(평단가 대비 +{(strat_profit_margin-1)*100:.2f}%)</span>
                     </div>
                     <div>
                         <span style="color:#8c96a5;">💧 마틴게일 & 매직스플릿:</span>
                         <b style="color:#ffb300; margin-left:4px;">{martingale_desc}</b>
-                        <span style="color:#8c96a5; font-size:0.74rem;">(개별 +3% OR 바스켓 익절)</span>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(개별 +{active_tranche_margin_pct:.1f}% OR 바스켓 익절)</span>
                     </div>
                     <div>
                         <span style="color:#8c96a5;">🛡️ 국면 전환 규칙:</span>
