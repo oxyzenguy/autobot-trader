@@ -1982,7 +1982,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                         rem_avg = float(state.get("bot_avg_price", avg_price) or 0.0)
                                         if rem_qty > 0 and rem_avg > 0:
                                             if is_adaptive_grid_enabled(market):
-                                                basket_p = calculate_basket_sell_price(rem_avg, is_bull=is_bull)
+                                                basket_p = calculate_basket_sell_price(rem_avg, is_bull=is_bull, market=market)
                                             else:
                                                 basket_p = adjust_price_to_tick(rem_avg * sell_profit_margin, method="ceil")
                                             safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, rem_qty, state)
@@ -2059,7 +2059,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                                         # 잔여 포지션 바스켓 매도 주문 즉시 갱신
                                         if is_adaptive_grid_enabled(market):
-                                            rem_sell_price = calculate_basket_sell_price(new_avg, is_bull=is_bull)
+                                            rem_sell_price = calculate_basket_sell_price(new_avg, is_bull=is_bull, market=market)
                                         else:
                                             rem_sell_price = adjust_price_to_tick(new_avg * sell_profit_margin, method="ceil")
                                         safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, state["bot_quantity"], state)
@@ -2139,7 +2139,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                     rem_avg = float(state.get("bot_avg_price", avg_price) or 0.0)
                                     if rem_qty > 0 and rem_avg > 0:
                                         if is_adaptive_grid_enabled(market):
-                                            basket_p = calculate_basket_sell_price(rem_avg, is_bull=is_bull)
+                                            basket_p = calculate_basket_sell_price(rem_avg, is_bull=is_bull, market=market)
                                         else:
                                             basket_p = adjust_price_to_tick(rem_avg * sell_profit_margin, method="ceil")
                                         safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, rem_qty, state)
@@ -2216,7 +2216,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                                     # 잔여 포지션 바스켓 매도 주문 즉시 갱신
                                     if is_adaptive_grid_enabled(market):
-                                        rem_sell_price = calculate_basket_sell_price(new_avg, is_bull=is_bull)
+                                        rem_sell_price = calculate_basket_sell_price(new_avg, is_bull=is_bull, market=market)
                                     else:
                                         rem_sell_price = adjust_price_to_tick(new_avg * sell_profit_margin, method="ceil")
                                     safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, state["bot_quantity"], state)
@@ -2626,7 +2626,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                     # 바스켓 익절 주문
                     if is_adaptive_grid_enabled(market):
-                        sell_price = calculate_basket_sell_price(avg_price, is_bull=is_bull)
+                        sell_price = calculate_basket_sell_price(avg_price, is_bull=is_bull, market=market)
                     else:
                         sell_price = adjust_price_to_tick(avg_price * sell_profit_margin, method="ceil")
                     safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, quantity, state)
@@ -2745,7 +2745,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
 
                     # 새 바스켓 익절 매도 등록 (봇 수량만 등록)
                     if is_adaptive_grid_enabled(market):
-                        sell_price = calculate_basket_sell_price(avg_price, is_bull=is_bull)
+                        sell_price = calculate_basket_sell_price(avg_price, is_bull=is_bull, market=market)
                     else:
                         sell_price = adjust_price_to_tick(avg_price * sell_profit_margin, method="ceil")
                     safe_basket_qty = get_safe_sell_quantity(upbit, market, ticker, quantity, state)

@@ -377,7 +377,7 @@ def build_cascade_briefing() -> str:
                 ""
             ])
         except Exception as e:
-            lines.append(f"🟣 SOL 상태 파싱 오류: {e}\n")
+            lines.append(f"🟣 솔라나 (SOL) 상태 파싱 오류: {e}\n")
     else:
         lines.append("🟣 솔라나: 상태 파일 미발견 (대기 중)\n")
 
@@ -428,7 +428,7 @@ def build_cascade_briefing() -> str:
                 ""
             ])
         except Exception as e:
-            lines.append(f"💎 ETH 상태 파싱 오류: {e}\n")
+            lines.append(f"💎 이더리움 (ETH) 상태 파싱 오류: {e}\n")
     else:
         lines.extend([
             "💎 <b>이더리움 (KRW-ETH) - 대기 중 (PENDING_TRANSFER)</b>",

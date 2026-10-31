@@ -91,12 +91,20 @@ REGIME_SWITCH_CONFIRMATION_CANDLES = 3  # 확정 1시간봉 3개 연속 확인 �
 # 하이브리드 하락장(BEAR) 마틴게일 매직스플릿 방어 설정 (Dual Exit: 바스켓 익절 OR 개별 차수 반등 익절)
 USE_MAGIC_SPLIT_DEFENSE = True       # 매직스플릿 개별 익절 병행 방어 모드
 MAGIC_SPLIT_DOWN_PCTS = {
-    "KRW-ETH": 0.007,  # 이더리움: 초미세 마틴게일 단타형 (-0.7% 빠른 물타기 간격)
+    "KRW-ETH": 0.010,  # 이더리움: (-1.0% 여유 있는 물타기 간격)
     "KRW-SOL": 0.040,  # 솔라나: (-4.0% 안전 간격)
 }
 MAGIC_SPLIT_TRANCHE_PROFITS = {
     "KRW-ETH": 0.008,  # 이더리움: 초미세 마틴게일 단타형 (+0.8% 개별 차수 반등 단독 익절, 빠른 자금 순환)
     "KRW-SOL": 0.030,  # 솔라나: (+3.0% 개별 차수 반등 단독 익절)
+}
+ADAPTIVE_BEAR_BASKET_TPS = {
+    "KRW-ETH": 0.005,  # 이더리움: 적응형 그리드 하락장 바스켓 익절 (+0.50%)
+    "KRW-SOL": 0.004,  # 솔라나: 적응형 그리드 하락장 바스켓 익절 (+0.40%)
+}
+ADAPTIVE_GRID_MIN_DROP_PCTS = {
+    "KRW-ETH": 0.010,  # 이더리움: 적응형 그리드 최소 매수 간격 1.0% (과도한 촘촘한 물타기 방지)
+    "KRW-SOL": 0.006,  # 솔라나: 적응형 그리드 기본 최소 매수 간격 0.6%
 }
 MAGIC_SPLIT_TRANCHE_PROFIT = 0.03   # 기본 하위 호환용 개별 차수 반등 시 단독 익절 목표 마진 (+3.0%)
 MAGIC_SPLIT_DOWN_PCT = 0.04         # 기본 하위 호환용 추가 차수 물타기 간격 (-4.0%)
@@ -107,7 +115,7 @@ import ast
 _last_config_mtime = 0.0
 
 def _sync_config_from_disk():
-    global _last_config_mtime, PROFIT_MARGINS, MAGIC_SPLIT_DOWN_PCTS, MAGIC_SPLIT_TRANCHE_PROFITS, MARKET_STRATEGIES, MARTINGALE_MAX_STEPS
+    global _last_config_mtime, PROFIT_MARGINS, MAGIC_SPLIT_DOWN_PCTS, MAGIC_SPLIT_TRANCHE_PROFITS, ADAPTIVE_BEAR_BASKET_TPS, ADAPTIVE_GRID_MIN_DROP_PCTS, MARKET_STRATEGIES, MARTINGALE_MAX_STEPS
     try:
         cfg_path = os.environ.get("AUTOTRADE_CONFIG_PATH") or os.path.abspath(__file__)
         if not os.path.exists(cfg_path):
@@ -122,7 +130,7 @@ def _sync_config_from_disk():
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        if target.id in ("PROFIT_MARGINS", "MAGIC_SPLIT_DOWN_PCTS", "MAGIC_SPLIT_TRANCHE_PROFITS", "MARKET_STRATEGIES", "MARTINGALE_MAX_STEPS", "MAX_SQUAD_CAPS"):
+                        if target.id in ("PROFIT_MARGINS", "MAGIC_SPLIT_DOWN_PCTS", "MAGIC_SPLIT_TRANCHE_PROFITS", "ADAPTIVE_BEAR_BASKET_TPS", "ADAPTIVE_GRID_MIN_DROP_PCTS", "MARKET_STRATEGIES", "MARTINGALE_MAX_STEPS", "MAX_SQUAD_CAPS"):
                             try:
                                 val = ast.literal_eval(node.value)
                                 cur = globals().get(target.id)
@@ -145,6 +153,16 @@ def get_magic_split_tranche_profit(market: str) -> float:
     """해당 마켓의 매직스플릿 개별 차수 단독 익절 마진을 반환합니다."""
     _sync_config_from_disk()
     return MAGIC_SPLIT_TRANCHE_PROFITS.get(market, MAGIC_SPLIT_TRANCHE_PROFIT)
+
+def get_adaptive_bear_basket_tp(market: str) -> float:
+    """해당 마켓의 적응형 그리드 하락장 바스켓 익절 마진을 반환합니다."""
+    _sync_config_from_disk()
+    return ADAPTIVE_BEAR_BASKET_TPS.get(market, 0.004)
+
+def get_adaptive_min_drop_pct(market: str) -> float:
+    """해당 마켓의 적응형 그리드 최소 매수 간격을 반환합니다."""
+    _sync_config_from_disk()
+    return ADAPTIVE_GRID_MIN_DROP_PCTS.get(market, 0.006)
 
 # 마켓별 운용 전략 모델 설정
 # - "HYBRID": 200 MA 기반 상승장(추세/적립/트레일링) + 하락장(마틴게일 매직스플릿) 국면전환 전략

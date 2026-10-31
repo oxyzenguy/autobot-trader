@@ -1121,7 +1121,7 @@ else:
         from config import is_adaptive_grid_enabled
         if is_adaptive_grid_enabled(market):
             from strategy.adaptive_grid import calculate_basket_sell_price, get_dynamic_tp_margins
-            basket_target_p = calculate_basket_sell_price(target_base_p, is_bull=is_bull)
+            basket_target_p = calculate_basket_sell_price(target_base_p, is_bull=is_bull, market=market)
             b_m, t_m = get_dynamic_tp_margins(is_bull=is_bull, market=market)
             strat_profit_margin = b_m
             active_tranche_margin_pct = (t_m - 1.0) * 100
@@ -1160,8 +1160,10 @@ else:
         elif m_strat == "PURE_MARTINGALE":
             if is_adaptive_grid_enabled(market):
                 mode_desc = "⚡ 적응형 그리드 C-E (Adaptive 1-1-2-4 + Dynamic Exit)"
-                martingale_desc = "NATR × 1.25^Step 적응형 간격 + 1-1-2-4 순환"
-                regime_handover_desc = f"국면별 동적 익절 (BULL 바스켓 +1.2%/개별 +4% | BEAR 바스켓 +0.4%/개별 +{active_tranche_margin_pct:.1f}%)"
+                from config import get_adaptive_min_drop_pct
+                min_d = get_adaptive_min_drop_pct(market) * 100.0
+                martingale_desc = f"NATR(최소 {min_d:.1f}%) × 1.25^Step 적응형 간격 + 1-1-2-4 순환"
+                regime_handover_desc = f"국면별 동적 익절 (BULL 바스켓 +1.2%/개별 +4% | BEAR 바스켓 +{(b_m-1)*100:.1f}%/개별 +{(t_m-1)*100:.1f}%)"
                 regime_badge = '<span style="background:#00e67622; color:#00e676; border:1px solid #00e676; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">Adaptive C-E (실전)</span>'
                 regime_color = "#00e676"
             else:

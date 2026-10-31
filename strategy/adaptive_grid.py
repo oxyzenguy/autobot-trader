@@ -220,14 +220,17 @@ def get_dynamic_tp_margins(is_bull: bool, market: Optional[str] = None) -> Tuple
         return (1.0 + DEFAULT_BULL_BASKET_TP, 1.0 + DEFAULT_BULL_TRANCHE_TP)
     else:
         # 하락장: 수수료 제외 빠른 본전+알파 탈출 (마켓별 설정 반영)
+        basket_tp = DEFAULT_BEAR_BASKET_TP
         tranche_tp = DEFAULT_BEAR_TRANCHE_TP
         if market:
             try:
-                from config import get_magic_split_tranche_profit
+                from config import get_adaptive_bear_basket_tp, get_magic_split_tranche_profit
+                basket_tp = get_adaptive_bear_basket_tp(market)
                 tranche_tp = get_magic_split_tranche_profit(market)
             except Exception:
+                basket_tp = DEFAULT_BEAR_BASKET_TP
                 tranche_tp = DEFAULT_BEAR_TRANCHE_TP
-        return (1.0 + DEFAULT_BEAR_BASKET_TP, 1.0 + tranche_tp)
+        return (1.0 + basket_tp, 1.0 + tranche_tp)
 
 
 def calculate_adaptive_buy_prices(
@@ -287,6 +290,12 @@ def calculate_adaptive_buy_prices(
             existing_stages = []
 
     market = (state.get("market") if isinstance(state, dict) else None) or kwargs.get("market")
+    if market and min_drop_pct == DEFAULT_MIN_DROP_PCT:
+        try:
+            from config import get_adaptive_min_drop_pct
+            min_drop_pct = get_adaptive_min_drop_pct(market)
+        except Exception:
+            pass
     max_squad = kwargs.get("max_squad")
     if max_squad is None and market:
         try:
@@ -351,7 +360,8 @@ def calculate_adaptive_buy_prices(
 def calculate_basket_sell_price(
     avg_price: float,
     is_bull: bool,
-    fee_rate: float = 0.0005
+    fee_rate: float = 0.0005,
+    market: Optional[str] = None
 ) -> float:
     """
     포지션 평균 단가와 국면을 바탕으로 업비트 호가 단위 올림(ceil)된 바스켓 익절가를 반환합니다.
@@ -360,7 +370,7 @@ def calculate_basket_sell_price(
     if avg_price <= 0:
         return 0.0
         
-    basket_margin, _ = get_dynamic_tp_margins(is_bull)
+    basket_margin, _ = get_dynamic_tp_margins(is_bull, market=market)
     
     # 왕복 수수료(0.10%) + 최소 순익(0.05%) 보장
     min_profitable_margin = 1.0 + (fee_rate * 2) + 0.0005
@@ -439,7 +449,14 @@ def format_shadow_mode_log(
     regime = reg_info.get("regime", "HOLD")
     
     # Adaptive C-E 계산
-    base_drop = max(DEFAULT_MIN_DROP_PCT, natr * 0.9)
+    min_drop_pct = DEFAULT_MIN_DROP_PCT
+    if market:
+        try:
+            from config import get_adaptive_min_drop_pct
+            min_drop_pct = get_adaptive_min_drop_pct(market)
+        except Exception:
+            pass
+    base_drop = max(min_drop_pct, natr * 0.9)
     scale_factor = (DEFAULT_STEP_SCALE ** current_step) if DEFAULT_STEP_SCALE > 1.0 else 1.0
     effective_drop = min(DEFAULT_MAX_DROP_PCT, base_drop * scale_factor)
 
@@ -448,7 +465,8 @@ def format_shadow_mode_log(
         natr=natr,
         current_step=current_step,
         num_orders=1,
-        step_scale=DEFAULT_STEP_SCALE
+        step_scale=DEFAULT_STEP_SCALE,
+        market=market
     )
     adaptive_buy_p = adaptive_orders[0]['price'] if adaptive_orders else 0.0
     
