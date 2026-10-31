@@ -1387,7 +1387,12 @@ def run_trading_strategy(market: str = "KRW-SOL"):
     else:
         print(f" 전략 엔진: ⚪ LEGACY")
     print(f" 상승 국면 (BULL): 5/20 MA 추세추종 + 트레일링 스탑 (+10% 도달 시 -3% 익절)")
-    print(f" 하락 국면 (BEAR): 마틴게일 배수 진입 + 매직스플릿 이중익절 (개별 +3.0% OR 바스켓 +{(sell_profit_margin - 1) * 100:.2f}%)")
+    if is_adaptive_grid_enabled(market):
+        from config import get_adaptive_bear_basket_tp
+        bear_basket_tp_pct = get_adaptive_bear_basket_tp(market) * 100
+    else:
+        bear_basket_tp_pct = (sell_profit_margin - 1) * 100
+    print(f" 하락 국면 (BEAR): 마틴게일 배수 진입 + 매직스플릿 이중익절 (개별 +3.0% OR 바스켓 +{bear_basket_tp_pct:.2f}%)")
     print(f" 손절 기준: {STOP_LOSS_PERCENT * 100:.2f}% (Stop-Loss)")
     print(f" 예수금 알림 기준: {MIN_KRW_ALERT_THRESHOLD:,}원 미만 시 텔레그램 발송")
     print("=" * 65)
