@@ -89,7 +89,7 @@ def get_latest_trade_signature() -> str:
             except Exception:
                 pass
 
-    for m in ["KRW_ETH", "KRW_SOL", "KRW_XRP"]:
+    for m in ["KRW_SOL", "KRW_XRP"]:
         p_file = os.path.join(BASE_DIR, f"pocket_grid_state_{m}.json")
         if os.path.exists(p_file):
             try:
@@ -1794,12 +1794,11 @@ else:
         st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
 # =============================================================================
-# 3. G60 서브포켓 스쿼드 그리드 실거래 현황 (이더 · 솔 · 리플 3단 배치)
+# 3. G60 서브포켓 스쿼드 그리드 실거래 현황 (솔 · 리플 2단 배치, 이더리움 제외)
 # =============================================================================
 def get_pocket_g60_summary(loaded_snapshot: Optional[Dict[str, Any]] = None):
-    """G60 서브포켓 실거래 3종(ETH, SOL, XRP)의 상태 및 매매 내역을 조회합니다 (클라우드 스냅샷 및 로컬 파일 겸용)."""
+    """G60 서브포켓 실거래 2종(SOL, XRP)의 상태 및 매매 내역을 조회합니다 (클라우드 스냅샷 및 로컬 파일 겸용)."""
     markets = [
-        {"market": "KRW-ETH", "ticker": "ETH", "name": "이더리움", "icon": "💎"},
         {"market": "KRW-SOL", "ticker": "SOL", "name": "솔라나", "icon": "🟣"},
         {"market": "KRW-XRP", "ticker": "XRP", "name": "리플", "icon": "🌊"}
     ]
@@ -2125,12 +2124,12 @@ def build_g60_normalized_figure(
 
 def render_pocket_g60_normalized_chart(g60_data: List[Dict[str, Any]]):
     """
-    서브포켓 3종(이더리움, 솔라나, 리플)의 수익률(%)을 0% 기준 정규화하여
+    서브포켓 2종(솔라나, 리플)의 수익률(%)을 0% 기준 정규화하여
     단일 선 차트에 표시하고, 각 코인의 실전 매매 타점(▲ 매수 / ▼ 익절)을 오버레이합니다.
     """
     with st.container(border=True):
-        st.markdown("#### 📈 서브포켓 3종 통합 수익률 및 매매 타점 (정규화 %)")
-        st.caption("3개 코인(ETH · SOL · XRP)의 시작가를 0%로 정규화하여 가격 변동률 궤적과 실전 매매 타점(▲ 매수 / ▼ 익절)을 단일 차트에서 직관적으로 비교합니다.")
+        st.markdown("#### 📈 서브포켓 2종 통합 수익률 및 매매 타점 (정규화 %)")
+        st.caption("2개 코인(SOL · XRP)의 시작가를 0%로 정규화하여 가격 변동률 궤적과 실전 매매 타점(▲ 매수 / ▼ 익절)을 단일 차트에서 직관적으로 비교합니다.")
 
         # 컨트롤 바
         c_itv, c_opt = st.columns([1.6, 2.4])
@@ -2170,15 +2169,15 @@ def render_pocket_g60_normalized_chart(g60_data: List[Dict[str, Any]]):
         )
 
         if not fig.data:
-            st.info("서브포켓 3종 시세 데이터를 불러오는 중입니다...")
+            st.info("서브포켓 2종 시세 데이터를 불러오는 중입니다...")
         else:
             st.plotly_chart(fig, use_container_width=True, key="g60_normalized_chart")
 
 
 def render_pocket_g60_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
-    """G60 서브포켓 스쿼드 그리드 실거래 3단(이더, 솔, 리플) 매매 현황 컴포넌트 (통합 정규화 수익률 차트 포함)"""
+    """G60 서브포켓 스쿼드 그리드 실거래 2단(솔라나, 리플) 매매 현황 컴포넌트 (통합 정규화 수익률 차트 포함)"""
     st.markdown("### ⚡ G60 서브포켓 스쿼드 그리드 실거래 현황")
-    st.caption("업비트 서브포켓(G60) 독립 데몬의 실시간 포지션 및 매매 체결 내역을 3단(이더리움 · 솔라나 · 리플)으로 모니터링합니다.")
+    st.caption("업비트 서브포켓(G60) 독립 데몬의 실시간 포지션 및 매매 체결 내역을 2단(솔라나 · 리플)으로 모니터링합니다. (※ 이더리움은 +1.0% 바스켓 탈출 모드로 대기 중이며 대시보드 표시에서 제외되었습니다.)")
 
     g60_data = get_pocket_g60_summary(loaded_snapshot=loaded_snapshot)
 
@@ -2191,7 +2190,7 @@ def render_pocket_g60_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
 
     sb1, sb2, sb3, sb4 = st.columns(4)
     with sb1:
-        st.metric(label="G60 총 운용예산", value=f"{tot_budget:,.0f}원", delta="각 30만 원 (총 90만)")
+        st.metric(label="G60 총 운용예산", value=f"{tot_budget:,.0f}원", delta=f"{len(g60_data)}개 마켓 (SOL · XRP)")
     with sb2:
         pnl_delta = f"{tot_pnl:+,.1f}원"
         st.metric(label="G60 누적 실현손익", value=f"{tot_pnl:+,.1f}원", delta=pnl_delta)
@@ -2203,14 +2202,14 @@ def render_pocket_g60_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
     # -------------------------------------------------------------------------
-    # 서브포켓 3종 통합 정규화(%) 수익률 및 실시간 매매 타점 오버레이 차트
+    # 서브포켓 2종 통합 정규화(%) 수익률 및 실시간 매매 타점 오버레이 차트
     # -------------------------------------------------------------------------
     render_pocket_g60_normalized_chart(g60_data)
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
-    # 3단 배치: 이더(col_eth), 솔(col_sol), 리플(col_xrp)
-    col_eth, col_sol, col_xrp = st.columns(3)
-    cols = [col_eth, col_sol, col_xrp]
+    # 2단 배치: 솔(col_sol), 리플(col_xrp)
+    col_sol, col_xrp = st.columns(2)
+    cols = [col_sol, col_xrp]
 
     for col, item in zip(cols, g60_data):
         with col:
@@ -2233,13 +2232,15 @@ def render_pocket_g60_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
             win_cnt = int(state.get("win_count", 0) or 0)
             trades_cnt = len(item["trades_df"])
             coin_fees = float(state.get("total_fees", 0.0) or 0.0)
+            allocated_budget = float(state.get("allocated_budget", 300000.0) or 300000.0)
+            eff_levels = int(allocated_budget // 10000.0)
 
             # 핵심 지표 2열
             m1, m2 = st.columns(2)
             with m1:
                 st.metric(label="실현 손익", value=f"{realized_pnl:+,.1f}원")
             with m2:
-                st.metric(label="보유 그리드", value=f"{len(active_grids)}/30단", delta=f"{holding_vol:.4f} {item['ticker']}")
+                st.metric(label="보유 그리드", value=f"{len(active_grids)}/{eff_levels}단", delta=f"{holding_vol:.4f} {item['ticker']}")
 
             st.caption(f"🎯 기준가: **{base_p:,.0f}원** | 익절: **{win_cnt}회** (총 {trades_cnt}건) | 수수료: **{coin_fees:,.1f}원**")
 
