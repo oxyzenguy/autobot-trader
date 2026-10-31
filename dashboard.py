@@ -1161,7 +1161,7 @@ else:
             if is_adaptive_grid_enabled(market):
                 mode_desc = "⚡ 적응형 그리드 C-E (Adaptive 1-1-2-4 + Dynamic Exit)"
                 martingale_desc = "NATR × 1.25^Step 적응형 간격 + 1-1-2-4 순환"
-                regime_handover_desc = f"국면별 동적 익절 (BULL +1.2%/+4% | BEAR +0.4%/+{active_tranche_margin_pct:.1f}%)"
+                regime_handover_desc = f"국면별 동적 익절 (BULL 바스켓 +1.2%/개별 +4% | BEAR 바스켓 +0.4%/개별 +{active_tranche_margin_pct:.1f}%)"
                 regime_badge = '<span style="background:#00e67622; color:#00e676; border:1px solid #00e676; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">Adaptive C-E (실전)</span>'
                 regime_color = "#00e676"
             else:
