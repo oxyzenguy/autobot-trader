@@ -246,6 +246,13 @@ class PocketGridRunner:
         }])
 
     def send_telegram(self, msg: str):
+        # 단위 테스트(unittest 등) 실행 중이거나 테스트 환경변수 설정 시 실제 텔레그램 발송 원천 차단
+        if (
+            os.environ.get("AUTOTRADE_ENV") == "test"
+            or os.environ.get("TESTING") == "1"
+            or ("unittest" in sys.modules and any("test" in arg.lower() for arg in sys.argv))
+        ):
+            return
         try:
             send_message(msg)
         except Exception as e:

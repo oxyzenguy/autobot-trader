@@ -31,8 +31,11 @@ class TestPocketReauditSafety(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="reaudit-test-")
         self.state_file = os.path.join(self.temp_dir.name, "state.json")
         self.db_file = os.path.join(self.temp_dir.name, "trades.sqlite3")
+        self.tg_patcher = patch("utils.pocket_grid_core.send_message")
+        self.mock_send_message = self.tg_patcher.start()
 
     def tearDown(self):
+        self.tg_patcher.stop()
         self.temp_dir.cleanup()
 
     def _make_grid(self, level=1, volume=10.0, buy_p=1000.0, squad=1):

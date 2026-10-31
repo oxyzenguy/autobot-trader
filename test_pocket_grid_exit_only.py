@@ -22,8 +22,11 @@ class TestPocketGridExitOnly(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.state_file = os.path.join(self.temp_dir.name, "pocket_grid_state_KRW_ETH.json")
         self.db_file = os.path.join(self.temp_dir.name, "pocket_trade_history.db")
+        self.tg_patcher = patch("utils.pocket_grid_core.send_message")
+        self.mock_send_message = self.tg_patcher.start()
 
     def tearDown(self):
+        self.tg_patcher.stop()
         self.temp_dir.cleanup()
 
     def test_exit_only_suppresses_level_1_entry(self):
