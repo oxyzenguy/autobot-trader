@@ -209,7 +209,7 @@ def get_market_regime_and_natr(
     }
 
 
-def get_dynamic_tp_margins(is_bull: bool) -> Tuple[float, float]:
+def get_dynamic_tp_margins(is_bull: bool, market: Optional[str] = None) -> Tuple[float, float]:
     """
     국면(BULL / BEAR)에 따른 바스켓 및 개별 차수 동적 익절 목표 마진을 반환합니다.
     Returns:
@@ -219,8 +219,15 @@ def get_dynamic_tp_margins(is_bull: bool) -> Tuple[float, float]:
         # 상승장: 추세 파동 극대화
         return (1.0 + DEFAULT_BULL_BASKET_TP, 1.0 + DEFAULT_BULL_TRANCHE_TP)
     else:
-        # 하락장: 수수료 제외 빠른 본전+알파 탈출
-        return (1.0 + DEFAULT_BEAR_BASKET_TP, 1.0 + DEFAULT_BEAR_TRANCHE_TP)
+        # 하락장: 수수료 제외 빠른 본전+알파 탈출 (마켓별 설정 반영)
+        tranche_tp = DEFAULT_BEAR_TRANCHE_TP
+        if market:
+            try:
+                from config import get_magic_split_tranche_profit
+                tranche_tp = get_magic_split_tranche_profit(market)
+            except Exception:
+                tranche_tp = DEFAULT_BEAR_TRANCHE_TP
+        return (1.0 + DEFAULT_BEAR_BASKET_TP, 1.0 + tranche_tp)
 
 
 def calculate_adaptive_buy_prices(
@@ -445,7 +452,7 @@ def format_shadow_mode_log(
     )
     adaptive_buy_p = adaptive_orders[0]['price'] if adaptive_orders else 0.0
     
-    basket_margin, tranche_margin = get_dynamic_tp_margins(is_bull)
+    basket_margin, tranche_margin = get_dynamic_tp_margins(is_bull, market=market)
     basket_pct = (basket_margin - 1.0) * 100.0
     tranche_pct = (tranche_margin - 1.0) * 100.0
     

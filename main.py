@@ -1838,7 +1838,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                 if total_value >= MIN_ORDER_KRW and avg_price > 0:
                     if is_adaptive_grid_enabled(market):
                         from strategy.adaptive_grid import get_dynamic_tp_margins
-                        dyn_basket_margin, dyn_tranche_margin = get_dynamic_tp_margins(is_bull=is_bull)
+                        dyn_basket_margin, dyn_tranche_margin = get_dynamic_tp_margins(is_bull=is_bull, market=market)
                         active_exit_margin = dyn_basket_margin
                         active_tranche_margin = dyn_tranche_margin - 1.0
                     else:

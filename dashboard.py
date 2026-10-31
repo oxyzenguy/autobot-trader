@@ -1122,7 +1122,7 @@ else:
         if is_adaptive_grid_enabled(market):
             from strategy.adaptive_grid import calculate_basket_sell_price, get_dynamic_tp_margins
             basket_target_p = calculate_basket_sell_price(target_base_p, is_bull=is_bull)
-            b_m, t_m = get_dynamic_tp_margins(is_bull=is_bull)
+            b_m, t_m = get_dynamic_tp_margins(is_bull=is_bull, market=market)
             strat_profit_margin = b_m
             active_tranche_margin_pct = (t_m - 1.0) * 100
         else:
@@ -1486,7 +1486,7 @@ else:
             from config import is_adaptive_grid_enabled, get_magic_split_tranche_profit
             if is_adaptive_grid_enabled(market):
                 from strategy.adaptive_grid import get_dynamic_tp_margins
-                _, dyn_t_margin = get_dynamic_tp_margins(is_bull=is_bull)
+                _, dyn_t_margin = get_dynamic_tp_margins(is_bull=is_bull, market=market)
                 squad_tp_margin_pct = (dyn_t_margin - 1.0) * 100.0
             else:
                 squad_tp_margin_pct = get_magic_split_tranche_profit(market) * 100.0
