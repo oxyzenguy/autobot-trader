@@ -5,7 +5,8 @@ KRW-SOL 업비트 서브포켓(G60) 실거래 그리드 실행 스크립트
 - 1회 주문: 10,000원 (실거래 시장가)
 - 간격: 0.60% (하락 방어 완충 확대)
 - 익절: +0.70% (개별 및 5단 스쿼드 바스켓, 빠른 회전)
-- 1차 배정 예산: 300,000원 (최대 30단계)
+- 기본 배정 예산: 300,000원 (30단계)
+- ETH 청산 완료 시: 매도 대금 50% 자동 배분 반영 (+106,000원 -> 40단계 동적 확장)
 """
 import sys
 import os
@@ -28,7 +29,8 @@ def main():
         max_levels=30,
         unit_krw=10_000.0,
         grid_budget=300_000.0,
-        poll_interval_sec=5
+        poll_interval_sec=5,
+        auto_reallocate_eth=True
     )
     runner.run()
 

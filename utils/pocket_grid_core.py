@@ -50,7 +50,10 @@ class PocketGridRunner:
         max_levels: int = 30,
         unit_krw: float = 10_000.0,
         grid_budget: float = 300_000.0,
-        poll_interval_sec: int = 5
+        poll_interval_sec: int = 5,
+        exit_only: bool = False,
+        basket_exit_pct: Optional[float] = None,
+        auto_reallocate_eth: bool = True
     ):
         self.market = market
         self.ticker = market.replace("KRW-", "")
@@ -63,6 +66,9 @@ class PocketGridRunner:
         self.unit_krw = unit_krw
         self.grid_budget = grid_budget
         self.poll_interval_sec = poll_interval_sec
+        self.exit_only = exit_only
+        self.basket_exit_pct = basket_exit_pct
+        self.auto_reallocate_eth = auto_reallocate_eth
 
         safe_tag = market.replace("-", "_")
         self.state_file = os.path.join(BASE_DIR, f"pocket_grid_state_{safe_tag}.json")
@@ -71,6 +77,37 @@ class PocketGridRunner:
         self._lock_fd = None
 
         self.client = UpbitPocketClient()
+
+    def get_effective_budget_and_levels(self) -> Tuple[float, int]:
+        """
+        ETH 청산 완료 시 매도 회수금을 SOL/XRP 예산으로 50:50 동적 배분 (기본: 300,000원 -> +106,000원 = 406,000원 / 40단)
+        """
+        if not getattr(self, "auto_reallocate_eth", True) or self.market not in ("KRW-SOL", "KRW-XRP"):
+            return self.grid_budget, self.max_levels
+
+        eth_state_path = os.path.join(BASE_DIR, "pocket_grid_state_KRW_ETH.json")
+        if not os.path.exists(eth_state_path):
+            return self.grid_budget, self.max_levels
+
+        try:
+            with open(eth_state_path, "r", encoding="utf-8") as f:
+                eth_state = json.load(f)
+
+            is_eth_retired = (
+                eth_state.get("exit_only", False) and
+                len(eth_state.get("active_grids", [])) == 0 and
+                eth_state.get("basket_exit_settled", False)
+            )
+            if is_eth_retired:
+                rev = float(eth_state.get("last_basket_revenue", 0.0) or 0.0)
+                extra = round(rev / 2.0, -3) if rev > 0 else 106_000.0
+                effective_budget = self.grid_budget + extra
+                effective_levels = int(effective_budget // self.unit_krw)
+                return effective_budget, effective_levels
+        except Exception:
+            pass
+
+        return self.grid_budget, self.max_levels
 
     def acquire_lock(self) -> bool:
         try:
@@ -329,6 +366,10 @@ class PocketGridRunner:
                         return s
 
                 s.setdefault("settled_orders", [])
+                if s.get("exit_only"):
+                    self.exit_only = True
+                if s.get("basket_exit_pct") is not None:
+                    self.basket_exit_pct = float(s["basket_exit_pct"])
                 return s
 
             except Exception as e:
@@ -345,7 +386,7 @@ class PocketGridRunner:
         initial_state = {
             "market": self.market,
             "strategy": "POCKET_G60",
-            "mode": "POCKET_G60",
+            "mode": f"EXIT_ONLY_BASKET_{int((self.basket_exit_pct or 0.01)*100)}PCT" if (self.exit_only and self.basket_exit_pct) else "POCKET_G60",
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "allocated_budget": self.grid_budget,
             "realized_pnl": 0.0,
@@ -357,6 +398,8 @@ class PocketGridRunner:
             "pending_order": None,
             "settled_orders": [],
             "trading_halted": False,
+            "exit_only": self.exit_only,
+            "basket_exit_pct": self.basket_exit_pct,
             "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         self.save_state(initial_state)
@@ -481,12 +524,13 @@ class PocketGridRunner:
             active_cnt = len(state.get("active_grids", []))
             p_str = f"{buy_p:,.0f}원" if buy_p >= 100 else f"{buy_p:,.2f}원"
             tp_str = f"{tp_p:,.0f}원" if tp_p >= 100 else f"{tp_p:,.2f}원"
+            _, eff_max_levels = self.get_effective_budget_and_levels()
             self.send_telegram(
                 f"🔵 <b>[G60 실거래 매수]</b> {self.market} (Lvl {lvl} / {sq}스쿼드)\n"
                 f"• 체결단가: <b>{p_str}</b> | 체결수량: {vol:.6f} {self.ticker}\n"
                 f"• 매수금액: {cost:,.0f}원 (수수료: {fee:,.1f}원)\n"
                 f"• 개별 목표가: <b>{tp_str}</b> (+{self.profit_pct * 100:.1f}%)\n"
-                f"• 보유 그리드: <b>{active_cnt}/{self.max_levels}단</b>"
+                f"• 보유 그리드: <b>{active_cnt}/{eff_max_levels}단</b>"
             )
         except Exception as e_tg:
             print(f"[{self.market}] 텔레그램 매수 알림 오류: {e_tg}")
@@ -566,7 +610,16 @@ class PocketGridRunner:
             allocated_sell_fee = sell_fee * g_portion
             allocated_net_pnl = net_pnl_total * g_portion
 
-            action_label = f"POCKET_SQUAD_{sq}_TP_LVL_{g_lvl}" if exit_type == "SQUAD" else f"POCKET_TP_LVL_{g_lvl}"
+            if exit_type == "BASKET":
+                action_label = f"POCKET_BASKET_EXIT_LVL_{g_lvl}"
+                strat_label = "POCKET_BASKET_EXIT"
+            elif exit_type == "SQUAD":
+                action_label = f"POCKET_SQUAD_{sq}_TP_LVL_{g_lvl}"
+                strat_label = f"SQUAD_{sq}_BASKET"
+            else:
+                action_label = f"POCKET_TP_LVL_{g_lvl}"
+                strat_label = "POCKET_G60"
+
             if ratio < 1.0 - 1e-8:
                 action_label += "_PARTIAL"
 
@@ -579,7 +632,7 @@ class PocketGridRunner:
                 "fee": allocated_sell_fee,
                 "pnl": allocated_net_pnl,
                 "level": g_lvl,
-                "strategy": f"SQUAD_{sq}_BASKET" if exit_type == "SQUAD" else "POCKET_G60",
+                "strategy": strat_label,
                 "order_uuid": order_uuid,
                 "allocation_id": alloc_id,
                 "timestamp": now_str
@@ -615,6 +668,13 @@ class PocketGridRunner:
         if net_pnl_total > 0:
             state["win_count"] = state.get("win_count", 0) + len(target_grids)
 
+        if exit_type == "BASKET":
+            state["basket_exit_settled"] = True
+            state["last_basket_revenue"] = actual_rev
+            state["last_basket_profit"] = net_pnl_total
+            state["last_basket_exit_time"] = now_str
+            state["exit_only"] = True
+
         # 3. 정산 완료 주문 등록 (재생 멱등성 보장)
         if order_uuid and order_uuid not in settled_orders:
             settled_orders.append(order_uuid)
@@ -632,15 +692,26 @@ class PocketGridRunner:
             rem_cnt = len(state.get("active_grids", []))
             p_str = f"{exit_p:,.0f}원" if exit_p >= 100 else f"{exit_p:,.2f}원"
             pnl_pct = (net_pnl_total / allocated_cost_total * 100.0) if allocated_cost_total > 0 else 0.0
+            eff_budget, eff_max_lvls = self.get_effective_budget_and_levels()
 
-            if exit_type == "SQUAD":
+            if exit_type == "BASKET":
+                per_coin_extra = round(actual_rev / 2.0, -3)
+                self.send_telegram(
+                    f"🏁 <b>[G60 실거래 바스켓 일괄 탈출 완료]</b> {self.market}\n"
+                    f"• 매도단가: <b>{p_str}</b> | 매도수량: {exec_v:.6f} {self.ticker}\n"
+                    f"• 총 매도대금: <b>{actual_rev:,.0f}원</b> (투입원금 {allocated_cost_total:,.0f}원)\n"
+                    f"• 실현손익: <b>{net_pnl_total:+,.0f}원</b> ({pnl_pct:+.2f}%)\n"
+                    f"• 누적 손익: <b>{state.get('realized_pnl', 0.0):+,.0f}원</b> ({state.get('win_count', 0)}회 청산)\n"
+                    f"• 💰 <b>SOL / XRP 예산 배분</b>: 각 <b>+{per_coin_extra:,.0f}원</b> 예산 증액 적용!"
+                )
+            elif exit_type == "SQUAD":
                 self.send_telegram(
                     f"🟢 <b>[G60 실거래 스쿼드 익절]</b> {self.market} (스쿼드 {sq} 바스켓)\n"
                     f"• 매도단가: <b>{p_str}</b> | 매도수량: {exec_v:.6f} {self.ticker}\n"
                     f"• 매도대금: {actual_rev:,.0f}원 (투입원금 {allocated_cost_total:,.0f}원)\n"
                     f"• 실현손익: <b>{net_pnl_total:+,.0f}원</b> ({pnl_pct:+.2f}%)\n"
                     f"• 누적 손익: <b>{state.get('realized_pnl', 0.0):+,.0f}원</b> ({state.get('win_count', 0)}회 익절)\n"
-                    f"• 잔여 그리드: <b>{rem_cnt}/{self.max_levels}단</b>"
+                    f"• 잔여 그리드: <b>{rem_cnt}/{eff_max_lvls}단</b>"
                 )
             else:
                 lvl_val = target_grids[0]["lvl"] if target_grids else pending.get("lvl", 1)
@@ -650,7 +721,7 @@ class PocketGridRunner:
                     f"• 매도대금: {actual_rev:,.0f}원 (투입원금 {allocated_cost_total:,.0f}원)\n"
                     f"• 실현손익: <b>{net_pnl_total:+,.0f}원</b> ({pnl_pct:+.2f}%)\n"
                     f"• 누적 손익: <b>{state.get('realized_pnl', 0.0):+,.0f}원</b> ({state.get('win_count', 0)}회 익절)\n"
-                    f"• 잔여 그리드: <b>{rem_cnt}/{self.max_levels}단</b>"
+                    f"• 잔여 그리드: <b>{rem_cnt}/{eff_max_lvls}단</b>"
                 )
         except Exception as e_tg:
             print(f"[{self.market}] 텔레그램 매도 알림 오류: {e_tg}")
@@ -730,9 +801,14 @@ class PocketGridRunner:
         if state is not None and state.get("pending_order"):
             raise RuntimeError(f"[{self.market}] 기존 미확정 주문이 해결되지 않아 신규 매수 불가")
 
+        # 0-B. exit_only 방어
+        if self.exit_only:
+            raise RuntimeError(f"[{self.market}] exit_only 모드에서는 신규 매수가 불가합니다")
+
+        eff_budget, _ = self.get_effective_budget_and_levels()
         # 1. 예산 한도 철저 검증
-        if self.unit_krw > self.grid_budget:
-            print(f"[{self.market}] ⚠️ 1회 주문 단위({self.unit_krw:,.0f}원)가 전체 배정 예산({self.grid_budget:,.0f}원) 초과")
+        if self.unit_krw > eff_budget:
+            print(f"[{self.market}] ⚠️ 1회 주문 단위({self.unit_krw:,.0f}원)가 전체 배정 예산({eff_budget:,.0f}원) 초과")
             return None
 
         # 2. 포켓 원화 잔고 확인
@@ -864,88 +940,124 @@ class PocketGridRunner:
         base_p = float(state.get("base_price", 0.0) or 0.0)
 
         # =========================================================================
-        # 1-A. 스쿼드 바스켓 일괄 익절 체크 (+1.0%)
+        # 1-0. 바스켓 일괄 탈출 체크 (exit_only / basket_exit_pct 모드인 경우)
         # =========================================================================
-        squads_held = {}
-        for g in active_grids:
-            sq = g.get("squad", (g["lvl"] - 1) // self.squad_size + 1)
-            squads_held.setdefault(sq, []).append(g)
-
-        squads_to_exit = set()
-        squad_exit_targets = {}
-        for sq, g_list in sorted(squads_held.items()):
-            if len(g_list) >= self.min_squad_tranches_for_tp:
-                sq_vol = sum(float(x["vol"]) for x in g_list)
-                sq_cost = sum(float(x["cost"]) for x in g_list)
-                if sq_vol > 0:
-                    sq_vwap = sq_cost / sq_vol
-                    sq_target = sq_vwap * (1.0 + self.squad_tp_pct)
-                    if sq_vwap > 0 and sq_target > 0 and curr_p >= sq_target:
-                        squads_to_exit.add(sq)
-                        squad_exit_targets[sq] = (sq_vwap, sq_target, sq_vol, sq_cost)
-
         exit_occurred = False
-        if squads_to_exit:
-            for sq in sorted(squads_to_exit):
-                g_list = squads_held[sq]
-                sq_vwap, sq_target, sq_vol, sq_cost = squad_exit_targets[sq]
-                try:
-                    sell_res = self.execute_live_sell(
-                        vol=sq_vol,
-                        label=f"스쿼드 {sq} 바스켓",
-                        lvl=g_list[0]["lvl"],
-                        exit_type="SQUAD",
-                        squad=sq,
-                        target_grids=[{"lvl": g["lvl"], "vol": g["vol"], "cost": g["cost"], "fee": g.get("fee", 0.0)} for g in g_list],
-                        state=state
-                    )
-                    exit_occurred = True
-                except Exception as se:
-                    print(f"[{self.market}] 스쿼드 {sq} 매도 실행 중 예외 (해당 틱 즉시 종료): {se}")
-                    return state
+        if self.basket_exit_pct is not None and len(active_grids) > 0:
+            total_vol = sum(float(g["vol"]) for g in active_grids)
+            total_cost = sum(float(g["cost"]) for g in active_grids)
+            if total_vol > 0:
+                vwap = total_cost / total_vol
+                target_basket_tp = vwap * (1.0 + self.basket_exit_pct)
+                if curr_p >= target_basket_tp:
+                    try:
+                        sell_res = self.execute_live_sell(
+                            vol=total_vol,
+                            label=f"전체 바스켓 일괄탈출 (+{self.basket_exit_pct * 100:.1f}%)",
+                            lvl=active_grids[0]["lvl"],
+                            exit_type="BASKET",
+                            squad=0,
+                            target_grids=[{"lvl": g["lvl"], "vol": g["vol"], "cost": g["cost"], "fee": g.get("fee", 0.0)} for g in active_grids],
+                            state=state
+                        )
+                        exit_occurred = True
+                    except Exception as se:
+                        print(f"[{self.market}] 바스켓 일괄 매도 실행 중 예외 (해당 틱 즉시 종료): {se}")
+                        return state
 
-                # 스쿼드 매도 주문이 나갔거나 타임아웃된 경우 동일 틱 내 다른 주문 시도 차단
-                if state.get("pending_order"):
-                    return state
+                    if state.get("pending_order"):
+                        return state
 
         # =========================================================================
-        # 1-B. 잔여 그리드 개별 짤짤이 익절 (+1.0%)
+        # 1-A. 스쿼드 바스켓 일괄 익절 체크 (+1.0%) - 일반 모드에서만 동작
         # =========================================================================
-        for g in list(state.get("active_grids", [])):
-            tp_p = float(g.get("tp_p", 0.0) or 0.0)
-            buy_p = float(g.get("buy_p", 0.0) or 0.0)
+        elif self.basket_exit_pct is None:
+            squads_held = {}
+            for g in active_grids:
+                sq = g.get("squad", (g["lvl"] - 1) // self.squad_size + 1)
+                squads_held.setdefault(sq, []).append(g)
 
-            # P0: 단가 또는 목표가가 0 이하인 경우 절대 매도 트리거 발동 금지
-            if tp_p > 0 and buy_p > 0 and curr_p >= tp_p:
-                try:
-                    sell_res = self.execute_live_sell(
-                        vol=g["vol"],
-                        label=f"레벨 {g['lvl']} 개별익절",
-                        lvl=g["lvl"],
-                        exit_type="INDIVIDUAL",
-                        squad=g.get("squad", 1),
-                        target_grids=[{"lvl": g["lvl"], "vol": g["vol"], "cost": g["cost"], "fee": g.get("fee", 0.0)}],
-                        state=state
-                    )
-                    exit_occurred = True
-                except Exception as se:
-                    print(f"[{self.market}] 개별 매도 실행 중 예외 (해당 틱 즉시 종료): {se}")
-                    return state
+            squads_to_exit = set()
+            squad_exit_targets = {}
+            for sq, g_list in sorted(squads_held.items()):
+                if len(g_list) >= self.min_squad_tranches_for_tp:
+                    sq_vol = sum(float(x["vol"]) for x in g_list)
+                    sq_cost = sum(float(x["cost"]) for x in g_list)
+                    if sq_vol > 0:
+                        sq_vwap = sq_cost / sq_vol
+                        sq_target = sq_vwap * (1.0 + self.squad_tp_pct)
+                        if sq_vwap > 0 and sq_target > 0 and curr_p >= sq_target:
+                            squads_to_exit.add(sq)
+                            squad_exit_targets[sq] = (sq_vwap, sq_target, sq_vol, sq_cost)
 
-                # 매도 주문이 미결 상태이면 동일 틱 내 다른 주문 시도 차단
-                if state.get("pending_order"):
-                    return state
+            if squads_to_exit:
+                for sq in sorted(squads_to_exit):
+                    g_list = squads_held[sq]
+                    sq_vwap, sq_target, sq_vol, sq_cost = squad_exit_targets[sq]
+                    try:
+                        sell_res = self.execute_live_sell(
+                            vol=sq_vol,
+                            label=f"스쿼드 {sq} 바스켓",
+                            lvl=g_list[0]["lvl"],
+                            exit_type="SQUAD",
+                            squad=sq,
+                            target_grids=[{"lvl": g["lvl"], "vol": g["vol"], "cost": g["cost"], "fee": g.get("fee", 0.0)} for g in g_list],
+                            state=state
+                        )
+                        exit_occurred = True
+                    except Exception as se:
+                        print(f"[{self.market}] 스쿼드 {sq} 매도 실행 중 예외 (해당 틱 즉시 종료): {se}")
+                        return state
+
+                    # 스쿼드 매도 주문이 나갔거나 타임아웃된 경우 동일 틱 내 다른 주문 시도 차단
+                    if state.get("pending_order"):
+                        return state
+
+            # =========================================================================
+            # 1-B. 잔여 그리드 개별 짤짤이 익절 (+1.0%)
+            # =========================================================================
+            for g in list(state.get("active_grids", [])):
+                tp_p = float(g.get("tp_p", 0.0) or 0.0)
+                buy_p = float(g.get("buy_p", 0.0) or 0.0)
+
+                # P0: 단가 또는 목표가가 0 이하인 경우 절대 매도 트리거 발동 금지
+                if tp_p > 0 and buy_p > 0 and curr_p >= tp_p:
+                    try:
+                        sell_res = self.execute_live_sell(
+                            vol=g["vol"],
+                            label=f"레벨 {g['lvl']} 개별익절",
+                            lvl=g["lvl"],
+                            exit_type="INDIVIDUAL",
+                            squad=g.get("squad", 1),
+                            target_grids=[{"lvl": g["lvl"], "vol": g["vol"], "cost": g["cost"], "fee": g.get("fee", 0.0)}],
+                            state=state
+                        )
+                        exit_occurred = True
+                    except Exception as se:
+                        print(f"[{self.market}] 개별 매도 실행 중 예외 (해당 틱 즉시 종료): {se}")
+                        return state
+
+                    # 매도 주문이 미결 상태이면 동일 틱 내 다른 주문 시도 차단
+                    if state.get("pending_order"):
+                        return state
 
         # 익절 매도가 집행된 틱에서는 동일 틱 내 신규 사이클 매수 진입을 유보하고 안전하게 상태 반환
         if exit_occurred:
             return state
 
+        # exit_only 모드일 경우 신규 매수 (1단계 진입 및 물타기) 전면 차단
+        if self.exit_only:
+            return state
+
+        eff_budget, eff_max_levels = self.get_effective_budget_and_levels()
+        state["allocated_budget"] = eff_budget
+
         # =========================================================================
         # 2. 보유 포지션이 0개일 때: 새 사이클 시작 (1단계 진입)
         # =========================================================================
         if len(state["active_grids"]) == 0:
-            if self.unit_krw > self.grid_budget:
-                print(f"[{self.market}] ⚠️ 주문 단위({self.unit_krw:,.0f}원)가 배정 예산({self.grid_budget:,.0f}원)을 초과하여 진입을 차단합니다.")
+            if self.unit_krw > eff_budget:
+                print(f"[{self.market}] ⚠️ 주문 단위({self.unit_krw:,.0f}원)가 배정 예산({eff_budget:,.0f}원)을 초과하여 진입을 차단합니다.")
                 return state
 
             state["base_price"] = curr_p
@@ -965,17 +1077,19 @@ class PocketGridRunner:
             max_filled_lvl = max(existing_lvls) if existing_lvls else 0
             next_lvl = max_filled_lvl + 1
 
-            if next_lvl <= self.max_levels and next_lvl not in existing_lvls:
+            if next_lvl <= eff_max_levels and next_lvl not in existing_lvls:
                 target_dip_p = base_p * (1.0 - (next_lvl - 1) * self.step_pct)
                 if base_p > 0 and target_dip_p > 0 and curr_p <= target_dip_p:
                     curr_cost_sum = sum(float(g["cost"]) for g in state["active_grids"])
-                    if curr_cost_sum + self.unit_krw <= self.grid_budget:
+                    if curr_cost_sum + self.unit_krw <= eff_budget:
                         sq_id = (next_lvl - 1) // self.squad_size + 1
                         try:
                             grid_item = self.execute_live_buy(lvl=next_lvl, squad=sq_id, target_p=target_dip_p, now_str=now_str, state=state)
                         except Exception as e:
                             print(f"[{self.market}] {next_lvl}단계 매수 보류 (해당 틱 즉시 종료): {e}")
                             return state
+
+        return state
 
         return state
 
@@ -991,6 +1105,14 @@ class PocketGridRunner:
         if state.get("trading_halted"):
             print(f"[CRITICAL] [{self.market}] 상태 파일에 비정상 오류 플래그(trading_halted=True)가 설정되어 거래가 중단되었습니다. 수동 점검이 필요합니다.")
             sys.exit(1)
+
+        eff_budget, eff_max_levels = self.get_effective_budget_and_levels()
+        if self.exit_only:
+            state["exit_only"] = True
+            if self.basket_exit_pct is not None:
+                state["basket_exit_pct"] = self.basket_exit_pct
+            state["mode"] = f"EXIT_ONLY_BASKET_{int((self.basket_exit_pct or 0.01)*100)}PCT"
+            self.save_state(state)
 
         # 신규 목표 익절폭(profit_pct) 설정에 맞춰 기존 active_grids의 개별 tp_p 동기화 (파라미터 변경 시 신속 반영)
         updated_tp = False
@@ -1023,25 +1145,50 @@ class PocketGridRunner:
             print(f"[CRITICAL] [{self.market}] 거래소 코인 잔고({coin_bal:.8f} {self.ticker})와 장부 보유량({state_vol:.8f} {self.ticker})이 불일치합니다! 차이: {vol_diff:.8f}. 안전을 위해 가동을 중단합니다.")
             sys.exit(1)
 
-        print("=" * 75)
-        print(f"🚀 [실거래 포켓 G60 가동] {self.market} 순수 5단 독립 스쿼드 그리드")
-        print(f" • 포켓 가용 잔고: {krw_bal:,.0f} KRW")
-        print(f" • 포켓 코인 잔고: {coin_bal:.8f} {self.ticker} (장부 보유: {state_vol:.8f})")
-        print(f" • 배정 운용 예산: {self.grid_budget:,.0f} KRW (최대 {self.max_levels}단계)")
-        print(f" • 1회 주문 단위:  {self.unit_krw:,.0f} KRW (시장가 주문)")
-        print(f" • 그리드 매수간격: {self.step_pct * 100:.2f}%")
-        print(f" • 개별 짤짤이 익절: +{self.profit_pct * 100:.2f}%")
-        print(f" • 스쿼드 바스켓:  +{self.squad_tp_pct * 100:.2f}% (5단 단위 묶음 익절)")
-        print("=" * 75)
+        if self.exit_only and self.basket_exit_pct is not None:
+            tot_vol = sum(float(g["vol"]) for g in state.get("active_grids", []))
+            tot_cost = sum(float(g["cost"]) for g in state.get("active_grids", []))
+            vwap = tot_cost / tot_vol if tot_vol > 0 else 0.0
+            target_tp = vwap * (1.0 + self.basket_exit_pct)
+            print("=" * 75)
+            print(f"🛑 [실거래 포켓 G60 EXIT_ONLY 바스켓 모드] {self.market}")
+            print(f" • 포켓 가용 잔고: {krw_bal:,.0f} KRW")
+            print(f" • 포켓 코인 잔고: {coin_bal:.8f} {self.ticker} (장부 보유: {state_vol:.8f})")
+            print(f" • 보유 그리드:   {len(state.get('active_grids', []))}단 (총 매수원금: {tot_cost:,.0f} KRW)")
+            print(f" • 매수 평단가:   {vwap:,.2f} KRW")
+            print(f" • 바스켓 목표가: {target_tp:,.0f} KRW (+{self.basket_exit_pct * 100:.2f}% 일괄 매도)")
+            print(f" • 신규 매수:     🚫 전면 차단 (1단계 진입 및 물타기 중단)")
+            print(f" • 청산 후 조치:  💰 매도 대금 SOL / XRP 예산으로 50:50 배분")
+            print("=" * 75)
 
-        self.send_telegram(
-            f"🚀 <b>[실거래 포켓 G60 가동 시작]</b> {self.market}\n"
-            f"• 포켓 잔고: {krw_bal:,.0f}원 (배정 예산: {self.grid_budget:,.0f}원 / {self.max_levels}단계)\n"
-            f"• 코인 보유: {coin_bal:.8f} {self.ticker}\n"
-            f"• 주문 단위: 10,000원 | 간격: {self.step_pct*100:.2f}% | 익절: +{self.profit_pct*100:.2f}%\n"
-            f"• 📦 5단 스쿼드 바스켓 일괄 익절 탑재\n"
-            f"• 메인 계좌와 100% 완전 격리 실거래 시작!"
-        )
+            self.send_telegram(
+                f"🛑 <b>[실거래 포켓 G60 EXIT_ONLY 바스켓 모드 가동]</b> {self.market}\n"
+                f"• 보유 그리드: <b>{len(state.get('active_grids', []))}단</b> ({tot_vol:.6f} {self.ticker})\n"
+                f"• 매수 평단가: <b>{vwap:,.0f}원</b> (총 투입: {tot_cost:,.0f}원)\n"
+                f"• 바스켓 목표가: <b>{target_tp:,.0f}원</b> (+{self.basket_exit_pct * 100:.1f}%)\n"
+                f"• 🚫 신규 매수/추가 물타기 전면 중단\n"
+                f"• 🎯 목표가 터치 시 21단 전량 시장가 매도 후 SOL/XRP 예산으로 전환"
+            )
+        else:
+            print("=" * 75)
+            print(f"🚀 [실거래 포켓 G60 가동] {self.market} 순수 5단 독립 스쿼드 그리드")
+            print(f" • 포켓 가용 잔고: {krw_bal:,.0f} KRW")
+            print(f" • 포켓 코인 잔고: {coin_bal:.8f} {self.ticker} (장부 보유: {state_vol:.8f})")
+            print(f" • 배정 운용 예산: {eff_budget:,.0f} KRW (최대 {eff_max_levels}단계)")
+            print(f" • 1회 주문 단위:  {self.unit_krw:,.0f} KRW (시장가 주문)")
+            print(f" • 그리드 매수간격: {self.step_pct * 100:.2f}%")
+            print(f" • 개별 짤짤이 익절: +{self.profit_pct * 100:.2f}%")
+            print(f" • 스쿼드 바스켓:  +{self.squad_tp_pct * 100:.2f}% (5단 단위 묶음 익절)")
+            print("=" * 75)
+
+            self.send_telegram(
+                f"🚀 <b>[실거래 포켓 G60 가동 시작]</b> {self.market}\n"
+                f"• 포켓 잔고: {krw_bal:,.0f}원 (배정 예산: {eff_budget:,.0f}원 / {eff_max_levels}단계)\n"
+                f"• 코인 보유: {coin_bal:.8f} {self.ticker}\n"
+                f"• 주문 단위: 10,000원 | 간격: {self.step_pct*100:.2f}% | 익절: +{self.profit_pct*100:.2f}%\n"
+                f"• 📦 5단 스쿼드 바스켓 일괄 익절 탑재\n"
+                f"• 메인 계좌와 100% 완전 격리 실거래 시작!"
+            )
 
         last_heartbeat = 0
         try:
@@ -1057,7 +1204,19 @@ class PocketGridRunner:
                         if now_ts - last_heartbeat >= 30:
                             grids_count = len(state.get("active_grids", []))
                             lvls = [g["lvl"] for g in state.get("active_grids", [])]
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] [{self.market}] 💓 하트비트 | 현재가: {curr_p:,.0f}원 | 보유그리드: {grids_count}/{self.max_levels}단 (차수: {lvls}) | 누적익절: {state.get('win_count', 0)}회 (+{state.get('realized_pnl', 0):,.0f}원)")
+                            eff_budget, eff_max_lvls = self.get_effective_budget_and_levels()
+                            if self.exit_only and self.basket_exit_pct is not None:
+                                if grids_count > 0:
+                                    tot_vol = sum(float(g["vol"]) for g in state.get("active_grids", []))
+                                    tot_cost = sum(float(g["cost"]) for g in state.get("active_grids", []))
+                                    vwap = tot_cost / tot_vol if tot_vol > 0 else 0.0
+                                    target_tp = vwap * (1.0 + self.basket_exit_pct)
+                                    gap_pct = (curr_p / target_tp - 1.0) * 100.0
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [{self.market}] 💓 하트비트 [EXIT_ONLY] | 현재가: {curr_p:,.0f}원 | 평단: {vwap:,.0f}원 | 목표가(+{self.basket_exit_pct*100:.1f}%): {target_tp:,.0f}원 (괴리: {gap_pct:+.2f}%) | 보유: {tot_vol:.6f} {self.ticker} ({grids_count}단, {tot_cost:,.0f}원) | 신규 매수 차단 중")
+                                else:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [{self.market}] 💓 하트비트 [EXIT_ONLY] | 전량 청산 완료 (포지션 0개, 가동 종료/대기 중)")
+                            else:
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{self.market}] 💓 하트비트 | 현재가: {curr_p:,.0f}원 | 보유그리드: {grids_count}/{eff_max_lvls}단 (차수: {lvls}) | 배정예산: {eff_budget:,.0f}원 | 누적익절: {state.get('win_count', 0)}회 (+{state.get('realized_pnl', 0):,.0f}원)")
                             last_heartbeat = now_ts
 
                 except Exception as inner_e:
