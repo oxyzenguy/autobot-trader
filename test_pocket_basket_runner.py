@@ -106,6 +106,39 @@ class TestPocketBasketRunner(unittest.TestCase):
         self.assertIn("pocket2_basket_state_KRW_SOL.json", runner.state_file)
         self.assertIn("pocket2_basket_trade_history.db", runner.db_file)
 
+    @patch("utils.pocket_basket_core.UpbitPocketClient")
+    def test_send_telegram_logging(self, mock_client_cls):
+        runner = PocketBasketResetRunner(market="KRW-ETH")
+
+        # Test 1: Successful telegram response
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        with patch("utils.pocket_basket_core._send_telegram_msg", return_value=mock_resp):
+            with patch("builtins.print") as mock_print:
+                runner.send_telegram("test msg")
+                mock_print.assert_called_with("[KRW-ETH] 📢 텔레그램 알림 발송 완료")
+
+        # Test 2: Failed telegram response (status 400)
+        mock_resp_fail = MagicMock()
+        mock_resp_fail.status_code = 400
+        mock_resp_fail.text = "Bad Request"
+        with patch("utils.pocket_basket_core._send_telegram_msg", return_value=mock_resp_fail):
+            with patch("builtins.print") as mock_print:
+                runner.send_telegram("test msg")
+                mock_print.assert_called_with("[KRW-ETH] ⚠️ 텔레그램 발송 실패 (400): Bad Request")
+
+        # Test 3: None response
+        with patch("utils.pocket_basket_core._send_telegram_msg", return_value=None):
+            with patch("builtins.print") as mock_print:
+                runner.send_telegram("test msg")
+                mock_print.assert_called_with("[KRW-ETH] ⚠️ 텔레그램 발송 응답 없음 (TOKEN/CHAT_ID 미설정 또는 네트워크 오류)")
+
+        # Test 4: Exception raised
+        with patch("utils.pocket_basket_core._send_telegram_msg", side_effect=Exception("network err")):
+            with patch("builtins.print") as mock_print:
+                runner.send_telegram("test msg")
+                mock_print.assert_called_with("[KRW-ETH] ⚠️ 텔레그램 알림 예외: network err")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -157,11 +157,20 @@ class PocketBasketResetRunner:
 
     def send_telegram(self, msg: str) -> None:
         """텔레그램 메시지 발송 헬퍼"""
-        if _send_telegram_msg:
-            try:
-                _send_telegram_msg(msg)
-            except Exception as e:
-                print(f"[{self.market}] ⚠️ 텔레그램 알림 실패: {e}")
+        if not _send_telegram_msg:
+            print(f"[{self.market}] ⚠️ 텔레그램 모듈 미연결 (_send_telegram_msg is None)")
+            return
+        try:
+            res = _send_telegram_msg(msg)
+            if res is not None:
+                if getattr(res, "status_code", 200) == 200:
+                    print(f"[{self.market}] 📢 텔레그램 알림 발송 완료")
+                else:
+                    print(f"[{self.market}] ⚠️ 텔레그램 발송 실패 ({res.status_code}): {getattr(res, 'text', '')}")
+            else:
+                print(f"[{self.market}] ⚠️ 텔레그램 발송 응답 없음 (TOKEN/CHAT_ID 미설정 또는 네트워크 오류)")
+        except Exception as e:
+            print(f"[{self.market}] ⚠️ 텔레그램 알림 예외: {e}")
 
     def log_trade(
         self,
