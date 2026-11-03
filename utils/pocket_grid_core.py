@@ -385,9 +385,14 @@ class PocketGridRunner:
                         return s
 
                 s.setdefault("settled_orders", [])
-                if s.get("exit_only"):
+                if self.exit_only:
+                    s["exit_only"] = True
+                elif s.get("exit_only"):
                     self.exit_only = True
-                if s.get("basket_exit_pct") is not None:
+
+                if self.basket_exit_pct is not None:
+                    s["basket_exit_pct"] = self.basket_exit_pct
+                elif s.get("basket_exit_pct") is not None:
                     self.basket_exit_pct = float(s["basket_exit_pct"])
                 return s
 
