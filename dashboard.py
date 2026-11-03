@@ -1,7 +1,7 @@
 import os
-
 import re
 import time
+import math
 import json
 import sqlite3
 import pandas as pd
@@ -21,6 +21,7 @@ from utils.analytics import (
 from utils.db_logger import DB_PATH
 from utils.sync_manager import fetch_snapshot_from_cloud, load_local_snapshot
 from utils.dashboard_data import filter_trades_for_candles, sort_timeline_items
+from utils.pocket_basket_core import get_upbit_tick_size
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -59,6 +60,20 @@ def get_latest_trade_signature() -> str:
     except Exception:
         pass
 
+    p1c_sig = "0_0"
+    try:
+        p1c_db = os.path.join(BASE_DIR, "pocket1_cascade_trade_history.db")
+        if os.path.exists(p1c_db):
+            conn = sqlite3.connect(p1c_db, timeout=2.0)
+            cur = conn.cursor()
+            cur.execute("SELECT count(*), coalesce(max(id), 0) FROM pocket_trades")
+            row = cur.fetchone()
+            if row:
+                p1c_sig = f"{row[0]}_{row[1]}"
+            conn.close()
+    except Exception:
+        pass
+
     cascade_sig = "0_0"
     try:
         c_db = os.path.join(BASE_DIR, "pocket2_basket_trade_history.db")
@@ -89,7 +104,7 @@ def get_latest_trade_signature() -> str:
             except Exception:
                 pass
 
-    for m in ["KRW_SOL", "KRW_XRP"]:
+    for m in ["KRW_ETH", "KRW_SOL", "KRW_XRP"]:
         p_file = os.path.join(BASE_DIR, f"pocket_grid_state_{m}.json")
         if os.path.exists(p_file):
             try:
@@ -99,6 +114,18 @@ def get_latest_trade_signature() -> str:
                     p_pnl = p_data.get("realized_pnl", 0.0)
                     p_trades = p_data.get("total_trades", 0)
                     state_sig.append(f"{m}:{p_grids}_{p_pnl:.1f}_{p_trades}")
+            except Exception:
+                pass
+
+        p1c_file = os.path.join(BASE_DIR, f"pocket1_cascade_state_{m}.json")
+        if os.path.exists(p1c_file):
+            try:
+                with open(p1c_file, "r", encoding="utf-8") as f:
+                    p1c_data = json.load(f)
+                    p1c_cycle = p1c_data.get("cycle_count", 0)
+                    p1c_lvls = p1c_data.get("active_levels", 0)
+                    p1c_pnl = p1c_data.get("total_realized_pnl", 0.0)
+                    state_sig.append(f"P1C_{m}:{p1c_cycle}_{p1c_lvls}_{p1c_pnl:.1f}")
             except Exception:
                 pass
 
@@ -115,7 +142,7 @@ def get_latest_trade_signature() -> str:
             except Exception:
                 pass
 
-    return f"{db_sig}|{pocket_sig}|{cascade_sig}|{'_'.join(state_sig)}"
+    return f"{db_sig}|{pocket_sig}|{p1c_sig}|{cascade_sig}|{'_'.join(state_sig)}"
 
 
 
@@ -1796,17 +1823,19 @@ else:
         st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
 # =============================================================================
-# 3. G60 서브포켓 스쿼드 그리드 실거래 현황 (솔 · 리플 2단 배치, 이더리움 제외)
+# 3. 서브포켓1 (G60 ➔ Cascade 자동전환) 실거래 현황 (이더리움 · 솔라나 · 리플)
 # =============================================================================
 def get_pocket_g60_summary(loaded_snapshot: Optional[Dict[str, Any]] = None):
-    """G60 서브포켓 실거래 2종(SOL, XRP)의 상태 및 매매 내역을 조회합니다 (클라우드 스냅샷 및 로컬 파일 겸용)."""
+    """서브포켓1 (G60 ➔ Cascade 자동전환) 실거래 3종(ETH, SOL, XRP)의 상태 및 매매 내역을 조회합니다 (클라우드 스냅샷 및 로컬 파일 겸용)."""
     markets = [
+        {"market": "KRW-ETH", "ticker": "ETH", "name": "이더리움", "icon": "💎"},
         {"market": "KRW-SOL", "ticker": "SOL", "name": "솔라나", "icon": "🟣"},
         {"market": "KRW-XRP", "ticker": "XRP", "name": "리플", "icon": "🌊"}
     ]
 
     trades_by_market = {m["market"]: [] for m in markets}
     states_by_market = {m["market"]: {} for m in markets}
+    cascade_states_by_market = {m["market"]: {} for m in markets}
 
     # 1. 클라우드 스냅샷의 pocket_grid 데이터 로드 (Streamlit Cloud 환경 우선 대응)
     pocket_cloud = (loaded_snapshot or {}).get("pocket_grid", {})
@@ -1846,9 +1875,30 @@ def get_pocket_g60_summary(loaded_snapshot: Optional[Dict[str, Any]] = None):
         except Exception:
             pass
 
+    # 포켓1 Cascade 전용 DB가 존재하면 추가 병합
+    p1c_db = os.path.join(BASE_DIR, "pocket1_cascade_trade_history.db")
+    if os.path.exists(p1c_db):
+        try:
+            conn = sqlite3.connect(p1c_db, timeout=2.0)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("""
+                SELECT id, timestamp, market, side, action, price, volume, cost_or_revenue, fee, pnl, cycle, strategy
+                FROM pocket_trades
+                ORDER BY id DESC
+            """)
+            for r in c.fetchall():
+                m_key = r["market"]
+                if m_key in trades_by_market:
+                    trades_by_market[m_key].append(dict(r))
+            conn.close()
+        except Exception:
+            pass
+
     for m in markets:
         m_key = m["market"]
-        s_file = os.path.join(BASE_DIR, f"pocket_grid_state_{m_key.replace('-', '_')}.json")
+        safe_key = m_key.replace("-", "_")
+        s_file = os.path.join(BASE_DIR, f"pocket_grid_state_{safe_key}.json")
         if os.path.exists(s_file):
             try:
                 with open(s_file, "r", encoding="utf-8") as f:
@@ -1856,13 +1906,31 @@ def get_pocket_g60_summary(loaded_snapshot: Optional[Dict[str, Any]] = None):
             except Exception:
                 pass
 
+        c_file = os.path.join(BASE_DIR, f"pocket1_cascade_state_{safe_key}.json")
+        if os.path.exists(c_file):
+            try:
+                with open(c_file, "r", encoding="utf-8") as f:
+                    cascade_states_by_market[m_key] = json.load(f)
+            except Exception:
+                pass
+
     results = []
     for m in markets:
         m_key = m["market"]
         df_trades = pd.DataFrame(trades_by_market[m_key])
+        g60_st = states_by_market[m_key]
+        p1c_st = cascade_states_by_market[m_key]
+
+        is_cascade_active = bool(
+            (p1c_st and (p1c_st.get("active_levels", 0) > 0 or p1c_st.get("cycle_count", 0) > 0 or p1c_st.get("pending_sell") or p1c_st.get("pending_buys")))
+            or (g60_st.get("basket_exit_settled") and p1c_st)
+        )
+
         results.append({
             **m,
-            "state": states_by_market[m_key],
+            "state": g60_st,
+            "cascade_state": p1c_st,
+            "is_cascade_active": is_cascade_active,
             "trades_df": df_trades
         })
 
@@ -1870,13 +1938,21 @@ def get_pocket_g60_summary(loaded_snapshot: Optional[Dict[str, Any]] = None):
 
 
 def format_g60_action(row) -> str:
-    """G60 서브포켓 체결 액션을 사용자 친화적 명칭으로 변환합니다."""
+    """G60 서브포켓 및 포켓1 Cascade 체결 액션을 사용자 친화적 명칭으로 변환합니다."""
     act = str(row.get("action", ""))
     side = str(row.get("side", ""))
-    if "TP" in act:
+    if "BASKET_EXIT" in act or "바스켓" in act:
+        return "🎯 바스켓 일괄 탈출"
+    elif "RESET_SELL" in act or "전량 익절" in act:
+        return "⭐ Cascade 전량 익절"
+    elif "TP" in act:
         if "SQUAD" in act:
             return "스쿼드 익절"
         return "개별 익절"
+    elif "INITIAL" in act:
+        return f"Cascade 1단 매수 (Cyc {row.get('cycle', 1)})"
+    elif "LADDER" in act:
+        return f"Cascade 래더 매수 (Lvl {row.get('level', row.get('cycle', 1))})"
     elif side == "bid" or "BUY" in act:
         return f"매수 (Lvl {row.get('level', 1)})"
     return act
@@ -2301,85 +2377,156 @@ def build_g60_normalized_figure(
 
 
 def render_pocket_g60_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
-    """G60 서브포켓 스쿼드 그리드 실거래 2단(솔라나, 리플) 매매 현황 컴포넌트"""
-    st.markdown("### ⚡ G60 서브포켓 스쿼드 그리드 실거래 현황")
-    st.caption("업비트 서브포켓(G60) 독립 데몬의 실시간 포지션 및 매매 체결 내역을 2단(솔라나 · 리플)으로 모니터링합니다. (※ 이더리움은 +1.0% 바스켓 탈출 모드로 대기 중이며 대시보드 표시에서 제외되었습니다.)")
+    """서브포켓1 (G60 ➔ Cascade 자동전환) 실거래 3단(이더리움 · 솔라나 · 리플) 매매 현황 컴포넌트"""
+    st.markdown("### ⚡ 서브포켓1 (G60 ➔ Cascade 자동전환) 실거래 현황")
+    st.caption("업비트 서브포켓1 독립 데몬: 현재 보유 물량(ETH 21단, SOL 24단, XRP 18단)의 평단가 대비 **+0.6% 바스켓 일괄 탈출 대기 중**이며, 전량 청산 완료 시 **신규 Cascade(1.0% 매수 / 0.6% 익절 / 200단)** 전략으로 무중단 자동 전환됩니다.")
 
     g60_data = get_pocket_g60_summary(loaded_snapshot=loaded_snapshot)
 
     # 상단 종합 지표 바
-    tot_budget = sum(item["state"].get("allocated_budget", 300000.0) for item in g60_data)
-    tot_pnl = sum(float(item["state"].get("realized_pnl", 0.0) or 0.0) for item in g60_data)
-    tot_fees = sum(float(item["state"].get("total_fees", 0.0) or 0.0) for item in g60_data)
-    tot_wins = sum(int(item["state"].get("win_count", 0) or 0) for item in g60_data)
+    tot_budget = sum(
+        item["cascade_state"].get("unit_krw", 10000.0) * item["cascade_state"].get("max_levels", 200)
+        if item.get("is_cascade_active") and item.get("cascade_state")
+        else float(item["state"].get("allocated_budget", 300000.0) or 300000.0)
+        for item in g60_data
+    )
+    tot_pnl = sum(
+        float(item["state"].get("realized_pnl", 0.0) or 0.0) +
+        float(item.get("cascade_state", {}).get("total_realized_pnl", 0.0) or 0.0)
+        for item in g60_data
+    )
+    tot_fees = sum(
+        float(item["state"].get("total_fees", 0.0) or 0.0) +
+        float(item.get("cascade_state", {}).get("total_fees", 0.0) or 0.0)
+        for item in g60_data
+    )
+    tot_wins = sum(
+        int(item["state"].get("win_count", 0) or 0) +
+        int(item.get("cascade_state", {}).get("win_count", 0) or 0)
+        for item in g60_data
+    )
     tot_trades = sum(len(item["trades_df"]) for item in g60_data)
 
     sb1, sb2, sb3, sb4 = st.columns(4)
     with sb1:
-        st.metric(label="G60 총 운용예산", value=f"{tot_budget:,.0f}원", delta=f"{len(g60_data)}개 마켓 (SOL · XRP)")
+        st.metric(label="포켓1 총 운용예산", value=f"{tot_budget:,.0f}원", delta=f"{len(g60_data)}개 마켓 (ETH · SOL · XRP)")
     with sb2:
         pnl_delta = f"{tot_pnl:+,.1f}원"
-        st.metric(label="G60 누적 실현손익", value=f"{tot_pnl:+,.1f}원", delta=pnl_delta)
+        st.metric(label="포켓1 누적 실현손익", value=f"{tot_pnl:+,.1f}원", delta=pnl_delta)
     with sb3:
-        st.metric(label="G60 누적 거래수수료", value=f"{tot_fees:,.1f}원")
+        st.metric(label="포켓1 누적 거래수수료", value=f"{tot_fees:,.1f}원")
     with sb4:
         st.metric(label="누적 익절 / 총 체결", value=f"{tot_wins}회 / {tot_trades}건")
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
-    # 2단 배치: 솔(col_sol), 리플(col_xrp)
-    col_sol, col_xrp = st.columns(2)
-    cols = [col_sol, col_xrp]
+    # 3단 배치: 이더리움(col_eth), 솔라나(col_sol), 리플(col_xrp)
+    col_eth, col_sol, col_xrp = st.columns(3)
+    cols = [col_eth, col_sol, col_xrp]
 
     for col, item in zip(cols, g60_data):
         with col:
+            state = item.get("state") or {}
+            c_state = item.get("cascade_state") or {}
+            is_cascade = item.get("is_cascade_active", False)
+
+            # 상단 카드 헤더
+            if is_cascade:
+                badge_html = '<span style="background:#00b4d822; color:#00b4d8; border:1px solid #00b4d8; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;">🚀 Cascade (1.0/0.6) 가동중</span>'
+                card_border = "#00b4d844"
+            else:
+                exit_pct_val = float(state.get("basket_exit_pct", 0.006) or 0.006)
+                badge_html = f'<span style="background:#ff980022; color:#ff9800; border:1px solid #ff9800; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;">🛑 +{exit_pct_val*100:.1f}% 탈출 대기</span>'
+                card_border = "#ff980044"
+
             st.markdown(f"""
-            <div style="background:#181d27; border:1px solid #2d3648; border-radius:12px; padding:14px 16px; margin-bottom:12px;">
+            <div style="background:#181d27; border:1px solid {card_border}; border-radius:12px; padding:14px 16px; margin-bottom:12px;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <span style="font-size:1.15rem; font-weight:800; color:#f0f3f6;">
                         {item['icon']} {item['name']} <span style="font-size:0.85rem; color:#8c96a5;">({item['ticker']})</span>
                     </span>
-                    <span style="background:#00c08722; color:#00c087; border:1px solid #00c087; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;">G60 가동중</span>
+                    {badge_html}
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
-            state = item["state"]
-            active_grids = state.get("active_grids", [])
-            holding_vol = sum(float(g.get("vol", 0.0) or 0.0) for g in active_grids)
-            realized_pnl = float(state.get("realized_pnl", 0.0) or 0.0)
-            base_p = float(state.get("base_price", 0.0) or 0.0)
-            win_cnt = int(state.get("win_count", 0) or 0)
-            trades_cnt = len(item["trades_df"])
-            coin_fees = float(state.get("total_fees", 0.0) or 0.0)
-            allocated_budget = float(state.get("allocated_budget", 300000.0) or 300000.0)
-            eff_levels = int(allocated_budget // 10000.0)
+            if is_cascade:
+                # Cascade 전환 후 실시간 정보
+                cyc = c_state.get("cycle_count", 1)
+                lvls = c_state.get("active_levels", 0)
+                vwap = float(c_state.get("vwap", 0.0) or 0.0)
+                held_vol = float(c_state.get("held_volume", 0.0) or 0.0)
+                tot_cost = float(c_state.get("total_cost", 0.0) or 0.0)
+                c_pnl = float(c_state.get("total_realized_pnl", 0.0) or 0.0)
+                pending_sell = c_state.get("pending_sell") or {}
+                profit_pct = float(c_state.get("profit_pct", 0.006) or 0.006)
+                tp_price = float(pending_sell.get("price", 0.0) or (vwap * (1.0 + profit_pct) if vwap > 0 else 0.0))
 
-            # 핵심 지표 2열
-            m1, m2 = st.columns(2)
-            with m1:
-                st.metric(label="실현 손익", value=f"{realized_pnl:+,.1f}원")
-            with m2:
-                st.metric(label="보유 그리드", value=f"{len(active_grids)}/{eff_levels}단", delta=f"{holding_vol:.4f} {item['ticker']}")
+                cur_p = 0.0
+                try:
+                    cur_p = float(pyupbit.get_current_price(item["market"]) or 0.0)
+                except Exception:
+                    pass
 
-            st.caption(f"🎯 기준가: **{base_p:,.0f}원** | 익절: **{win_cnt}회** (총 {trades_cnt}건) | 수수료: **{coin_fees:,.1f}원**")
+                dist_to_tp = ((tp_price - cur_p) / cur_p * 100.0) if cur_p > 0 and tp_price > 0 else 0.0
 
-            # 보유 포지션 상세 (있을 경우에만 접이식)
-            if active_grids:
-                with st.expander(f"📦 현재 보유 포지션 ({len(active_grids)}단)", expanded=False):
-                    g_rows = []
-                    for g in active_grids:
-                        g_rows.append({
-                            "차수": f"Lvl {g.get('lvl')}",
-                            "매수가": f"{float(g.get('buy_p', 0)):,.0f}원",
-                            "수량": f"{float(g.get('vol', 0)):.6f}",
-                            "투입원금": f"{float(g.get('cost', 0)):,.0f}원",
-                            "목표익절가": f"{float(g.get('tp_p', 0)):,.0f}원"
-                        })
-                    st.dataframe(pd.DataFrame(g_rows), hide_index=True, use_container_width=True)
+                m1, m2 = st.columns(2)
+                with m1:
+                    st.metric(label="현재 운용 상태", value=f"사이클 {cyc}회차", delta=f"{lvls}/200단 진입")
+                with m2:
+                    st.metric(label="목표 익절가", value=f"{tp_price:,.0f}원", delta=f"익절까지 {dist_to_tp:+.2f}%")
+
+                st.caption(f"🎯 평단: **{vwap:,.1f}원** | 보유: **{held_vol:.6f} {item['ticker']}** ({tot_cost:,.0f}원) | 실현손익: **{c_pnl:+,.1f}원**")
+            else:
+                # G60 +0.6% 바스켓 탈출 대기 정보
+                active_grids = state.get("active_grids", [])
+                holding_vol = sum(float(g.get("vol", 0.0) or 0.0) for g in active_grids)
+                tot_cost = sum(float(g.get("cost", 0.0) or 0.0) for g in active_grids)
+                vwap = (tot_cost / holding_vol) if holding_vol > 0 else float(state.get("base_price", 0.0) or 0.0)
+                exit_pct = float(state.get("basket_exit_pct", 0.006) or 0.006)
+                raw_tp = vwap * (1.0 + exit_pct)
+                tick = get_upbit_tick_size(raw_tp)
+                target_tp = math.ceil(raw_tp / tick) * tick if tick > 0 else raw_tp
+
+                cur_p = 0.0
+                try:
+                    cur_p = float(pyupbit.get_current_price(item["market"]) or 0.0)
+                except Exception:
+                    pass
+
+                gap_pct = ((target_tp - cur_p) / cur_p * 100.0) if cur_p > 0 and target_tp > 0 else 0.0
+                expected_pnl = (target_tp * holding_vol * 0.9995) - tot_cost if target_tp > 0 and holding_vol > 0 else 0.0
+
+                m1, m2 = st.columns(2)
+                with m1:
+                    st.metric(label="보유 포지션", value=f"{len(active_grids)}단 보유", delta=f"{tot_cost:,.0f}원 투입")
+                with m2:
+                    st.metric(label="탈출 목표가 (+0.6%)", value=f"{target_tp:,.0f}원", delta=f"탈출까지 +{gap_pct:.2f}%" if gap_pct > 0 else f"도달 완료 ({gap_pct:+.2f}%)")
+
+                st.caption(f"🎯 매수평단: **{vwap:,.1f}원** | 현재가: **{cur_p:,.0f}원** | 수량: **{holding_vol:.6f} {item['ticker']}** | 예상순익: **+{expected_pnl:,.0f}원**")
+
+                st.markdown(f"""
+                <div style="background:#12161f; border:1px dashed #ff980066; border-radius:8px; padding:9px 12px; margin:8px 0; font-size:0.8rem; color:#cbd5e1; line-height:1.5;">
+                    <div style="color:#ffb703; font-weight:700; margin-bottom:3px;">🔄 Cascade 자동 전환 대기 중:</div>
+                    • 목표가(<b>{target_tp:,.0f}원</b>) 도달 시 전량 일괄 시장가 매도 청산<br>
+                    • 청산 완료 즉시 <b>Cascade (1.0% 매수 / 0.6% 익절 / 200단)</b> 자동 기동
+                </div>
+                """, unsafe_allow_html=True)
+
+                if active_grids:
+                    with st.expander(f"📦 현재 보유 포지션 ({len(active_grids)}단)", expanded=False):
+                        g_rows = []
+                        for g in active_grids:
+                            g_rows.append({
+                                "차수": f"Lvl {g.get('lvl')}",
+                                "매수가": f"{float(g.get('buy_p', 0)):,.0f}원",
+                                "수량": f"{float(g.get('vol', 0)):.6f}",
+                                "투입원금": f"{float(g.get('cost', 0)):,.0f}원",
+                            })
+                        st.dataframe(pd.DataFrame(g_rows), hide_index=True, use_container_width=True)
 
             # 매매 내역 테이블
-            st.markdown(f"**📜 {item['name']} 매매내역** (총 {trades_cnt}건)")
+            st.markdown(f"**📜 {item['name']} 매매내역** (총 {len(item['trades_df'])}건)")
             df = item["trades_df"]
             if not df.empty:
                 show_df = df.copy()
@@ -2391,7 +2538,7 @@ def render_pocket_g60_section(loaded_snapshot: Optional[Dict[str, Any]] = None):
                 show_df["손익"] = show_df["pnl"].apply(lambda x: f"{float(x):+,.1f}원" if float(x) != 0 else "-")
 
                 view_cols = ["체결시각", "구분", "단가", "수량", "체결금액", "손익"]
-                st.dataframe(show_df[view_cols], hide_index=True, use_container_width=True, height=280)
+                st.dataframe(show_df[view_cols], hide_index=True, use_container_width=True, height=260)
             else:
                 st.info(f"아직 {item['name']} 체결 내역이 없습니다.")
 
@@ -2403,7 +2550,7 @@ def get_cascade_summary(loaded_snapshot: Optional[Dict[str, Any]] = None) -> Dic
     """Cascade 서브포켓 2종(SOL, ETH)의 실거래 상태 및 체결 내역을 조회합니다."""
     markets = [
         {"market": "KRW-SOL", "ticker": "SOL", "name": "솔라나", "icon": "🟣", "status": "RUNNING"},
-        {"market": "KRW-ETH", "ticker": "ETH", "name": "이더리움", "icon": "💎", "status": "PENDING_TRANSFER"}
+        {"market": "KRW-ETH", "ticker": "ETH", "name": "이더리움", "icon": "💎", "status": "RUNNING"}
     ]
 
     states = {}
