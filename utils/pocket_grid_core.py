@@ -53,7 +53,13 @@ class PocketGridRunner:
         poll_interval_sec: int = 5,
         exit_only: bool = False,
         basket_exit_pct: Optional[float] = None,
-        auto_reallocate_eth: bool = True
+        auto_reallocate_eth: bool = True,
+        transition_to_cascade: bool = False,
+        cascade_step_pct: float = 0.010,
+        cascade_profit_pct: float = 0.006,
+        cascade_max_levels: int = 200,
+        cascade_pocket_name: str = "pocket1_cascade",
+        cascade_env_prefix: str = "UPBIT_POCKET"
     ):
         self.market = market
         self.ticker = market.replace("KRW-", "")
@@ -69,6 +75,12 @@ class PocketGridRunner:
         self.exit_only = exit_only
         self.basket_exit_pct = basket_exit_pct
         self.auto_reallocate_eth = auto_reallocate_eth
+        self.transition_to_cascade = transition_to_cascade
+        self.cascade_step_pct = cascade_step_pct
+        self.cascade_profit_pct = cascade_profit_pct
+        self.cascade_max_levels = cascade_max_levels
+        self.cascade_pocket_name = cascade_pocket_name
+        self.cascade_env_prefix = cascade_env_prefix
 
         safe_tag = market.replace("-", "_")
         self.state_file = os.path.join(BASE_DIR, f"pocket_grid_state_{safe_tag}.json")
@@ -393,7 +405,7 @@ class PocketGridRunner:
         initial_state = {
             "market": self.market,
             "strategy": "POCKET_G60",
-            "mode": f"EXIT_ONLY_BASKET_{int((self.basket_exit_pct or 0.01)*100)}PCT" if (self.exit_only and self.basket_exit_pct) else "POCKET_G60",
+            "mode": f"EXIT_ONLY_BASKET_{((self.basket_exit_pct or 0.01)*100):.1f}PCT" if (self.exit_only and self.basket_exit_pct) else "POCKET_G60",
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "allocated_budget": self.grid_budget,
             "realized_pnl": 0.0,
@@ -1118,8 +1130,29 @@ class PocketGridRunner:
             state["exit_only"] = True
             if self.basket_exit_pct is not None:
                 state["basket_exit_pct"] = self.basket_exit_pct
-            state["mode"] = f"EXIT_ONLY_BASKET_{int((self.basket_exit_pct or 0.01)*100)}PCT"
+            state["mode"] = f"EXIT_ONLY_BASKET_{((self.basket_exit_pct or 0.01)*100):.1f}PCT"
             self.save_state(state)
+
+        # 이미 바스켓 전량 청산 완료 후 재기동된 경우 Cascade로 즉시 진입
+        if (
+            self.transition_to_cascade
+            and state.get("basket_exit_settled")
+            and len(state.get("active_grids", [])) == 0
+        ):
+            print(f"[{self.market}] ℹ️ G60 바스켓 전량 청산 완료 확인 -> Cascade 러너로 즉시 가동")
+            self.release_lock()
+            from utils.pocket_basket_core import PocketBasketResetRunner
+            cascade_runner = PocketBasketResetRunner(
+                market=self.market,
+                step_pct=self.cascade_step_pct,
+                profit_pct=self.cascade_profit_pct,
+                unit_krw=self.unit_krw,
+                max_levels=self.cascade_max_levels,
+                pocket_name=self.cascade_pocket_name,
+                env_prefix=self.cascade_env_prefix
+            )
+            cascade_runner.run()
+            return
 
         # 신규 목표 익절폭(profit_pct) 설정에 맞춰 기존 active_grids의 개별 tp_p 동기화 (파라미터 변경 시 신속 반영)
         updated_tp = False
@@ -1206,6 +1239,38 @@ class PocketGridRunner:
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         state = self.process_tick(state, curr_p, now_str)
                         self.save_state(state)
+
+                        # 바스켓 전량 청산 완료 시 신규 Cascade 봇으로 자동 승계/전환
+                        if (
+                            self.transition_to_cascade
+                            and state.get("basket_exit_settled")
+                            and len(state.get("active_grids", [])) == 0
+                        ):
+                            print("\n" + "🎉" * 40)
+                            print(f"[{self.market}] 🎯 [G60 ➔ Cascade 자동 전환] 바스켓 전량 청산 완료 확인!")
+                            print(f" • 신규 Cascade 전략(매수 {self.cascade_step_pct*100:.1f}% / 익절 +{self.cascade_profit_pct*100:.1f}% / 200단) 가동 시작")
+                            print("🎉" * 40 + "\n")
+
+                            self.send_telegram(
+                                f"🎉 <b>[{self.market} G60 바스켓 전량 익절 탈출 완료!]</b>\n"
+                                f"• 기존 보유 물량 전량 청산 완료 (평단가 대비 +{(self.basket_exit_pct or 0.006)*100:.1f}% 익절)\n"
+                                f"• 실현 손익: <b>{state.get('last_basket_profit', 0.0):+,.0f}원</b> (회수금: {state.get('last_basket_revenue', 0.0):,.0f}원)\n"
+                                f"• 🚀 <b>신규 Cascade 전략(1.0% 매수 / 0.6% 익절 / 200단)으로 자동 전환 가동합니다!</b>"
+                            )
+
+                            self.release_lock()
+                            from utils.pocket_basket_core import PocketBasketResetRunner
+                            cascade_runner = PocketBasketResetRunner(
+                                market=self.market,
+                                step_pct=self.cascade_step_pct,
+                                profit_pct=self.cascade_profit_pct,
+                                unit_krw=self.unit_krw,
+                                max_levels=self.cascade_max_levels,
+                                pocket_name=self.cascade_pocket_name,
+                                env_prefix=self.cascade_env_prefix
+                            )
+                            cascade_runner.run()
+                            return
 
                         now_ts = time.time()
                         if now_ts - last_heartbeat >= 30:

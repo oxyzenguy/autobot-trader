@@ -203,6 +203,55 @@ class TestPocketGridExitOnly(unittest.TestCase):
                 self.assertEqual(eff_budget, 406000.0)
                 self.assertEqual(eff_levels, 40)
 
+    def test_auto_transition_to_cascade_after_basket_exit(self):
+        """transition_to_cascade=True일 때 바스켓 전량 청산 완료 후 PocketBasketResetRunner로 자동 전환되는지 검증"""
+        fake_client = Mock()
+        fake_client.get_balance.return_value = 500000.0
+
+        with patch("utils.pocket_grid_core.UpbitPocketClient", return_value=fake_client):
+            runner = PocketGridRunner(
+                market="KRW-ETH",
+                exit_only=True,
+                basket_exit_pct=0.006,
+                transition_to_cascade=True,
+                cascade_step_pct=0.010,
+                cascade_profit_pct=0.006,
+                cascade_max_levels=200
+            )
+            runner.state_file = self.state_file
+            runner.lock_file = os.path.join(self.temp_dir.name, "test.lock")
+            runner.db_file = self.db_file
+            runner.init_db()
+
+            # Mock state with basket_exit_settled=True and active_grids=[]
+            state = {
+                "market": "KRW-ETH",
+                "active_grids": [],
+                "basket_exit_settled": True,
+                "last_basket_profit": 1500.0,
+                "last_basket_revenue": 211500.0,
+                "settled_orders": []
+            }
+            runner.save_state(state)
+
+            with patch("utils.pocket_basket_core.PocketBasketResetRunner") as mock_cascade_cls:
+                mock_cascade_instance = Mock()
+                mock_cascade_cls.return_value = mock_cascade_instance
+                with patch.object(runner, "acquire_lock", return_value=True):
+                    with patch.object(runner, "release_lock") as mock_rel:
+                        runner.run()
+                        mock_rel.assert_called()
+                        mock_cascade_cls.assert_called_once_with(
+                            market="KRW-ETH",
+                            step_pct=0.010,
+                            profit_pct=0.006,
+                            unit_krw=10000.0,
+                            max_levels=200,
+                            pocket_name="pocket1_cascade",
+                            env_prefix="UPBIT_POCKET"
+                        )
+                        mock_cascade_instance.run.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

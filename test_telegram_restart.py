@@ -89,7 +89,8 @@ class TestTelegramRestart(unittest.TestCase):
             self.assertTrue(any("대시보드 재기동 성공" in alert for alert in self.sent_alerts))
 
     def test_handle_restart_all(self):
-        with patch("utils.process_manager.restart_paper_bots") as mock_paper, \
+        with patch("utils.process_manager.restart_pocket_bots") as mock_pocket, \
+             patch("utils.process_manager.restart_paper_bots") as mock_paper, \
              patch("utils.process_manager.restart_dashboard_bot") as mock_dash, \
              patch("utils.process_manager.trigger_live_bot_restart") as mock_live:
             handle_restart_command(
@@ -99,6 +100,7 @@ class TestTelegramRestart(unittest.TestCase):
                 offset=99,
                 send_alert_fn=self.mock_send
             )
+            mock_pocket.assert_called_once()
             mock_paper.assert_called_once()
             mock_dash.assert_called_once()
             mock_live.assert_called_once_with("test_token", "12345", 99)

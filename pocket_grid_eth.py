@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-KRW-ETH 업비트 서브포켓(G60) 실거래 그리드 실행 스크립트
+KRW-ETH 업비트 서브포켓(G60 ➔ Cascade 자동전환) 실거래 실행 스크립트
 - 대상: KRW-ETH (이더리움)
-- 모드: EXIT_ONLY (신규 매수 전면 차단, 보유 21단 평단 대비 +1.0% 바스켓 일괄 매도 대기)
-- 청산 후: 매도 대금 SOL / XRP 예산으로 50:50 배분 전환
+- 모드: EXIT_ONLY (신규 매수 차단, 기존 21단 평단 대비 +0.6% 바스켓 일괄 익절 대기)
+- 청산 후: 신규 Cascade 전략(1.0% 매수 / 0.6% 익절 / 200단)으로 자동 전환 실행
 """
 import sys
 import os
@@ -28,7 +28,13 @@ def main():
         grid_budget=300_000.0,
         poll_interval_sec=5,
         exit_only=True,
-        basket_exit_pct=0.01
+        basket_exit_pct=0.006,            # 평단가 대비 +0.6% 바스켓 일괄 익절
+        transition_to_cascade=True,       # 청산 후 Cascade로 자동 전환
+        cascade_step_pct=0.010,          # 신규 Cascade 매수 간격 1.0%
+        cascade_profit_pct=0.006,        # 신규 Cascade 전량 익절 마진 0.6%
+        cascade_max_levels=200,          # 200단 버퍼
+        cascade_pocket_name="pocket1_cascade",
+        cascade_env_prefix="UPBIT_POCKET"
     )
     runner.run()
 
