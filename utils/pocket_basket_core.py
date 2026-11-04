@@ -84,7 +84,9 @@ class PocketBasketResetRunner:
         max_open_buys: int = 3,         # 하단 대기 매수 주문 수
         poll_interval_sec: float = 2.0, # 폴링 대기 주기 (초)
         pocket_name: str = "pocket2_basket",  # 포켓 식별 태그 (장부 및 DB 격리)
-        env_prefix: str = "UPBIT_POCKET2"     # 서브포켓 API 키 prefix
+        env_prefix: str = "UPBIT_POCKET2",    # 서브포켓 API 키 prefix
+        pullback_pct: float = 0.004,    # 익절 후 1단 재진입 시 눌림목 대기 간격 (기본: 0.4%)
+        pullback_timeout_sec: float = 1800.0  # 눌림목 미체결 시 타임아웃 후 시장가 진입 (기본: 30분, 0이면 무제한)
     ):
         self.market = market
         self.ticker = market.replace("KRW-", "")
@@ -95,6 +97,8 @@ class PocketBasketResetRunner:
         self.max_open_buys = max_open_buys
         self.poll_interval_sec = poll_interval_sec
         self.pocket_name = pocket_name
+        self.pullback_pct = pullback_pct
+        self.pullback_timeout_sec = pullback_timeout_sec
 
         safe_tag = market.replace("-", "_")
         self.state_file = os.path.join(BASE_DIR, f"{pocket_name}_state_{safe_tag}.json")
@@ -203,7 +207,12 @@ class PocketBasketResetRunner:
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    s = json.load(f)
+                    if "pending_init_buy" not in s:
+                        s["pending_init_buy"] = None
+                    if "pullback_pct" not in s:
+                        s["pullback_pct"] = self.pullback_pct
+                    return s
             except Exception as e:
                 print(f"[{self.market}] ⚠️ 상태 파일 읽기 오류: {e}")
         return self._create_empty_state()
@@ -227,6 +236,10 @@ class PocketBasketResetRunner:
             "base_entry_price": 0.0,
             "pending_sell": None,   # {'uuid': ..., 'price': ..., 'volume': ...}
             "pending_buys": {},     # {uuid: {'price': ..., 'volume': ..., 'level': ...}}
+            "pending_init_buy": None, # {'uuid': ..., 'price': ..., 'volume': ..., 'sold_price': ..., 'created_time': ...}
+            "last_sold_price": None,
+            "last_sold_time": None,
+            "pullback_pct": self.pullback_pct,
             "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -262,27 +275,61 @@ class PocketBasketResetRunner:
         except Exception as e:
             print(f"[{self.market}] 미체결 목록 조회 실패: {e}")
 
-    def start_new_cycle(self, state: Dict[str, Any]) -> None:
+    def start_pullback_entry(self, state: Dict[str, Any], sold_price: float) -> None:
         """
-        신규 사이클 시작:
-        1. 잔여 미체결 주문 전량 취소
-        2. 시장가 1Unit 매수 (새 진입)
-        3. 평단가 +0.8% 매도 주문 등록
-        4. 평단가 대비 -1.8%, -3.6%, -5.3% 매수 주문 3건 등록
+        익절 완료 후 1단 눌림목 지정가 매수 등록 (Option B):
+        - 직전 익절가 대비 -pullback_pct (기본 -0.4%) 가격에 1단 지정가 매수를 걸어 꼭지 매수를 방지합니다.
         """
         krw_bal = self.client.get_balance("KRW")
         if krw_bal < self.unit_krw:
             print(f"[{self.market}] ⏳ 원화 잔고 부족: 현재 {krw_bal:,.0f}원 < 1Unit({self.unit_krw:,.0f}원). 입금 대기 중...")
             return
 
-        print(f"\n[{self.market}] 🚀 [새 사이클 시작] 이전 주문 정리 및 1Unit 시장가 신규 진입...")
+        print(f"\n[{self.market}] 🎯 [눌림목 1단 대기 시작] 이전 주문 정리 및 -{self.pullback_pct*100:.1f}% 눌림목 지정가 등록...")
         self.cancel_all_open_orders()
         time.sleep(0.5)
 
-        # 1Unit 시장가 매수
-        ident = f"init_buy_{int(time.time()*1000)}"
-        buy_res = self.client.buy_market_order_and_wait(self.market, self.unit_krw, identifier=ident)
-        
+        raw_buy_p = sold_price * (1.0 - self.pullback_pct)
+        target_buy_p = adjust_price_to_tick(raw_buy_p, method="floor")
+        tick = get_upbit_tick_size(sold_price)
+        if target_buy_p >= sold_price:
+            target_buy_p = sold_price - tick
+
+        vol = round(self.unit_krw / target_buy_p, 8)
+        ident = f"init_pb_{int(time.time()*1000)}"
+
+        try:
+            res = self.client.create_limit_order(self.market, "bid", vol, target_buy_p, identifier=ident)
+            buy_uuid = res.get("uuid")
+            if not buy_uuid:
+                raise ValueError(f"No UUID returned: {res}")
+
+            state["pending_init_buy"] = {
+                "uuid": buy_uuid,
+                "price": target_buy_p,
+                "volume": vol,
+                "sold_price": sold_price,
+                "created_time": time.time(),
+                "cycle": state["cycle_count"] + 1
+            }
+            state["pending_sell"] = None
+            state["pending_buys"] = {}
+            self.save_state(state)
+
+            print(f"[{self.market}] 🎯 [눌림목 지정가 등록 완료] {vol:.6f} {self.ticker} @ {target_buy_p:,.0f}원 (직전 익절가 {sold_price:,.0f}원 대비 -{self.pullback_pct*100:.1f}%)")
+            self.send_telegram(
+                f"🎯 <b>[Cascade {self.ticker} 익절 후 눌림목 매수 대기]</b>\n"
+                f"• 직전 익절가: <b>{sold_price:,.0f}원</b>\n"
+                f"• 1단 눌림목 매수가: <b>{target_buy_p:,.0f}원</b> (-{self.pullback_pct*100:.1f}%)\n"
+                f"• 주문 수량: {vol:.6f} {self.ticker} ({self.unit_krw:,.0f}원)\n"
+                f"• 꼭지 매수를 방지하고 -{self.pullback_pct*100:.1f}% 숨고르기 체결을 대기합니다 (타임아웃 {self.pullback_timeout_sec/60:.0f}분)."
+            )
+        except Exception as e:
+            print(f"[{self.market}] ⚠️ 눌림목 지정가 매수 등록 실패: {e}. 시장가 진입으로 대체합니다.")
+            self.start_new_cycle(state)
+
+    def _finalize_cycle_start(self, state: Dict[str, Any], buy_res: Dict[str, Any], is_pullback: bool = False) -> None:
+        """1단 매수 체결 후 포지션 초기화, 바스켓 매도 및 하단 매수 3건 등록"""
         buy_p = float(buy_res["price"])
         vol = float(buy_res["volume"])
         cost = float(buy_res["funds"])
@@ -297,11 +344,13 @@ class PocketBasketResetRunner:
         state["vwap"] = buy_p
         state["base_entry_price"] = buy_p
         state["total_fees"] += fee
+        state["pending_init_buy"] = None
 
-        self.log_trade("bid", "BASKET_INITIAL_BUY", buy_p, vol, cost, fee, 0.0, curr_cycle, ouuid)
+        act_name = "BASKET_INITIAL_BUY_PULLBACK" if is_pullback else "BASKET_INITIAL_BUY"
+        self.log_trade("bid", act_name, buy_p, vol, cost, fee, 0.0, curr_cycle, ouuid)
         print(f"[{self.market}] 🟢 1Unit 매수 체결 완료: {vol:.6f} {self.ticker} @ {buy_p:,.0f}원 (투입: {cost:,.0f}원)")
 
-        # 지정가 매도 등록 (평단가 +0.8%)
+        # 지정가 매도 등록 (평단가 +profit_pct)
         self._register_basket_sell(state)
 
         # 지정가 매수 3건 등록
@@ -311,12 +360,28 @@ class PocketBasketResetRunner:
 
         sell_info = state.get("pending_sell") or {}
         tp_price = sell_info.get("price", buy_p * (1.0 + self.profit_pct))
+        tag_str = f"눌림목 성공 (-{self.pullback_pct*100:.1f}%)" if is_pullback else "신규 진입"
         self.send_telegram(
-            f"🚀 <b>[Cascade {self.ticker} 1단 신규 진입]</b> (사이클 {curr_cycle}회차)\n"
+            f"🚀 <b>[Cascade {self.ticker} 1단 {tag_str}]</b> (사이클 {curr_cycle}회차)\n"
             f"• 체결: {vol:.6f} {self.ticker} @ {buy_p:,.0f}원 ({cost:,.0f}원)\n"
             f"• 평단: <b>{buy_p:,.0f}원</b> | 전량 익절가: <b>{tp_price:,.0f}원</b> (+{self.profit_pct*100:.1f}%)\n"
-            f"• 하단 대기 매수 3건 등록 완료 (1.8% 간격 200단 버퍼)"
+            f"• 하단 대기 매수 3건 등록 완료 ({self.step_pct*100:.1f}% 간격 {self.max_levels}단 버퍼)"
         )
+
+    def start_new_cycle(self, state: Dict[str, Any]) -> None:
+        """콜드 스타트 또는 타임아웃 시 1Unit 시장가 신규 진입"""
+        krw_bal = self.client.get_balance("KRW")
+        if krw_bal < self.unit_krw:
+            print(f"[{self.market}] ⏳ 원화 잔고 부족: 현재 {krw_bal:,.0f}원 < 1Unit({self.unit_krw:,.0f}원). 입금 대기 중...")
+            return
+
+        print(f"\n[{self.market}] 🚀 [새 사이클 시작] 이전 주문 정리 및 1Unit 시장가 신규 진입...")
+        self.cancel_all_open_orders()
+        time.sleep(0.5)
+
+        ident = f"init_buy_{int(time.time()*1000)}"
+        buy_res = self.client.buy_market_order_and_wait(self.market, self.unit_krw, identifier=ident)
+        self._finalize_cycle_start(state, buy_res, is_pullback=False)
 
     def _register_basket_sell(self, state: Dict[str, Any]) -> None:
         """보유 전량에 대해 평단가 대비 +0.8% 지정가 매도 등록"""
@@ -408,10 +473,10 @@ class PocketBasketResetRunner:
             state = self.load_state()
 
             while True:
-                # 포지션이 없거나 최초 상태라면 신규 사이클 즉시 시작
-                if state["held_volume"] <= 0 or state["pending_sell"] is None:
+                # 포지션이 없거나 최초 상태라면 신규 사이클 즉시 시작 (단, 눌림목 대기 중인 경우는 제외)
+                if (state["held_volume"] <= 0 or state["pending_sell"] is None) and state.get("pending_init_buy") is None:
                     self.start_new_cycle(state)
-                    if state["held_volume"] <= 0:
+                    if state["held_volume"] <= 0 and state.get("pending_init_buy") is None:
                         time.sleep(self.poll_interval_sec * 5)
                         continue
 
@@ -424,6 +489,48 @@ class PocketBasketResetRunner:
                     continue
 
                 open_uuids = set(o.get("uuid") for o in open_orders if o.get("uuid"))
+
+                # -------------------------------------------------------------
+                # Case 0: 1단 눌림목 대기 주문 체결 또는 타임아웃 확인 (Option B)
+                # -------------------------------------------------------------
+                init_buy_info = state.get("pending_init_buy")
+                if init_buy_info:
+                    init_uuid = init_buy_info.get("uuid")
+                    if init_uuid not in open_uuids:
+                        try:
+                            order_detail = self.client.get_order(init_uuid)
+                            parsed = self.client.parse_order_execution(order_detail)
+                        except Exception as e:
+                            print(f"[{self.market}] 눌림목 매수 체결 확인 예외: {e}")
+                            parsed = None
+
+                        if parsed and parsed.get("status") in ("FILLED", "PARTIAL"):
+                            print(f"\n[{self.market}] 🟢 [눌림목 1단 체결 확인!] 직전 익절가 대비 -{self.pullback_pct*100:.1f}% 할인 매수 성공!")
+                            self._finalize_cycle_start(state, parsed, is_pullback=True)
+                            continue
+                        elif parsed and parsed.get("status") == "CANCELLED":
+                            print(f"[{self.market}] ⚠️ 눌림목 매수 주문 취소 감지됨. 상태 초기화...")
+                            state["pending_init_buy"] = None
+                            self.save_state(state)
+                            continue
+
+                    # 타임아웃 확인 (예: 30분 경과 시 시장가 진입)
+                    elapsed = time.time() - float(init_buy_info.get("created_time", time.time()))
+                    if self.pullback_timeout_sec > 0 and elapsed >= self.pullback_timeout_sec:
+                        print(f"[{self.market}] ⏱️ 눌림목 대기 타임아웃 ({elapsed/60:.1f}분 경과 >= {self.pullback_timeout_sec/60:.0f}분). 취소 후 시장가 진입...")
+                        try:
+                            self.client.cancel_order(init_uuid)
+                            time.sleep(0.5)
+                        except Exception as e:
+                            print(f"[{self.market}] 타임아웃 취소 예외: {e}")
+                        state["pending_init_buy"] = None
+                        self.save_state(state)
+                        self.start_new_cycle(state)
+                        continue
+
+                    # 아직 눌림목 체결 대기 중이면 다음 폴링 루프로 넘어감
+                    continue
+
                 sell_info = state.get("pending_sell")
                 pending_buys = state.get("pending_buys", {})
 
@@ -462,15 +569,21 @@ class PocketBasketResetRunner:
                             f"• 사이클: <b>{curr_cycle}회차 전량 익절 탈출</b>\n"
                             f"• 매도 체결: {sold_vol:.6f} {self.ticker} @ {parsed['price']:,.0f}원 (회수: {exec_funds:,.0f}원)\n"
                             f"• 실현 손익: <b>{pnl:+,.0f}원</b> (누적: <b>{state['total_realized_pnl']:+,.0f}원</b> | {state['win_count']}회 익절)\n"
-                            f"• 100% 현금 리셋 완료 ➔ 사이클 {curr_cycle + 1}회차 1Unit 즉시 재진입"
+                            f"• 100% 현금 리셋 완료 ➔ 사이클 {curr_cycle + 1}회차 진입 대기"
                         )
 
-                        # 전량 청산 완료 -> 즉시 새 사이클 시작 (리셋)
+                        # 전량 청산 완료 -> Option B (눌림목 매수 등록) 또는 즉시 새 사이클 시작
                         state["held_volume"] = 0.0
                         state["total_cost"] = 0.0
                         state["active_levels"] = 0
                         state["pending_sell"] = None
-                        self.start_new_cycle(state)
+                        state["last_sold_price"] = parsed["price"]
+                        state["last_sold_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        if self.pullback_pct > 0:
+                            self.start_pullback_entry(state, parsed["price"])
+                        else:
+                            self.start_new_cycle(state)
                         continue
 
                 # -------------------------------------------------------------
@@ -552,6 +665,8 @@ if __name__ == "__main__":
     parser.add_argument("--profit", type=float, default=0.008, help="Profit pct (default: 0.008 = 0.8%)")
     parser.add_argument("--unit", type=float, default=10000.0, help="Unit KRW (default: 10,000)")
     parser.add_argument("--max-levels", type=int, default=200, help="Max levels (default: 200)")
+    parser.add_argument("--pullback", type=float, default=0.004, help="Pullback entry pct (default: 0.004 = 0.4%)")
+    parser.add_argument("--timeout", type=float, default=1800.0, help="Pullback timeout sec (default: 1800 = 30min)")
     args = parser.parse_args()
 
     runner = PocketBasketResetRunner(
@@ -559,6 +674,8 @@ if __name__ == "__main__":
         step_pct=args.step,
         profit_pct=args.profit,
         unit_krw=args.unit,
-        max_levels=args.max_levels
+        max_levels=args.max_levels,
+        pullback_pct=args.pullback,
+        pullback_timeout_sec=args.timeout
     )
     runner.run()

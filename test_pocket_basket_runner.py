@@ -139,6 +139,76 @@ class TestPocketBasketRunner(unittest.TestCase):
                 runner.send_telegram("test msg")
                 mock_print.assert_called_with("[KRW-ETH] ⚠️ 텔레그램 알림 예외: network err")
 
+    @patch("utils.pocket_basket_core.UpbitPocketClient")
+    def test_start_pullback_entry(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_balance.return_value = 100_000.0
+        mock_client.create_limit_order.return_value = {"uuid": "pullback-buy-uuid"}
+
+        runner = PocketBasketResetRunner(
+            market="KRW-ETH",
+            profit_pct=0.008,
+            pullback_pct=0.004,
+            unit_krw=10_000.0
+        )
+        runner.state_file = self.state_file
+        runner.lock_file = self.lock_file
+        runner.db_file = self.db_file
+        runner.init_db()
+
+        state = runner._create_empty_state()
+        sold_price = 3_113_000.0
+        runner.start_pullback_entry(state, sold_price)
+
+        # Expected price: 3,113,000 * (1 - 0.004) = 3,100,548 -> floor tick 1,000 = 3,100,000
+        self.assertIsNotNone(state.get("pending_init_buy"))
+        self.assertEqual(state["pending_init_buy"]["uuid"], "pullback-buy-uuid")
+        self.assertEqual(state["pending_init_buy"]["price"], 3_100_000.0)
+        self.assertEqual(state["pending_init_buy"]["sold_price"], 3_113_000.0)
+        mock_client.create_limit_order.assert_called_once()
+        args, kwargs = mock_client.create_limit_order.call_args
+        self.assertEqual(args[0], "KRW-ETH")
+        self.assertEqual(args[1], "bid")
+        self.assertEqual(args[3], 3_100_000.0)
+
+    @patch("utils.pocket_basket_core.UpbitPocketClient")
+    def test_finalize_cycle_start_from_pullback(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_balance.return_value = 100_000.0
+        mock_client.create_limit_order.side_effect = [
+            {"uuid": "sell-tp-uuid"},
+            {"uuid": "ladder-1"},
+            {"uuid": "ladder-2"},
+            {"uuid": "ladder-3"},
+        ]
+
+        runner = PocketBasketResetRunner(market="KRW-ETH", pullback_pct=0.004)
+        runner.state_file = self.state_file
+        runner.lock_file = self.lock_file
+        runner.db_file = self.db_file
+        runner.init_db()
+
+        state = runner._create_empty_state()
+        state["pending_init_buy"] = {"uuid": "old-pb-uuid"}
+        fake_parsed = {
+            "price": 3_100_000.0,
+            "volume": 0.0032258,
+            "funds": 10_000.0,
+            "fee": 5.0,
+            "uuid": "filled-pb-uuid"
+        }
+
+        runner._finalize_cycle_start(state, fake_parsed, is_pullback=True)
+
+        self.assertEqual(state["cycle_count"], 1)
+        self.assertEqual(state["active_levels"], 1)
+        self.assertEqual(state["vwap"], 3_100_000.0)
+        self.assertIsNone(state["pending_init_buy"])
+        self.assertIsNotNone(state["pending_sell"])
+        self.assertEqual(len(state["pending_buys"]), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

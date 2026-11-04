@@ -1950,6 +1950,8 @@ def format_g60_action(row) -> str:
             return "스쿼드 익절"
         return "개별 익절"
     elif "INITIAL" in act:
+        if "PULLBACK" in act:
+            return f"Cascade 1단 눌림목 매수 (Cyc {row.get('cycle', 1)})"
         return f"Cascade 1단 매수 (Cyc {row.get('cycle', 1)})"
     elif "LADDER" in act:
         return f"Cascade 래더 매수 (Lvl {row.get('level', row.get('cycle', 1))})"
@@ -1964,6 +1966,8 @@ def format_cascade_action(row) -> str:
     side = str(row.get("side", ""))
     cyc = row.get("cycle", 1)
     if "INITIAL" in act:
+        if "PULLBACK" in act:
+            return f"1단 눌림목 매수 (Cyc {cyc})"
         return f"1단 신규 매수 (Cyc {cyc})"
     elif "LADDER" in act or "BUY" in act or side == "bid":
         if "LVL_" in act:
@@ -2714,14 +2718,24 @@ def render_cascade_pocket_section(loaded_snapshot: Optional[Dict[str, Any]] = No
                 })
         if sol_bids:
             sorted_bids = sorted(sol_bids, key=lambda x: -float(x.get("price", 0)))
+            pb_uuid = (sol_state.get("pending_init_buy") or {}).get("uuid")
             for i, o in enumerate(sorted_bids, start=2):
-                order_rows.append({
-                    "구분": f"📥 매수 Lvl {i} (-{1.8*(i-1):.1f}%)",
-                    "가격": f"{float(o.get('price', 0)):,.0f}원",
-                    "수량": f"{float(o.get('volume', 0)):.6f} SOL",
-                    "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
-                    "상태": "호가창 등록 대기"
-                })
+                if pb_uuid and o.get("uuid") == pb_uuid:
+                    order_rows.append({
+                        "구분": f"🎯 1단 눌림목 매수 (-{float(sol_state.get('pullback_pct', 0.004) or 0.004)*100:.1f}%)",
+                        "가격": f"{float(o.get('price', 0)):,.0f}원",
+                        "수량": f"{float(o.get('volume', 0)):.6f} SOL",
+                        "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
+                        "상태": "호가창 등록 대기"
+                    })
+                else:
+                    order_rows.append({
+                        "구분": f"📥 매수 Lvl {i} (-{1.8*(i-1):.1f}%)",
+                        "가격": f"{float(o.get('price', 0)):,.0f}원",
+                        "수량": f"{float(o.get('volume', 0)):.6f} SOL",
+                        "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
+                        "상태": "호가창 등록 대기"
+                    })
         if order_rows:
             st.dataframe(pd.DataFrame(order_rows), hide_index=True, use_container_width=True, height=180)
         else:
@@ -2799,14 +2813,24 @@ def render_cascade_pocket_section(loaded_snapshot: Optional[Dict[str, Any]] = No
                     })
             if eth_bids:
                 sorted_e_bids = sorted(eth_bids, key=lambda x: -float(x.get("price", 0)))
+                pb_uuid = (eth_state.get("pending_init_buy") or {}).get("uuid")
                 for i, o in enumerate(sorted_e_bids, start=2):
-                    e_order_rows.append({
-                        "구분": f"📥 매수 Lvl {i} (-{1.8*(i-1):.1f}%)",
-                        "가격": f"{float(o.get('price', 0)):,.0f}원",
-                        "수량": f"{float(o.get('volume', 0)):.6f} ETH",
-                        "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
-                        "상태": "호가창 등록 대기"
-                    })
+                    if pb_uuid and o.get("uuid") == pb_uuid:
+                        e_order_rows.append({
+                            "구분": f"🎯 1단 눌림목 매수 (-{float(eth_state.get('pullback_pct', 0.004) or 0.004)*100:.1f}%)",
+                            "가격": f"{float(o.get('price', 0)):,.0f}원",
+                            "수량": f"{float(o.get('volume', 0)):.6f} ETH",
+                            "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
+                            "상태": "호가창 등록 대기"
+                        })
+                    else:
+                        e_order_rows.append({
+                            "구분": f"📥 매수 Lvl {i} (-{1.8*(i-1):.1f}%)",
+                            "가격": f"{float(o.get('price', 0)):,.0f}원",
+                            "수량": f"{float(o.get('volume', 0)):.6f} ETH",
+                            "주문금액": f"{float(o.get('price', 0)) * float(o.get('volume', 0)):,.0f}원",
+                            "상태": "호가창 등록 대기"
+                        })
             if e_order_rows:
                 st.dataframe(pd.DataFrame(e_order_rows), hide_index=True, use_container_width=True, height=180)
             else:
