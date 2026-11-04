@@ -69,9 +69,9 @@ class TestAdaptiveGrid(unittest.TestCase):
         self.assertGreater(bull_basket, bear_basket)
         self.assertGreater(bull_tranche, bear_tranche)
 
-        # 마켓별 하락장 개별 차수 및 바스켓 익절 마진 검증 (ETH: 바스켓 +0.5%, 개별 +0.8% / SOL: 바스켓 +0.4%, 개별 +3.0%)
+        # 마켓별 하락장 개별 차수 및 바스켓 익절 마진 검증 (ETH: 바스켓 +1.0% (옵션 B), 개별 +0.8% / SOL: 바스켓 +0.4%, 개별 +3.0%)
         eth_bear_basket, eth_bear_tranche = get_dynamic_tp_margins(is_bull=False, market="KRW-ETH")
-        self.assertAlmostEqual(eth_bear_basket, 1.005)
+        self.assertAlmostEqual(eth_bear_basket, 1.010)
         self.assertAlmostEqual(eth_bear_tranche, 1.008)
 
         sol_bear_basket, sol_bear_tranche = get_dynamic_tp_margins(is_bull=False, market="KRW-SOL")

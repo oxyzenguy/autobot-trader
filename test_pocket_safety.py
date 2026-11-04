@@ -195,7 +195,7 @@ class TestPocketGridSafety(unittest.TestCase):
 
         with patch("utils.pocket_grid_core.UpbitPocketClient", return_value=fake_client):
             # unit_krw 10,000 > grid_budget 5,000
-            runner = PocketGridRunner(market="KRW-XRP", unit_krw=10000, grid_budget=5000)
+            runner = PocketGridRunner(market="KRW-XRP", unit_krw=10000, grid_budget=5000, auto_reallocate_eth=False)
             runner.state_file = self.state_file
             runner.db_file = self.db_file
             runner.init_db()

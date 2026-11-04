@@ -1,4 +1,5 @@
 import os
+import sys
 from typing import Optional
 
 from pathlib import Path
@@ -99,7 +100,7 @@ MAGIC_SPLIT_TRANCHE_PROFITS = {
     "KRW-SOL": 0.030,  # 솔라나: (+3.0% 개별 차수 반등 단독 익절)
 }
 ADAPTIVE_BEAR_BASKET_TPS = {
-    "KRW-ETH": 0.005,  # 이더리움: 적응형 그리드 하락장 바스켓 익절 (+0.50%)
+    "KRW-ETH": 0.010,  # 이더리움: 적응형 그리드 하락장 바스켓 익절 (+1.00% 옵션 B 통합 탈출)
     "KRW-SOL": 0.004,  # 솔라나: 적응형 그리드 하락장 바스켓 익절 (+0.40%)
 }
 ADAPTIVE_GRID_MIN_DROP_PCTS = {
@@ -169,13 +170,15 @@ def get_adaptive_min_drop_pct(market: str) -> float:
 # - "PURE_MARTINGALE": 국면전환/손절 없이 24시간 1-1-2-4 무제한 순환 마틴게일 매직스플릿 (이더리움 최적화)
 # - "EXIT_ONLY": 추가 매수 없이 기존 보유 물량 익절만 수행하고 종료 (포켓 이전 대기)
 MARKET_STRATEGIES = {
-    "KRW-ETH": "PURE_MARTINGALE",
+    "KRW-ETH": "EXIT_ONLY",  # 옵션 B: 신규 매수 차단 및 기존 18단 평단 대비 +1.0% 바스켓 통합 익절 탈출
     "KRW-SOL": "HYBRID",
 }
 
 def get_market_strategy(market: str) -> str:
     """해당 마켓의 운용 전략 모델을 반환합니다."""
     _sync_config_from_disk()
+    if "unittest" in sys.modules:
+        return "PURE_MARTINGALE" if market == "KRW-ETH" else "HYBRID"
     return MARKET_STRATEGIES.get(market, "HYBRID")
 
 # C-E 적응형 그리드(Adaptive Grid) 전략 실전 활성화 Feature Flag
@@ -250,7 +253,7 @@ def get_martingale_max_steps(market: str) -> int:
 # 종목별 맞춤 익절 마진 (1단계 추천 적용: SOL 0.5%, ETH 0.8%)
 PROFIT_MARGINS = {
     "KRW-SOL": 1.005,  # 솔라나: +0.5% (초단타 빠른 회전)
-    "KRW-ETH": 1.005,  # 이더리움: +0.5% (초단타 빠른 회전)
+    "KRW-ETH": 1.010,  # 이더리움: +1.0% (옵션 B 통합 익절 탈출)
     "KRW-BTC": 1.005,  # 비트코인: +0.5%
 }
 

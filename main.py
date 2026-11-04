@@ -1918,7 +1918,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                             continue
 
                     # [Exit 2: 스쿼드별 가중평균 매수가 대비 +3% 단독 익절]
-                    elif exit_decision["exit_type"] == "SQUAD" and USE_MAGIC_SPLIT_DEFENSE:
+                    elif exit_decision["exit_type"] == "SQUAD" and USE_MAGIC_SPLIT_DEFENSE and not is_exit_only:
                         eligible_squads = exit_decision.get("eligible_squads", [])
                         if eligible_squads:
                             sq = eligible_squads[0]
@@ -2106,7 +2106,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                                 print(f"[{market}] ℹ️ [스쿼드 익절] 유효한 스쿼드 차수가 없음")
 
                     # [Exit 3: 개별 차수 매직스플릿 +3% 단독 익절 (레거시 하위호환용)]
-                    elif exit_decision["exit_type"] == "TRANCHE" and USE_MAGIC_SPLIT_DEFENSE:
+                    elif exit_decision["exit_type"] == "TRANCHE" and USE_MAGIC_SPLIT_DEFENSE and not is_exit_only:
                         eligible = exit_decision["eligible_tranches"]
                         valid_tranches = []
                         sellable_remaining = quantity
@@ -2377,6 +2377,27 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                     save_strategy_state(market, state)
                     buy_orders = []
                     num_buy = 0
+
+                # EXIT_ONLY 모드: 기존 바스켓 매도가격이 목표 익절가와 다르면 취소 후 재등록 유도
+                if is_exit_only and num_sell == 1 and quantity > 0:
+                    if is_adaptive_grid_enabled(market):
+                        target_exit_price = calculate_basket_sell_price(avg_price, is_bull=is_bull, market=market)
+                    else:
+                        target_exit_price = adjust_price_to_tick(avg_price * sell_profit_margin, method="ceil")
+                    curr_ask_p = float(sell_orders[0].get("price", 0.0) or 0.0)
+                    if target_exit_price > 0 and abs(curr_ask_p - target_exit_price) >= 1.0:
+                        print(f"[{market}] 🔄 [EXIT_ONLY] 기존 바스켓 매도가({curr_ask_p:,.0f}원)가 목표 익절가({target_exit_price:,.0f}원)와 상이하여 주문을 갱신합니다.")
+                        cancel_sell_ok = True
+                        for order in sell_orders:
+                            if not cancel_order_and_wait(upbit, order['uuid'], market=market, state=state):
+                                cancel_sell_ok = False
+                        if not cancel_sell_ok:
+                            halt_for_order_reconciliation(market, state, {"reason": "EXIT_ONLY 바스켓 매도 취소 미확정"})
+                            continue
+                        state.pop("basket_limit_ask", None)
+                        save_strategy_state(market, state)
+                        sell_orders = []
+                        num_sell = 0
 
                 # Case 2: 지정가 매도 주문 체결 확인 (F03)
                 # 만약 등록된 매도 주문이 없고 basket_limit_ask가 등록되어 있다면,

@@ -1184,6 +1184,26 @@ else:
                         <b style="color:#81d4fa; margin-left:4px;">무손절 영구 수량 축적 (매도/청산 원천 배제)</b>
                     </div>
             """
+        elif m_strat == "EXIT_ONLY":
+            mode_desc = "🏁 익절 탈출 모드 (EXIT_ONLY - 옵션 B 1% 바스켓 탈출)"
+            regime_handover_desc = "추가 물타기 전면 차단 및 전량 통합 바스켓 익절 대기"
+            regime_badge = '<span style="background:#ff980022; color:#ff9800; border:1px solid #ff9800; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">EXIT_ONLY (통합 익절)</span>'
+            regime_color = "#ff9800"
+            sub_info_html = f"""
+                    <div>
+                        <span style="color:#8c96a5;">🎯 통합 바스켓 탈출 목표가:</span>
+                        <b style="color:#00c087; margin-left:4px;">{basket_target_p:,.0f}원</b>
+                        <span style="color:#8c96a5; font-size:0.74rem;">(평단가 대비 +{(strat_profit_margin-1)*100:.2f}%)</span>
+                    </div>
+                    <div>
+                        <span style="color:#8c96a5;">🛑 신규 매수 상태:</span>
+                        <b style="color:#ff5252; margin-left:4px;">전면 차단 (추가 물타기 0건)</b>
+                    </div>
+                    <div>
+                        <span style="color:#8c96a5;">🛡️ 탈출 후 전환 계획:</span>
+                        <b style="color:#81d4fa; margin-left:4px;">전량 현금화 후 4H 스윙 추세추종 전략으로 전환</b>
+                    </div>
+            """
         elif m_strat == "PURE_MARTINGALE":
             if is_adaptive_grid_enabled(market):
                 mode_desc = "⚡ 적응형 그리드 C-E (Adaptive 1-1-2-4 + Dynamic Exit)"
