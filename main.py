@@ -2686,7 +2686,10 @@ def run_trading_strategy(market: str = "KRW-SOL"):
                         halt_for_order_reconciliation(market, state, {"reason": "신규 주문 슬롯 메타데이터 불일치 또는 식별 불가"})
                         continue
                     reg_data = {}
-                    if not candles_valid:
+                    if is_exit_only:
+                        print(f"[{market}] 🛑 [EXIT_ONLY] 익절 정리 모드로 신규 매수 주문 등록 생략 (신규 매수 0건).")
+                        new_orders = []
+                    elif not candles_valid:
                         print(f"[{market}] ⚠️ [캔들 데이터 검증 대기] 확정 캔들 검증 실패로 신규 매수 주문 등록 보류 (신규 매수 0건).")
                         new_orders = []
                     elif is_adaptive_grid_enabled(market):
