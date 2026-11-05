@@ -41,6 +41,20 @@ def _safe_int(val: Any, default: int = 0) -> int:
         return default
 
 
+def safe_get_price(ticker: str, fallback: float = 0.0) -> float:
+    """
+    업비트 현재가를 안전하게 조회합니다.
+    네트워크 장애, Upbit API 일시 에러(KeyError: 0 등), rate limit 시 fallback을 반환합니다.
+    """
+    try:
+        p = pyupbit.get_current_price(ticker)
+        if p is not None and isinstance(p, (int, float)) and p > 0:
+            return float(p)
+    except Exception:
+        pass
+    return fallback
+
+
 def build_status_briefing() -> str:
     """전 계좌 통합 종합 현황 브리핑 메시지 생성 (정기 발송 및 /현황)"""
     try:
@@ -109,7 +123,7 @@ def build_status_briefing() -> str:
         if os.path.exists(eth_file):
             with open(eth_file, "r", encoding="utf-8") as f:
                 eth_state = json.load(f)
-        eth_cur = _safe_float(pyupbit.get_current_price("KRW-ETH") or 0.0)
+        eth_cur = safe_get_price("KRW-ETH", fallback=_safe_float(eth_state.get("bot_avg_price", 0.0)) or 3200000.0)
         eth_vol = _safe_float(eth_state.get("bot_quantity", 0.0))
         eth_avg = _safe_float(eth_state.get("bot_avg_price", 0.0))
         eth_pnl = ((eth_cur - eth_avg) / eth_avg * 100.0) if eth_avg > 0 else 0.0
@@ -133,7 +147,7 @@ def build_status_briefing() -> str:
         if os.path.exists(sol_file):
             with open(sol_file, "r", encoding="utf-8") as f:
                 sol_state = json.load(f)
-        sol_cur = _safe_float(pyupbit.get_current_price("KRW-SOL") or 0.0)
+        sol_cur = safe_get_price("KRW-SOL", fallback=_safe_float(sol_state.get("bot_avg_price", 0.0)) or 140000.0)
         sol_vol = _safe_float(sol_state.get("bot_quantity", 0.0))
         sol_avg = _safe_float(sol_state.get("bot_avg_price", 0.0))
         sol_pnl = ((sol_cur - sol_avg) / sol_avg * 100.0) if sol_avg > 0 else 0.0
@@ -181,24 +195,32 @@ def build_status_briefing() -> str:
         except Exception:
             lines.append(f"• <b>{m_sym}</b>: Cascade 상태 로드 중...")
 
-    # 5. G60 서브포켓 요약
-    lines.extend(["", "⚡ <b>[G60 서브포켓]</b> (3종 스쿼드 그리드)"])
+    # 5. 서브포켓 1 (G60 / Cascade 통합 요약)
+    lines.extend(["", "⚡ <b>[G60 서브포켓]</b> (G60 ➔ Cascade 자동전환)"])
     try:
-        s_files = [f"pocket_grid_state_{m}.json" for m in ["KRW_ETH", "KRW_SOL", "KRW_XRP"]]
         p_pnls = 0.0
         p_wins = 0
-        grid_counts = {}
-        for sf in s_files:
-            sp = os.path.join(BASE_DIR, sf)
-            if os.path.exists(sp):
-                with open(sp, "r", encoding="utf-8") as f:
-                    sd = json.load(f)
-                    p_pnls += _safe_float(sd.get("realized_pnl", 0.0))
-                    p_wins += _safe_int(sd.get("win_count", 0))
-                    coin_name = sf.replace("pocket_grid_state_KRW_", "").replace(".json", "")
-                    grid_counts[coin_name] = len(sd.get("active_grids", []))
+        p1_statuses = []
+        for m_sym in ["ETH", "XRP", "SOL"]:
+            c1_file = os.path.join(BASE_DIR, f"pocket1_cascade_state_KRW_{m_sym}.json")
+            g_file = os.path.join(BASE_DIR, f"pocket_grid_state_KRW_{m_sym}.json")
+            if os.path.exists(c1_file):
+                with open(c1_file, "r", encoding="utf-8") as f:
+                    c1_data = json.load(f)
+                p_pnls += _safe_float(c1_data.get("total_realized_pnl", 0.0))
+                p_wins += _safe_int(c1_data.get("win_count", 0))
+                c_lvls = _safe_int(c1_data.get("active_levels", 0))
+                p1_statuses.append(f"{m_sym}(Cascade {c_lvls}단)")
+            elif os.path.exists(g_file):
+                with open(g_file, "r", encoding="utf-8") as f:
+                    g_data = json.load(f)
+                p_pnls += _safe_float(g_data.get("realized_pnl", 0.0))
+                p_wins += _safe_int(g_data.get("win_count", 0))
+                g_cnt = len(g_data.get("active_grids", []))
+                p1_statuses.append(f"{m_sym}(G60 {g_cnt}단)")
+
         lines.append(
-            f"• 실현손익: <b>{p_pnls:+,.0f}원</b> ({p_wins}회 익절) | 보유 그리드: XRP({grid_counts.get('XRP', 0)}), ETH({grid_counts.get('ETH', 0)}), SOL({grid_counts.get('SOL', 0)})"
+            f"• 누적 실현손익: <b>{p_pnls:+,.0f}원</b> ({p_wins}회 익절) | 현황: {', '.join(p1_statuses)}"
         )
     except Exception:
         pass
@@ -259,9 +281,9 @@ def build_main_bot_briefing() -> str:
         if os.path.exists(eth_file):
             with open(eth_file, "r", encoding="utf-8") as f:
                 eth_state = json.load(f)
-        eth_cur = _safe_float(pyupbit.get_current_price("KRW-ETH") or 0.0)
-        eth_vol = _safe_float(eth_state.get("bot_quantity", 0.0))
         eth_avg = _safe_float(eth_state.get("bot_avg_price", 0.0))
+        eth_cur = safe_get_price("KRW-ETH", fallback=eth_avg or 3200000.0)
+        eth_vol = _safe_float(eth_state.get("bot_quantity", 0.0))
         eth_eval = eth_vol * eth_cur
         eth_pnl = ((eth_cur - eth_avg) / eth_avg * 100.0) if eth_avg > 0 else 0.0
         from config import get_profit_margin
@@ -289,9 +311,9 @@ def build_main_bot_briefing() -> str:
         if os.path.exists(sol_file):
             with open(sol_file, "r", encoding="utf-8") as f:
                 sol_state = json.load(f)
-        sol_cur = _safe_float(pyupbit.get_current_price("KRW-SOL") or 0.0)
-        sol_vol = _safe_float(sol_state.get("bot_quantity", 0.0))
         sol_avg = _safe_float(sol_state.get("bot_avg_price", 0.0))
+        sol_cur = safe_get_price("KRW-SOL", fallback=sol_avg or 140000.0)
+        sol_vol = _safe_float(sol_state.get("bot_quantity", 0.0))
         sol_eval = sol_vol * sol_cur
         sol_pnl = ((sol_cur - sol_avg) / sol_avg * 100.0) if sol_avg > 0 else 0.0
         target_sell_p = 142400.0
@@ -344,7 +366,7 @@ def build_cascade_briefing() -> str:
             tot_fees = _safe_float(cs.get("total_fees", 0.0))
             wins = _safe_int(cs.get("win_count", 0))
 
-            cur_p = _safe_float(pyupbit.get_current_price("KRW-SOL") or 0.0)
+            cur_p = safe_get_price("KRW-SOL", fallback=vwap or 140000.0)
             eval_val = vol * cur_p
             unreal_pnl = eval_val - cost
             unreal_pct = (unreal_pnl / cost * 100.0) if cost > 0 else 0.0
@@ -396,7 +418,7 @@ def build_cascade_briefing() -> str:
             e_tot_fees = _safe_float(ce.get("total_fees", 0.0))
             e_wins = _safe_int(ce.get("win_count", 0))
 
-            e_cur_p = _safe_float(pyupbit.get_current_price("KRW-ETH") or 0.0)
+            e_cur_p = safe_get_price("KRW-ETH", fallback=e_vwap or 3200000.0)
             e_eval_val = e_vol * e_cur_p
             e_unreal_pnl = e_eval_val - e_cost
             e_unreal_pct = (e_unreal_pnl / e_cost * 100.0) if e_cost > 0 else 0.0
@@ -457,7 +479,7 @@ def build_balance_briefing() -> str:
 
     try:
         from utils.pocket_api import UpbitPocketClient
-        # 1. G60
+        # 1. G60 / Subpocket 1
         try:
             g60_c = UpbitPocketClient(env_prefix="UPBIT_POCKET")
             g60_krw = _safe_float(g60_c.get_balance("KRW"))
@@ -467,23 +489,33 @@ def build_balance_briefing() -> str:
                 if os.path.exists(sf):
                     with open(sf, "r", encoding="utf-8") as f:
                         sd = json.load(f)
-                    curr_p = _safe_float(pyupbit.get_current_price(m.replace("_", "-")) or 0.0)
+                    curr_p = safe_get_price(m.replace("_", "-"), fallback=0.0)
                     for g in sd.get("active_grids", []):
                         g60_coin_eval += _safe_float(g.get("vol", 0.0)) * curr_p
+            # 서브포켓 1 Cascade 상태 파일 코인 평가액 합산
+            for m in ["KRW_ETH", "KRW_XRP", "KRW_SOL"]:
+                p1c_file = os.path.join(BASE_DIR, f"pocket1_cascade_state_{m}.json")
+                if os.path.exists(p1c_file):
+                    with open(p1c_file, "r", encoding="utf-8") as f:
+                        p1c = json.load(f)
+                    p1c_vol = _safe_float(p1c.get("held_volume", 0.0))
+                    p1c_p = safe_get_price(m.replace("_", "-"), fallback=_safe_float(p1c.get("vwap", 0.0)))
+                    g60_coin_eval += p1c_vol * p1c_p
         except Exception:
             pass
 
-        # 2. Cascade
+        # 2. Cascade / Subpocket 2
         try:
             c2_c = UpbitPocketClient(env_prefix="UPBIT_POCKET2")
             cascade_krw = _safe_float(c2_c.get_balance("KRW"))
-            cs_file = os.path.join(BASE_DIR, "pocket2_basket_state_KRW_SOL.json")
-            if os.path.exists(cs_file):
-                with open(cs_file, "r", encoding="utf-8") as f:
-                    cs = json.load(f)
-                cs_vol = _safe_float(cs.get("held_volume", 0.0))
-                sol_cur = _safe_float(pyupbit.get_current_price("KRW-SOL") or 0.0)
-                cascade_coin_eval = cs_vol * sol_cur
+            for m in ["KRW_SOL", "KRW_ETH"]:
+                cs_file = os.path.join(BASE_DIR, f"pocket2_basket_state_{m}.json")
+                if os.path.exists(cs_file):
+                    with open(cs_file, "r", encoding="utf-8") as f:
+                        cs = json.load(f)
+                    cs_vol = _safe_float(cs.get("held_volume", 0.0))
+                    c2_p = safe_get_price(m.replace("_", "-"), fallback=_safe_float(cs.get("vwap", 0.0)))
+                    cascade_coin_eval += cs_vol * c2_p
         except Exception:
             pass
     except Exception:
@@ -553,7 +585,28 @@ def build_recent_trades_briefing(limit: int = 7) -> str:
         except Exception:
             pass
 
-    # 2. Cascade Pocket (pocket2_basket_trade_history.db)
+    # 2. Subpocket 1 Cascade (pocket1_cascade_trade_history.db)
+    p1c_db = os.path.join(BASE_DIR, "pocket1_cascade_trade_history.db")
+    if os.path.exists(p1c_db):
+        try:
+            conn = sqlite3.connect(p1c_db, timeout=2.0)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("""
+                SELECT id, timestamp, market, side, volume, price, action, cost_or_revenue, pnl, cycle, strategy
+                FROM pocket_trades
+                ORDER BY id DESC LIMIT 15
+            """)
+            for r in c.fetchall():
+                d = dict(r)
+                d["source"] = "서브1"
+                d["ticker"] = str(d.get("market", "")).replace("KRW-", "")
+                all_trades.append(d)
+            conn.close()
+        except Exception:
+            pass
+
+    # 3. Cascade Pocket (pocket2_basket_trade_history.db)
     c2_db = os.path.join(BASE_DIR, "pocket2_basket_trade_history.db")
     if os.path.exists(c2_db):
         try:
@@ -567,14 +620,14 @@ def build_recent_trades_briefing(limit: int = 7) -> str:
             """)
             for r in c.fetchall():
                 d = dict(r)
-                d["source"] = "Cascade"
+                d["source"] = "서브2"
                 d["ticker"] = str(d.get("market", "")).replace("KRW-", "")
                 all_trades.append(d)
             conn.close()
         except Exception:
             pass
 
-    # 3. G60 Pocket (pocket_trade_history.db)
+    # 4. G60 Pocket (pocket_trade_history.db)
     g60_db = os.path.join(BASE_DIR, "pocket_trade_history.db")
     if os.path.exists(g60_db):
         try:

@@ -24,6 +24,22 @@ from main import (
 
 
 class TestTelegramBriefing(unittest.TestCase):
+    def setUp(self):
+        self.mock_prices = {
+            "KRW-BTC": 108000000.0,
+            "KRW-ETH": 3250000.0,
+            "KRW-SOL": 130000.0,
+            "KRW-XRP": 1770.0,
+        }
+        self.price_patcher = patch(
+            "pyupbit.get_current_price",
+            side_effect=lambda ticker: self.mock_prices.get(ticker, 1000.0)
+        )
+        self.price_patcher.start()
+
+    def tearDown(self):
+        self.price_patcher.stop()
+
     def test_build_status_briefing(self):
         msg = build_status_briefing()
         self.assertIsInstance(msg, str)
