@@ -41,7 +41,20 @@ backtest_*.png
 bgf_crawler/
 paper_state_*.json
 paper_grid_state_*.json
+paper_scalper_state.json
+pocket1_cascade_state_*.json
+pocket2_basket_state_*.json
+pocket_grid_state_*.json
+trend_keltner_state_*.json
+legacy_eth_trailing_state.json
+.live_bot_watchdog_state.json
 real_strategy_state_*.json.trailing-exit.json
+*.db-shm
+*.db-wal
+*.log.gz
+.backup/
+.omo/
+.ma_runtime/
 scratch/
 
 .DS_Store
