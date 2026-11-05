@@ -142,6 +142,15 @@ def get_latest_trade_signature() -> str:
             except Exception:
                 pass
 
+    tk_file = os.path.join(BASE_DIR, "trend_keltner_state_KRW_ETH.json")
+    if os.path.exists(tk_file):
+        try:
+            with open(tk_file, "r", encoding="utf-8") as f:
+                tk_data = json.load(f)
+                state_sig.append(f"TK_ETH:{tk_data.get('in_position')}_{tk_data.get('trade_count',0)}_{tk_data.get('realized_pnl_krw',0):.1f}_{tk_data.get('waiting_for_main_bot_exit')}")
+        except Exception:
+            pass
+
     return f"{db_sig}|{pocket_sig}|{p1c_sig}|{cascade_sig}|{'_'.join(state_sig)}"
 
 
@@ -1089,6 +1098,171 @@ def render_main_sol_exit_only_card(
             st.info("체결 내역이 없습니다.")
 
 
+@st.cache_data(ttl=60)
+def get_cached_4h_keltner_signals(market: str = "KRW-ETH") -> Dict[str, Any]:
+    try:
+        from strategy.keltner_trend import fetch_4h_candles_upbit, get_keltner_signals
+        df_4h = fetch_4h_candles_upbit(market, count=220)
+        if df_4h is not None and len(df_4h) >= 200:
+            closed_df = df_4h.iloc[:-1].copy()
+            return get_keltner_signals(closed_df)
+    except Exception:
+        pass
+    return {}
+
+
+def render_keltner_trend_status(loaded_snapshot: Optional[Dict[str, Any]] = None, cur_price: float = 0.0) -> None:
+    """
+    ETH 4H 켈트너 채널 돌파 독립 데몬(trend_keltner_eth.py) 현황 카드
+    - 4H 켈트너 상단 돌파 매수 / 20 EMA 이탈 청산 / -10% 긴급손절
+    - 메인봇 탈출 전 안전 인계 대기 상태 및 4H 지표 현황을 실시간 표시
+    """
+    state = {}
+    if loaded_snapshot and "keltner_trend" in loaded_snapshot:
+        state = loaded_snapshot.get("keltner_trend", {})
+    else:
+        state_file = os.path.join(BASE_DIR, "trend_keltner_state_KRW_ETH.json")
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+            except Exception:
+                pass
+
+    if not state:
+        return
+
+    in_pos = state.get("in_position", False)
+    pos_vol = float(state.get("position_volume", 0.0) or 0.0)
+    entry_p = float(state.get("entry_price", 0.0) or 0.0)
+    entry_cost = float(state.get("entry_cost_krw", 0.0) or 0.0)
+    trade_count = int(state.get("trade_count", 0))
+    win_count = int(state.get("win_count", 0))
+    realized_pnl = float(state.get("realized_pnl_krw", 0.0))
+    waiting_for_main_bot = state.get("waiting_for_main_bot_exit", True)
+
+    # 4H 캔들 지표 조회 (60초 캐시)
+    sig_info = get_cached_4h_keltner_signals("KRW-ETH")
+    c_price = cur_price if cur_price > 0 else float(sig_info.get("curr_price", 0.0) or 0.0)
+    ema20 = float(sig_info.get("ema20", 0.0) or 0.0)
+    ema200 = float(sig_info.get("ema200", 0.0) or 0.0)
+    upper_band = float(sig_info.get("upper_band", 0.0) or 0.0)
+    lower_band = float(sig_info.get("lower_band", 0.0) or 0.0)
+    is_macro_bull = sig_info.get("is_macro_bull", False)
+    signal = sig_info.get("signal", "대기")
+    reason = sig_info.get("reason", "-")
+
+    # 이격도 계산
+    dist_ema200_pct = ((c_price - ema200) / ema200 * 100.0) if ema200 > 0 else 0.0
+    dist_upper_pct = ((c_price - upper_band) / upper_band * 100.0) if upper_band > 0 else 0.0
+    dist_ema20_pct = ((c_price - ema20) / ema20 * 100.0) if ema20 > 0 else 0.0
+
+    if in_pos:
+        pos_eval = pos_vol * c_price
+        pos_pnl = pos_eval - entry_cost
+        pos_pnl_pct = (pos_pnl / entry_cost * 100.0) if entry_cost > 0 else 0.0
+        pnl_color = "#00e676" if pos_pnl >= 0 else "#ff5252"
+        badge_html = '<span style="background:#00e67622; color:#00e676; border:1px solid #00e676; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">🟢 포지션 보유 중 (추세 탑승)</span>'
+        status_desc = f"""
+            <div>
+                <span style="color:#8c96a5;">💼 보유 포지션:</span>
+                <b style="color:#f0f3f6; margin-left:4px;">{pos_vol:.6f} ETH</b>
+                <span style="color:#8c96a5; font-size:0.75rem;">(@ {entry_p:,.0f}원 | 투입 {entry_cost:,.0f}원)</span>
+                <span style="margin-left:8px; color:{pnl_color}; font-weight:700;">평가손익: {pos_pnl_pct:+.2f}% ({pos_pnl:+,.0f}원)</span>
+            </div>
+            <div style="margin-top:3px;">
+                <span style="color:#8c96a5;">🎯 청산 기준:</span>
+                <b style="color:#81d4fa; margin-left:4px;">4H 캔들 종가 &lt; 20 EMA ({ema20:,.0f}원) 이탈 시 익절/청산</b>
+                <span style="margin-left:8px; color:#ff5252;">(긴급손절: {entry_p*0.9:,.0f}원 / -10%)</span>
+            </div>
+        """
+    elif waiting_for_main_bot:
+        badge_html = '<span style="background:#ff980022; color:#ff9800; border:1px solid #ff9800; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">⏳ 인계 안전 게이트 대기 중</span>'
+        status_desc = f"""
+            <div>
+                <span style="color:#8c96a5;">🛡️ 인계 조건:</span>
+                <b style="color:#ffb300; margin-left:4px;">메인봇 18단 평단 탈출 주문(3,552,000원 바스켓 매도) 체결 대기</b>
+            </div>
+            <div style="margin-top:3px;">
+                <span style="color:#8c96a5;">💡 안전 수칙:</span>
+                <span style="color:#f0f3f6; margin-left:4px;">메인봇 잔고가 전량 청산 완료되면 <b>4H 켈트너 신규 매수</b>가 자동으로 활성화됩니다.</span>
+            </div>
+        """
+    else:
+        badge_html = '<span style="background:#29b6f622; color:#29b6f6; border:1px solid #29b6f6; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">🔍 4H 켈트너 돌파 관측 중</span>'
+        status_desc = f"""
+            <div>
+                <span style="color:#8c96a5;">🎯 매수 조건:</span>
+                <b style="color:#00e676; margin-left:4px;">4H 캔들 종가 &gt; 켈트너 상단({upper_band:,.0f}원) 돌파 AND 종가 &gt; 200 EMA({ema200:,.0f}원)</b>
+            </div>
+            <div style="margin-top:3px;">
+                <span style="color:#8c96a5;">📊 신호 판정:</span>
+                <b style="color:#ffd54f; margin-left:4px;">{signal}</b>
+                <span style="color:#8c96a5; font-size:0.75rem;">({reason})</span>
+            </div>
+        """
+
+    win_rate = (win_count / trade_count * 100.0) if trade_count > 0 else 0.0
+    macro_color = "#00e676" if is_macro_bull else "#ff5252"
+
+    html_content = f"""
+    <div style="background:linear-gradient(135deg, #131924 0%, #1a2232 100%); border:1px solid #38455d; border-radius:10px; padding:14px 18px; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:1.2rem;">🚀</span>
+                <span style="font-size:1.0rem; font-weight:800; color:#f0f3f6;">
+                    차세대 독립 추세추종: 4H 켈트너 채널 돌파 (KRW-ETH)
+                </span>
+                {badge_html}
+            </div>
+            <div style="font-size:0.82rem; color:#8c96a5;">
+                운용 예산: <b style="color:#f0f3f6;">500,000원</b> | 보호 자산: <b style="color:#81d4fa;">0.40756151 ETH</b>
+            </div>
+        </div>
+
+        <div style="font-size:0.84rem; line-height:1.5; margin-bottom:10px; background:#0e131b; padding:8px 12px; border-radius:6px; border:1px solid #232b3a;">
+            {status_desc}
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; background:#0e131b; padding:10px 14px; border-radius:8px; border:1px solid #232b3a;">
+            <div>
+                <div style="font-size:0.73rem; color:#8c96a5; margin-bottom:2px;">이더리움 현재가</div>
+                <div style="font-size:1.0rem; font-weight:700; color:#f0f3f6;">{c_price:,.0f}원</div>
+            </div>
+            <div>
+                <div style="font-size:0.73rem; color:#8c96a5; margin-bottom:2px;">4H 200 EMA (대세 필터)</div>
+                <div style="font-size:1.0rem; font-weight:700; color:{macro_color};">
+                    {ema200:,.0f}원 <span style="font-size:0.74rem;">({dist_ema200_pct:+.2f}%)</span>
+                </div>
+            </div>
+            <div>
+                <div style="font-size:0.73rem; color:#8c96a5; margin-bottom:2px;">켈트너 상단 (20 EMA + 2 ATR)</div>
+                <div style="font-size:1.0rem; font-weight:700; color:#ffd54f;">
+                    {upper_band:,.0f}원 <span style="font-size:0.74rem;">({dist_upper_pct:+.2f}%)</span>
+                </div>
+            </div>
+            <div>
+                <div style="font-size:0.73rem; color:#8c96a5; margin-bottom:2px;">20 EMA (중심선/청산선)</div>
+                <div style="font-size:1.0rem; font-weight:700; color:#81d4fa;">
+                    {ema20:,.0f}원 <span style="font-size:0.74rem;">({dist_ema20_pct:+.2f}%)</span>
+                </div>
+            </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-size:0.78rem; color:#8c96a5;">
+            <div>
+                누적 성과: <b style="color:#f0f3f6;">{trade_count}전 {win_count}승</b> (승률 {win_rate:.1f}%) | 
+                누적 실현손익: <b style="color:{'#00e676' if realized_pnl >= 0 else '#ff5252'};">{realized_pnl:+,.0f}원</b>
+            </div>
+            <div>
+                실행 파일: <code>trend_keltner_eth.py</code> (독립 데몬 / 4시간봉 스윙)
+            </div>
+        </div>
+    </div>
+    """
+    st.html(html_content)
+
+
 # =============================================================================
 # 2. 현재 적용한 전략의 수익률 및 현황 (제목의 [아래] 삭제, 복수 전략 지원)
 # =============================================================================
@@ -1816,6 +1990,10 @@ else:
             target_p = avg_p * 1.10
 
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        if market == "KRW-ETH":
+            render_keltner_trend_status(loaded_snapshot=loaded_snapshot, cur_price=cur_p)
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+
         with st.expander(f"📈 {ticker} 인터랙티브 캔들스틱 차트 & 실전 매매 타점 오버레이 (1시간/4시간/일봉/주봉/월봉)", expanded=True):
             render_coin_candlestick_chart(
                 market=market,

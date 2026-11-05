@@ -236,6 +236,16 @@ def create_dashboard_snapshot(account_data: Optional[Dict[str, Any]] = None) -> 
         except Exception:
             pass
 
+    # 4H 켈트너 채널 돌파 (KRW-ETH) 상태 포함
+    keltner_state_file = SNAPSHOT_DIR.parent / "trend_keltner_state_KRW_ETH.json"
+    keltner_trend_data = {}
+    if keltner_state_file.exists():
+        try:
+            with open(keltner_state_file, "r", encoding="utf-8") as kf:
+                keltner_trend_data = json.load(kf)
+        except Exception:
+            pass
+
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return {
         "version": 1,
@@ -245,7 +255,8 @@ def create_dashboard_snapshot(account_data: Optional[Dict[str, Any]] = None) -> 
         "active_strategies": serializable_strategies,
         "paper_trading": paper_trading_data,
         "pocket_grid": pocket_grid_data,
-        "cascade_pocket": cascade_pocket_data
+        "cascade_pocket": cascade_pocket_data,
+        "keltner_trend": keltner_trend_data
     }
 
 
