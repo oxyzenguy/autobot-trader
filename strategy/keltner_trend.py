@@ -127,23 +127,39 @@ def get_keltner_signals(df: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
-def fetch_4h_candles_upbit(market: str = "KRW-ETH", count: int = 250) -> Optional[pd.DataFrame]:
+def fetch_4h_candles_upbit(market: str = "KRW-ETH", count: int = 300) -> Optional[pd.DataFrame]:
     """
     Fetches the latest 4-hour (240m) candles from Upbit Public Quotation API.
+    Supports multi-batch pagination if count > 200.
     """
+    import time
     url = "https://api.upbit.com/v1/candles/minutes/240"
-    params = {"market": market, "count": min(count, 200)}
     headers = {"accept": "application/json"}
+    all_data = []
+    to_param = ""
     
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=5)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if not data or not isinstance(data, list):
+        while len(all_data) < count:
+            batch_count = min(200, count - len(all_data))
+            params = {"market": market, "count": batch_count}
+            if to_param:
+                params["to"] = to_param
+            r = requests.get(url, params=params, headers=headers, timeout=5)
+            if r.status_code != 200:
+                break
+            batch = r.json()
+            if not batch or not isinstance(batch, list):
+                break
+            all_data.extend(batch)
+            if len(batch) < batch_count:
+                break
+            to_param = batch[-1]["candle_date_time_utc"]
+            time.sleep(0.05)
+            
+        if not all_data:
             return None
             
-        df = pd.DataFrame(data)
+        df = pd.DataFrame(all_data)
         # Rename to standard
         df.rename(columns={
             "candle_date_time_kst": "dt",
@@ -155,6 +171,7 @@ def fetch_4h_candles_upbit(market: str = "KRW-ETH", count: int = 250) -> Optiona
         }, inplace=True)
         df['dt'] = pd.to_datetime(df['dt'])
         df.sort_values('dt', inplace=True)
+        df.drop_duplicates(subset=['dt'], inplace=True)
         df.reset_index(drop=True, inplace=True)
         return df
     except Exception:

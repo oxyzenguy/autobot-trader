@@ -59,6 +59,22 @@ EMERGENCY_SL_PCT = 0.10        # -10.0% Hard Stop Loss
 POLL_INTERVAL_SEC = 10.0       # 10s evaluation loop
 
 
+def safe_get_current_price(market: str, retries: int = 3, delay: float = 0.5) -> Optional[float]:
+    import pyupbit
+    for i in range(retries):
+        try:
+            p = pyupbit.get_current_price(market)
+            if p is not None and not isinstance(p, dict):
+                p_float = float(p)
+                if p_float > 0:
+                    return p_float
+        except Exception:
+            pass
+        if i < retries - 1:
+            time.sleep(delay)
+    return None
+
+
 def send_telegram_alert(message: str) -> None:
     try:
         from utils.bot import send_message
@@ -345,18 +361,20 @@ class KeltnerTrendRunner:
         send_telegram_alert(msg)
         return True
 
+    def get_current_price(self) -> Optional[float]:
+        try:
+            if self.upbit and hasattr(self.upbit, "get_current_price"):
+                p = self.upbit.get_current_price(self.market)
+                if p is not None and not isinstance(p, dict) and float(p) > 0:
+                    return float(p)
+        except Exception:
+            pass
+        return safe_get_current_price(self.market)
+
     def run_tick(self) -> None:
         # 1. Check current market price
-        try:
-            orderbook = self.upbit.get_orderbook(self.market)
-            if isinstance(orderbook, list) and orderbook:
-                curr_price = float(orderbook[0]["orderbook_units"][0]["ask_price"])
-            else:
-                curr_price = float(self.upbit.get_current_price(self.market) or 0.0)
-        except Exception:
-            curr_price = 0.0
-
-        if curr_price <= 0:
+        curr_price = self.get_current_price()
+        if curr_price is None or curr_price <= 0:
             return
 
         in_pos = self.state.get("in_position", False)
