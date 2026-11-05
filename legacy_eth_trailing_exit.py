@@ -111,6 +111,8 @@ class LegacyEthTrailingRunner:
         self.upbit = None
         self.last_heartbeat_time = 0.0
         self.state = self.load_state()
+        if not self.state_file.exists():
+            self.save_state()
 
     def load_state(self) -> Dict[str, Any]:
         if self.state_file.exists():
