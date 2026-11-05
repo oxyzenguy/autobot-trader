@@ -3,9 +3,10 @@
 Unit tests for trend_keltner_eth.py:
 - Main bot exit completion detection
 - Balance protection isolation
-- Buy / Sell execution flow
-- Emergency Stop Loss trigger
-- 4H candle close evaluation
+- Buy / Sell execution flow (25% 4-stage pyramiding)
+- VWAP calculation across pyramiding tranches
+- Emergency Stop Loss trigger (-10% from VWAP)
+- 4H candle close evaluation and pyramiding signal handling
 """
 
 import copy
@@ -83,6 +84,9 @@ class TestTrendKeltnerETH(unittest.TestCase):
         self.runner = KeltnerTrendRunner(
             market="KRW-ETH",
             allocated_budget=500_000.0,
+            max_stages=4,
+            stage_fraction=0.25,
+            pyramid_step_pct=0.015,
             emergency_sl_pct=0.10,
             poll_interval=1.0,
             state_file=self.state_file
@@ -114,27 +118,77 @@ class TestTrendKeltnerETH(unittest.TestCase):
 
     def test_execute_buy_and_sell_flow(self):
         with patch("trend_keltner_eth.send_telegram_alert"), patch("trend_keltner_eth.log_real_trade"):
-            # 1. Buy
-            bought = self.runner.execute_buy(3_250_000.0, "Breakout test")
+            # 1. Buy Stage 1 (25% = 125,000 KRW)
+            bought = self.runner.execute_buy(3_250_000.0, "Breakout test", stage=1)
             self.assertTrue(bought)
             self.assertTrue(self.runner.state["in_position"])
+            self.assertEqual(self.runner.state["current_stage"], 1)
             self.assertGreater(self.runner.state["position_volume"], 0.0)
-            self.assertAlmostEqual(self.runner.state["entry_price"], 3_250_000.0, delta=10.0)
+            self.assertAlmostEqual(self.runner.state["entry_price"], 3_250_000.0, delta=100.0)
+            self.assertEqual(len(self.runner.state["tranches"]), 1)
 
             # 2. Normal Exit with profit at 3,500,000
             self.fake_client.price = 3_500_000.0
             sold = self.runner.execute_sell(3_500_000.0, "20 EMA Exit")
             self.assertTrue(sold)
             self.assertFalse(self.runner.state["in_position"])
+            self.assertEqual(self.runner.state["current_stage"], 0)
             self.assertEqual(self.runner.state["position_volume"], 0.0)
+            self.assertEqual(len(self.runner.state["tranches"]), 0)
             self.assertGreater(self.runner.state["realized_pnl_krw"], 0.0)
             self.assertEqual(self.runner.state["trade_count"], 1)
             self.assertEqual(self.runner.state["win_count"], 1)
+
+    def test_pyramiding_4_stages_and_vwap(self):
+        """Test full 4-stage pyramiding, VWAP aggregation, and final exit."""
+        with patch("trend_keltner_eth.send_telegram_alert"), patch("trend_keltner_eth.log_real_trade"):
+            # Stage 1: Buy @ 3,000,000
+            self.fake_client.price = 3_000_000.0
+            self.runner.execute_buy(3_000_000.0, "Breakout", stage=1)
+            self.assertEqual(self.runner.state["current_stage"], 1)
+            vol1 = self.runner.state["position_volume"]
+            cost1 = self.runner.state["entry_cost_krw"]
+            self.assertAlmostEqual(self.runner.state["entry_price"], 3_000_000.0, delta=100.0)
+
+            # Stage 2: Buy @ 3,050,000 (+1.67%)
+            self.fake_client.price = 3_050_000.0
+            self.runner.execute_buy(3_050_000.0, "Pyramid Stage 2", stage=2)
+            self.assertEqual(self.runner.state["current_stage"], 2)
+            self.assertEqual(len(self.runner.state["tranches"]), 2)
+            vol2 = self.runner.state["position_volume"]
+            cost2 = self.runner.state["entry_cost_krw"]
+            expected_vwap2 = cost2 / vol2
+            self.assertAlmostEqual(self.runner.state["entry_price"], expected_vwap2, places=2)
+            self.assertAlmostEqual(self.runner.state["last_buy_price"], 3_050_000.0, delta=100.0)
+
+            # Stage 3: Buy @ 3,100,000 (+1.64%)
+            self.fake_client.price = 3_100_000.0
+            self.runner.execute_buy(3_100_000.0, "Pyramid Stage 3", stage=3)
+            self.assertEqual(self.runner.state["current_stage"], 3)
+            self.assertEqual(len(self.runner.state["tranches"]), 3)
+
+            # Stage 4: Buy @ 3,150,000 (+1.61%) - 100% full weight completed
+            self.fake_client.price = 3_150_000.0
+            self.runner.execute_buy(3_150_000.0, "Pyramid Stage 4 (Final)", stage=4)
+            self.assertEqual(self.runner.state["current_stage"], 4)
+            self.assertEqual(len(self.runner.state["tranches"]), 4)
+            self.assertAlmostEqual(self.runner.state["entry_cost_krw"], 500_000.0, delta=500.0)
+
+            # Full Exit @ 3,300,000
+            self.fake_client.price = 3_300_000.0
+            sold = self.runner.execute_sell(3_300_000.0, "Trend Exhaustion Exit")
+            self.assertTrue(sold)
+            self.assertFalse(self.runner.state["in_position"])
+            self.assertEqual(self.runner.state["current_stage"], 0)
+            self.assertEqual(self.runner.state["position_volume"], 0.0)
+            self.assertEqual(len(self.runner.state["tranches"]), 0)
+            self.assertGreater(self.runner.state["realized_pnl_krw"], 0.0)
 
     def test_emergency_stop_loss_triggered_at_minus_10pct(self):
         with patch("trend_keltner_eth.send_telegram_alert"), patch("trend_keltner_eth.log_real_trade"):
             # Setup an active position entered at 3,500,000
             self.runner.state["in_position"] = True
+            self.runner.state["current_stage"] = 1
             self.runner.state["position_volume"] = 0.05
             self.runner.state["entry_price"] = 3_500_000.0
             self.runner.state["entry_cost_krw"] = 175_000.0
@@ -150,6 +204,7 @@ class TestTrendKeltnerETH(unittest.TestCase):
 
             # Position should be closed via emergency SL
             self.assertFalse(self.runner.state["in_position"])
+            self.assertEqual(self.runner.state["current_stage"], 0)
             self.assertEqual(self.runner.state["position_volume"], 0.0)
             self.assertEqual(self.runner.state["trade_count"], 1)
             self.assertEqual(self.runner.state["win_count"], 0)

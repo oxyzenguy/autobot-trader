@@ -1142,13 +1142,17 @@ def render_keltner_trend_status(loaded_snapshot: Optional[Dict[str, Any]] = None
         return
 
     in_pos = state.get("in_position", False)
+    current_stage = int(state.get("current_stage", 0))
+    max_stages = int(state.get("max_stages", 4))
     pos_vol = float(state.get("position_volume", 0.0) or 0.0)
     entry_p = float(state.get("entry_price", 0.0) or 0.0)
+    last_buy_p = float(state.get("last_buy_price", 0.0) or entry_p)
     entry_cost = float(state.get("entry_cost_krw", 0.0) or 0.0)
     trade_count = int(state.get("trade_count", 0))
     win_count = int(state.get("win_count", 0))
     realized_pnl = float(state.get("realized_pnl_krw", 0.0))
     waiting_for_main_bot = state.get("waiting_for_main_bot_exit", True)
+    tranches = state.get("tranches", [])
 
     # 4H 캔들 지표 조회 (60초 캐시)
     sig_info = get_cached_4h_keltner_signals("KRW-ETH")
@@ -1171,18 +1175,30 @@ def render_keltner_trend_status(loaded_snapshot: Optional[Dict[str, Any]] = None
         pos_pnl = pos_eval - entry_cost
         pos_pnl_pct = (pos_pnl / entry_cost * 100.0) if entry_cost > 0 else 0.0
         pnl_color = "#00e676" if pos_pnl >= 0 else "#ff5252"
-        badge_html = '<span style="background:#00e67622; color:#00e676; border:1px solid #00e676; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">🟢 포지션 보유 중 (추세 탑승)</span>'
+        badge_html = f'<span style="background:#00e67622; color:#00e676; border:1px solid #00e676; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">🟢 {current_stage}/{max_stages}차 탑승 중 ({current_stage * 25}% 피라미딩)</span>'
+
+        if current_stage < max_stages:
+            next_pyramid_p = last_buy_p * 1.015
+            dist_to_pyramid = ((next_pyramid_p - c_price) / c_price * 100.0) if c_price > 0 else 0.0
+            next_pyramid_desc = f'<b style="color:#ffd54f;">4H 종가 &gt;= {next_pyramid_p:,.0f}원 (+1.5% 불타기, 잔여 {dist_to_pyramid:+.2f}%)</b>'
+        else:
+            next_pyramid_desc = '<b style="color:#00e676;">4/4차 비중 100% 완성 (전액 탑승 완료)</b>'
+
         status_desc = f"""
             <div>
-                <span style="color:#8c96a5;">💼 보유 포지션:</span>
+                <span style="color:#8c96a5;">💼 피라미딩 포지션:</span>
                 <b style="color:#f0f3f6; margin-left:4px;">{pos_vol:.6f} ETH</b>
-                <span style="color:#8c96a5; font-size:0.75rem;">(@ {entry_p:,.0f}원 | 투입 {entry_cost:,.0f}원)</span>
+                <span style="color:#8c96a5; font-size:0.75rem;">(가중평단 {entry_p:,.0f}원 | 직전매수 {last_buy_p:,.0f}원 | 투입 {entry_cost:,.0f}원 / 500,000원)</span>
                 <span style="margin-left:8px; color:{pnl_color}; font-weight:700;">평가손익: {pos_pnl_pct:+.2f}% ({pos_pnl:+,.0f}원)</span>
             </div>
             <div style="margin-top:3px;">
+                <span style="color:#8c96a5;">🔥 다음 피라미딩:</span>
+                <span style="margin-left:4px;">{next_pyramid_desc}</span>
+            </div>
+            <div style="margin-top:3px;">
                 <span style="color:#8c96a5;">🎯 청산 기준:</span>
-                <b style="color:#81d4fa; margin-left:4px;">4H 캔들 종가 &lt; 20 EMA ({ema20:,.0f}원) 이탈 시 익절/청산</b>
-                <span style="margin-left:8px; color:#ff5252;">(긴급손절: {entry_p*0.9:,.0f}원 / -10%)</span>
+                <b style="color:#81d4fa; margin-left:4px;">4H 캔들 종가 &lt; 20 EMA ({ema20:,.0f}원) 이탈 시 전량 일괄 청산</b>
+                <span style="margin-left:8px; color:#ff5252;">(가중평단 -10% 긴급손절: {entry_p*0.9:,.0f}원)</span>
             </div>
         """
     elif waiting_for_main_bot:
@@ -1193,21 +1209,22 @@ def render_keltner_trend_status(loaded_snapshot: Optional[Dict[str, Any]] = None
                 <b style="color:#ffb300; margin-left:4px;">메인봇 18단 평단 탈출 주문(3,552,000원 바스켓 매도) 체결 대기</b>
             </div>
             <div style="margin-top:3px;">
-                <span style="color:#8c96a5;">💡 안전 수칙:</span>
-                <span style="color:#f0f3f6; margin-left:4px;">메인봇 잔고가 전량 청산 완료되면 <b>4H 켈트너 신규 매수</b>가 자동으로 활성화됩니다.</span>
+                <span style="color:#8c96a5;">💡 피라미딩 설계:</span>
+                <span style="color:#f0f3f6; margin-left:4px;">메인봇 완료 시 <b>25% 4단계 순추세 불타기</b> 가동 (1차 25% 돌파 ➔ 2~4차 +1.5% 상승 시마다 25% 추가 매수)</span>
             </div>
         """
     else:
-        badge_html = '<span style="background:#29b6f622; color:#29b6f6; border:1px solid #29b6f6; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">🔍 4H 켈트너 돌파 관측 중</span>'
+        badge_html = '<span style="background:#29b6f622; color:#29b6f6; border:1px solid #29b6f6; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">🔍 4H 켈트너 1차(25%) 돌파 관측 중</span>'
         status_desc = f"""
             <div>
-                <span style="color:#8c96a5;">🎯 매수 조건:</span>
+                <span style="color:#8c96a5;">🎯 1차(25%) 매수 조건:</span>
                 <b style="color:#00e676; margin-left:4px;">4H 캔들 종가 &gt; 켈트너 상단({upper_band:,.0f}원) 돌파 AND 종가 &gt; 200 EMA({ema200:,.0f}원)</b>
             </div>
             <div style="margin-top:3px;">
                 <span style="color:#8c96a5;">📊 신호 판정:</span>
                 <b style="color:#ffd54f; margin-left:4px;">{signal}</b>
                 <span style="color:#8c96a5; font-size:0.75rem;">({reason})</span>
+                <span style="margin-left:8px; color:#8c96a5;">• 1차 체결 후 +1.5% 상승 시마다 25%씩 4단계 피라미딩 불타기</span>
             </div>
         """
 
@@ -1220,12 +1237,12 @@ def render_keltner_trend_status(loaded_snapshot: Optional[Dict[str, Any]] = None
             <div style="display:flex; align-items:center; gap:8px;">
                 <span style="font-size:1.2rem;">🚀</span>
                 <span style="font-size:1.0rem; font-weight:800; color:#f0f3f6;">
-                    차세대 독립 추세추종: 4H 켈트너 채널 돌파 (KRW-ETH)
+                    차세대 독립 추세추종: 4H 켈트너 25% 피라미딩 (KRW-ETH)
                 </span>
                 {badge_html}
             </div>
             <div style="font-size:0.82rem; color:#8c96a5;">
-                운용 예산: <b style="color:#f0f3f6;">500,000원</b> | 보호 자산: <b style="color:#81d4fa;">0.40756151 ETH</b>
+                운용 예산: <b style="color:#f0f3f6;">500,000원 (회당 25%)</b> | 보호 자산: <b style="color:#81d4fa;">0.40756151 ETH</b>
             </div>
         </div>
 
