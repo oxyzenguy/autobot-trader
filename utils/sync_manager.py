@@ -246,6 +246,16 @@ def create_dashboard_snapshot(account_data: Optional[Dict[str, Any]] = None) -> 
         except Exception:
             pass
 
+    # 이전 보유 ETH 10% 분할 트레일링 익절 상태 포함
+    legacy_eth_file = SNAPSHOT_DIR.parent / "legacy_eth_trailing_state.json"
+    legacy_eth_data = {}
+    if legacy_eth_file.exists():
+        try:
+            with open(legacy_eth_file, "r", encoding="utf-8") as lf:
+                legacy_eth_data = json.load(lf)
+        except Exception:
+            pass
+
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return {
         "version": 1,
@@ -256,7 +266,8 @@ def create_dashboard_snapshot(account_data: Optional[Dict[str, Any]] = None) -> 
         "paper_trading": paper_trading_data,
         "pocket_grid": pocket_grid_data,
         "cascade_pocket": cascade_pocket_data,
-        "keltner_trend": keltner_trend_data
+        "keltner_trend": keltner_trend_data,
+        "legacy_eth_trailing": legacy_eth_data
     }
 
 

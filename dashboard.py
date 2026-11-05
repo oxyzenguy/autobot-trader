@@ -151,6 +151,15 @@ def get_latest_trade_signature() -> str:
         except Exception:
             pass
 
+    leg_file = os.path.join(BASE_DIR, "legacy_eth_trailing_state.json")
+    if os.path.exists(leg_file):
+        try:
+            with open(leg_file, "r", encoding="utf-8") as f:
+                leg_data = json.load(f)
+                state_sig.append(f"LEG_ETH:{leg_data.get('completed_tranches',0)}_{leg_data.get('current_status')}_{leg_data.get('remaining_qty',0):.6f}")
+        except Exception:
+            pass
+
     return f"{db_sig}|{pocket_sig}|{p1c_sig}|{cascade_sig}|{'_'.join(state_sig)}"
 
 
@@ -1263,6 +1272,110 @@ def render_keltner_trend_status(loaded_snapshot: Optional[Dict[str, Any]] = None
     st.html(html_content)
 
 
+def render_legacy_eth_trailing_status(loaded_snapshot: Optional[Dict[str, Any]] = None, cur_price: float = 0.0) -> None:
+    """
+    이전 보유 ETH 10% 분할 트레일링 익절 (A안 본전 362만 원) 현황 카드
+    """
+    state = {}
+    if loaded_snapshot and "legacy_eth_trailing" in loaded_snapshot:
+        state = loaded_snapshot.get("legacy_eth_trailing", {})
+    else:
+        state_file = os.path.join(BASE_DIR, "legacy_eth_trailing_state.json")
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+            except Exception:
+                pass
+
+    if not state:
+        return
+
+    c_status = state.get("current_status", "WAITING_TRIGGER")
+    completed = int(state.get("completed_tranches", 0))
+    total_t = int(state.get("total_tranches", 10))
+    rem_qty = float(state.get("remaining_qty", 0.40756151))
+    init_qty = float(state.get("total_initial_qty", 0.40756151))
+    trigger_p = float(state.get("trigger_price", 3620000.0))
+    drop_pct = float(state.get("trailing_drop_pct", 0.015))
+    peak_p = float(state.get("peak_price", 0.0))
+    active_trailing = state.get("active_trailing", False)
+    cooldown_until = float(state.get("cooldown_until", 0.0) or 0.0)
+    now_ts = time.time()
+    cum_funds = float(state.get("cumulative_executed_funds", 0.0))
+
+    dist_to_trigger = ((trigger_p - cur_price) / cur_price * 100.0) if cur_price > 0 else 0.0
+
+    if c_status == "COMPLETED" or completed >= total_t:
+        badge_html = '<span style="background:#00e67622; color:#00e676; border:1px solid #00e676; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">🎉 10/10차 전량 분할 익절 완료</span>'
+        desc_html = f"이전 보유 물량 {init_qty:.6f} ETH가 전량 익절 완료되었습니다. (총 회수금: <b>{cum_funds:,.0f}원</b>)"
+    elif active_trailing or c_status == "TRAILING":
+        stop_line = max(trigger_p, peak_p * (1.0 - drop_pct))
+        badge_html = f'<span style="background:#ff3b6922; color:#ff3b69; border:1px solid #ff3b69; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">🔥 {completed+1}차 고점 추적 중</span>'
+        desc_html = f"현재가(<b>{cur_price:,.0f}원</b>)가 본전({trigger_p:,.0f}원) 돌파 후 고점 추적 중! (고점: <b>{peak_p:,.0f}원</b> | -1.5% 스탑라인: <b>{stop_line:,.0f}원</b>)"
+    elif c_status == "COOLDOWN" and now_ts < cooldown_until:
+        rem_sec = int(cooldown_until - now_ts)
+        hrs = rem_sec // 3600
+        mins = (rem_sec % 3600) // 60
+        badge_html = f'<span style="background:#ffb30022; color:#ffb300; border:1px solid #ffb300; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">⏳ {completed}차 완료 후 쿨다운 중</span>'
+        desc_html = f"다음 {completed+1}차 분할 매도 감시 재개까지 <b>{hrs}시간 {mins}분</b> 대기 중입니다. (12시간 호흡 조절)"
+    else:
+        badge_html = '<span style="background:#29b6f622; color:#29b6f6; border:1px solid #29b6f6; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:700;">대기 중 (362만 본전 도달 대기)</span>'
+        desc_html = f"현재가(<b>{cur_price:,.0f}원</b>)가 원래 본전 평단가인 <b>{trigger_p:,.0f}원</b>에 도달하면 <b>{completed+1}차 10% 트레일링 스탑</b>이 자동 발동됩니다. (남은 거리: <b>+{dist_to_trigger:.2f}%</b>)"
+
+    progress_pct = (completed / total_t * 100.0)
+
+    html_content = f"""
+    <div style="background:linear-gradient(135deg, #181d26 0%, #202735 100%); border:1px solid #ffb30044; border-radius:10px; padding:14px 18px; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:1.2rem;">💎</span>
+                <span style="font-size:1.0rem; font-weight:800; color:#f0f3f6;">
+                    이전 보유 ETH 10% 분할 트레일링 익절 (A안 원금 100% 보존형)
+                </span>
+                {badge_html}
+            </div>
+            <div style="font-size:0.82rem; color:#8c96a5;">
+                진행: <b style="color:#ffd54f;">{completed} / {total_t}차 ({progress_pct:.0f}%)</b> | 잔여: <b style="color:#f0f3f6;">{rem_qty:.6f} ETH</b>
+            </div>
+        </div>
+
+        <div style="font-size:0.84rem; line-height:1.5; margin-bottom:10px; background:#0e131b; padding:8px 12px; border-radius:6px; border:1px solid #232b3a;">
+            {desc_html}
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; background:#0e131b; padding:10px 14px; border-radius:8px; border:1px solid #232b3a;">
+            <div>
+                <div style="font-size:0.73rem; color:#8c96a5; margin-bottom:2px;">발동 하한선 (Floor)</div>
+                <div style="font-size:1.0rem; font-weight:700; color:#ffd54f;">{trigger_p:,.0f}원</div>
+            </div>
+            <div>
+                <div style="font-size:0.73rem; color:#8c96a5; margin-bottom:2px;">1회 매도 수량 (10%)</div>
+                <div style="font-size:1.0rem; font-weight:700; color:#81d4fa;">{round(init_qty * 0.10, 8):.6f} ETH</div>
+            </div>
+            <div>
+                <div style="font-size:0.73rem; color:#8c96a5; margin-bottom:2px;">트레일링 콜백 / 간격</div>
+                <div style="font-size:1.0rem; font-weight:700; color:#f0f3f6;">-{drop_pct*100:.1f}% / 12시간</div>
+            </div>
+            <div>
+                <div style="font-size:0.73rem; color:#8c96a5; margin-bottom:2px;">누적 회수금</div>
+                <div style="font-size:1.0rem; font-weight:700; color:#00e676;">{cum_funds:,.0f}원</div>
+            </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-size:0.78rem; color:#8c96a5;">
+            <div>
+                안전 규칙: 본전(3,620,000원) 미만에서는 일체 매도 금지 (손절 원천 배제)
+            </div>
+            <div>
+                실행 파일: <code>legacy_eth_trailing_exit.py</code> (12시간 쿨다운 분할 데몬)
+            </div>
+        </div>
+    </div>
+    """
+    st.html(html_content)
+
+
 # =============================================================================
 # 2. 현재 적용한 전략의 수익률 및 현황 (제목의 [아래] 삭제, 복수 전략 지원)
 # =============================================================================
@@ -1991,6 +2104,8 @@ else:
 
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         if market == "KRW-ETH":
+            render_legacy_eth_trailing_status(loaded_snapshot=loaded_snapshot, cur_price=cur_p)
+            st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
             render_keltner_trend_status(loaded_snapshot=loaded_snapshot, cur_price=cur_p)
             st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
