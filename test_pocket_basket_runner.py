@@ -22,8 +22,12 @@ class TestPocketBasketRunner(unittest.TestCase):
         self.state_file = os.path.join(self.test_dir, "test_pocket_basket_state.json")
         self.lock_file = os.path.join(self.test_dir, "test_pocket_basket.lock")
         self.db_file = os.path.join(self.test_dir, "test_pocket_trades.db")
+        self.patcher_tg = patch("utils.pocket_basket_core._send_telegram_msg")
+        self.mock_send_tg = self.patcher_tg.start()
+        self.mock_send_tg.return_value = MagicMock(status_code=200)
 
     def tearDown(self):
+        self.patcher_tg.stop()
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_tick_size_and_adjustment(self):
