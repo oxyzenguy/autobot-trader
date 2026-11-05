@@ -171,7 +171,7 @@ def get_adaptive_min_drop_pct(market: str) -> float:
 # - "EXIT_ONLY": 추가 매수 없이 기존 보유 물량 익절만 수행하고 종료 (포켓 이전 대기)
 MARKET_STRATEGIES = {
     "KRW-ETH": "EXIT_ONLY",  # 옵션 B: 신규 매수 차단 및 기존 18단 평단 대비 +1.0% 바스켓 통합 익절 탈출
-    "KRW-SOL": "HYBRID",
+    "KRW-SOL": "EXIT_ONLY",  # 솔라나: 추가 매수 차단 및 기존 4차수(0.8102 SOL) 평단 141,743원 +0.5% 익절 정리 대기 (Cascade 포켓 이전)
 }
 
 def get_market_strategy(market: str) -> str:
