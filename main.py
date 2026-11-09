@@ -79,6 +79,7 @@ from utils import db_logger
 # 예수금 알림 쿨다운 관리
 LAST_KRW_ALERT_TIME = 0
 KRW_ALERT_COOLDOWN_SEC = 3600  # 1시간 쿨다운 (도배 방지)
+KRW_ALERT_LOCK = threading.Lock()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ORDER_SETTLEMENT_ATTEMPTS = 5
 ORDER_SETTLEMENT_DELAY_SEC = 0.5
@@ -314,34 +315,54 @@ def get_my_balance(upbit_client, ticker: str):
     return 0.0, 0.0
 
 
-def get_krw_balance(upbit_client):
-    """현재 주문 가능한 원화(KRW) 잔고를 조회합니다."""
-    try:
-        return float(upbit_client.get_balance("KRW"))
-    except Exception as e:
-        print(f"[{time.strftime('%H:%M:%S')}] [ERROR] KRW 잔고 조회 오류: {e}")
-        return 0.0
-
-
-def check_krw_balance_alert(upbit_client, context: str = "정기 감시") -> float:
+def get_krw_balance(upbit_client, retries: int = 3, delay: float = 0.5) -> Optional[float]:
     """
-    예수금(주문가능 KRW)이 10만원 미만으로 떨어졌을 때 텔레그램 및 콘솔로 경고 발송
+    현재 주문 가능한 원화(KRW) 잔고를 안전하게 조회합니다.
+    API 일시 통신 오류 시 재시도하며, 실패 시 None을 반환하여 0원 오경보를 방지합니다.
+    """
+    for i in range(retries):
+        try:
+            bal = upbit_client.get_balance("KRW")
+            if bal is not None:
+                val = float(bal)
+                if math.isfinite(val) and val >= 0:
+                    return val
+        except Exception as e:
+            if i == retries - 1:
+                print(f"[{time.strftime('%H:%M:%S')}] [ERROR] KRW 잔고 조회 오류 (재시도 소진): {e}")
+        if i < retries - 1:
+            time.sleep(delay)
+    return None
+
+
+def check_krw_balance_alert(
+    upbit_client,
+    context: str = "정기 감시",
+    account_name: str = "메인 계좌",
+) -> float:
+    """
+    예수금(주문가능 KRW)이 10만원 미만으로 떨어졌을 때 텔레그램 및 콘솔로 경고 발송.
+    API 조회 실패 시 오경보 방지 (None인 경우 경고 미발송) 및 발송 계좌 명시.
     """
     global LAST_KRW_ALERT_TIME
     krw = get_krw_balance(upbit_client)
     now = time.time()
 
-    if krw < MIN_KRW_ALERT_THRESHOLD:
-        if now - LAST_KRW_ALERT_TIME > KRW_ALERT_COOLDOWN_SEC:
-            msg = (
-                f"⚠️ <b>[예수금 부족 경고]</b>\n"
-                f"• 현재 주문가능 예수금: <b>{krw:,.0f}원</b> (기준: 10만 원 미만)\n"
-                f"• 감시 상황: {context}"
-            )
-            print(f"\n[{time.strftime('%H:%M:%S')}] 🚨 [ALERT] 예수금 10만원 미만 감지 ({krw:,.0f}원)! 텔레그램 경고 발송.")
-            send_telegram_alert(msg)
-            LAST_KRW_ALERT_TIME = now
-    return krw
+    # API 일시 통신 오류 등으로 조회가 불가능한 경우 오경보(0원 표기) 방지
+    if krw is not None and krw < MIN_KRW_ALERT_THRESHOLD:
+        with KRW_ALERT_LOCK:
+            if now - LAST_KRW_ALERT_TIME > KRW_ALERT_COOLDOWN_SEC:
+                LAST_KRW_ALERT_TIME = now
+                msg = (
+                    f"⚠️ <b>[{account_name} - 예수금 부족 경고]</b>\n"
+                    f"• 대상 계좌: <b>{account_name}</b>\n"
+                    f"• 현재 주문가능 예수금: <b>{krw:,.0f}원</b> (기준: {MIN_KRW_ALERT_THRESHOLD:,.0f}원 미만)\n"
+                    f"• 감시 상황: {context}\n"
+                    f"• 조치 안내: 정상적인 주문 집행을 위해 해당 계좌({account_name})의 원화(KRW) 보충을 권장합니다."
+                )
+                print(f"\n[{time.strftime('%H:%M:%S')}] 🚨 [ALERT] [{account_name}] 예수금 10만원 미만 감지 ({krw:,.0f}원)! 텔레그램 경고 발송.")
+                send_telegram_alert(msg)
+    return krw if krw is not None else 0.0
 
 
 def safe_get_current_price(market: str, retries: int = 3, delay: float = 0.5) -> Optional[float]:
@@ -1800,7 +1821,7 @@ def run_trading_strategy(market: str = "KRW-SOL"):
             # 6. 하트비트 로깅 (30분 주기)
             now_sec = time.time()
             if now_sec - last_heartbeat_time >= 1800:
-                krw_bal = get_krw_balance(upbit)
+                krw_bal = get_krw_balance(upbit) or 0.0
                 mode_label = "상승 추세모드" if is_bull else ("익절 정리 모드 (EXIT_ONLY)" if is_exit_only else ("순수 마틴게일 순환모드" if market_strat == "PURE_MARTINGALE" else "하락 마틴-매직스플릿 방어모드"))
                 prot_q = PROTECTED_BALANCES.get(market, 0.0)
                 print(f"[{time.strftime('%H:%M:%S')}] [HEARTBEAT] {ticker}: {current_price:,.0f}원 | [{regime_str} / {mode_label}] | 예수금: {krw_bal:,.0f}원 (미체결: 매도 {num_sell}, 매수 {num_buy} | 봇 보유: {quantity:.6f} | 보호 자산: {prot_q:.4f})")

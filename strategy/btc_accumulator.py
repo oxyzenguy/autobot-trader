@@ -646,9 +646,15 @@ def execute_btc_tiered_buy_if_due(upbit_client) -> Optional[Dict[str, Any]]:
         try:
             krw_bal = float(upbit_client.get_balance("KRW") or 0.0)
             if krw_bal < buy_krw:
-                print(f"[{kst_now.strftime('%H:%M:%S')}] [KRW-BTC] [WARN] 예수금 부족으로 매수 불가 (필요: {buy_krw:,.0f}원, 잔고: {krw_bal:,.0f}원)")
+                print(f"[{kst_now.strftime('%H:%M:%S')}] [KRW-BTC] [WARN] [메인 계좌] 예수금 부족으로 매수 불가 (필요: {buy_krw:,.0f}원, 잔고: {krw_bal:,.0f}원)")
                 from main import send_telegram_alert
-                send_telegram_alert(f"⚠️ <b>[비트코인 모으기 잔고 부족]</b>\n종가 가중 매수({buy_krw:,}원) 필요하나 예수금이 {krw_bal:,.0f}원입니다.")
+                send_telegram_alert(
+                    f"⚠️ <b>[메인 계좌 - 비트코인 모으기 잔고 부족]</b>\n"
+                    f"• 대상 계좌: <b>메인 계좌</b>\n"
+                    f"• 필요 금액: <b>{buy_krw:,.0f}원</b> (종가 가중 매수)\n"
+                    f"• 현재 주문가능 예수금: <b>{krw_bal:,.0f}원</b>\n"
+                    f"• 조치 안내: 메인 계좌에 원화(KRW)를 보충해 주세요."
+                )
                 return None
 
             print(f"[{kst_now.strftime('%H:%M:%S')}] [KRW-BTC] 🟢 계층형 종가 매수 주문 집행: {buy_krw:,.0f}원 (Tier {tier}: {reason})")
