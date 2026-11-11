@@ -293,6 +293,34 @@ class UpbitPocketClient:
                 return (bal + locked, avg)
         return (0.0, 0.0)
 
+    def transfer_to_pocket(
+        self,
+        to_pocket_uuid: Optional[str] = None,
+        currency: str = "KRW",
+        amount: float = 0.0,
+        identifier: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        서브포켓 자산 이전 API (POST /v1/pockets/transfers)
+        - to_pocket_uuid 미지정 시 메인포켓으로 이전
+        - to_pocket_uuid 지정 시 해당 서브포켓으로 이전
+        """
+        clean_amount = str(int(amount)) if amount == int(amount) else f"{amount:.8f}".rstrip("0").rstrip(".")
+        data = {
+            "currency": currency,
+            "amount": clean_amount
+        }
+        if to_pocket_uuid:
+            data["to"] = to_pocket_uuid
+        if identifier:
+            data["identifier"] = identifier
+
+        headers = self._get_headers(data)
+        r = requests.post(f"{UPBIT_HOST}/v1/pockets/transfers", headers=headers, json=data, timeout=5)
+        if r.status_code in (200, 201):
+            return r.json()
+        raise RuntimeError(f"Pocket transfer failed ({r.status_code}): {r.text}")
+
 
 class UpbitPocketManager:
     """업비트 포켓 관리 및 포켓 간 자산 이전 전용 클라이언트 (UPBIT_MGMT_ACCESS_KEY 사용)"""
